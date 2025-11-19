@@ -1,0 +1,12 @@
+(py38) ingfisica@ingfisica:~/Documents$ python blinkaTest.py 
+Traceback (most recent call last):
+  File "blinkaTest.py", line 1, in <module>
+    import board
+  File "/home/ingfisica/miniconda3/envs/py38/lib/python3.8/site-packages/board.py", line 201, in <module>
+    from adafruit_blinka.board.nvidia.jetson_nano import *
+  File "/home/ingfisica/miniconda3/envs/py38/lib/python3.8/site-packages/adafruit_blinka/board/nvidia/jetson_nano.py", line 6, in <module>
+    from adafruit_blinka.microcontroller.tegra.t210 import pin
+  File "/home/ingfisica/miniconda3/envs/py38/lib/python3.8/site-packages/adafruit_blinka/microcontroller/tegra/t210/pin.py", line 7, in <module>
+    from Jetson import GPIO
+ModuleNotFoundError: No module named 'Jetson'
+

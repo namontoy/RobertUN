@@ -1,0 +1,40 @@
+=== DATE ===
+Sat Feb 14 11:46:39 AM -05 2026
+=== DISK USAGE (df -h) ===
+Filesystem       Size  Used Avail Use% Mounted on
+/dev/mmcblk0p1    57G   50G  4.9G  92% /
+tmpfs            3.8G  136K  3.8G   1% /dev/shm
+tmpfs            1.5G   35M  1.5G   3% /run
+tmpfs            5.0M  4.0K  5.0M   1% /run/lock
+/dev/mmcblk0p10   63M  110K   63M   1% /boot/efi
+tmpfs            762M   96K  762M   1% /run/user/128
+tmpfs            762M   80K  762M   1% /run/user/1000
+=== BLOCK DEVICES (lsblk) ===
+NAME         MAJ:MIN RM   SIZE RO TYPE MOUNTPOINTS
+loop0          7:0    0    16M  1 loop 
+mmcblk0      179:0    0  59.5G  0 disk 
+├─mmcblk0p1  179:1    0    58G  0 part /
+├─mmcblk0p2  179:2    0   128M  0 part 
+├─mmcblk0p3  179:3    0   768K  0 part 
+├─mmcblk0p4  179:4    0  31.6M  0 part 
+├─mmcblk0p5  179:5    0   128M  0 part 
+├─mmcblk0p6  179:6    0   768K  0 part 
+├─mmcblk0p7  179:7    0  31.6M  0 part 
+├─mmcblk0p8  179:8    0    80M  0 part 
+├─mmcblk0p9  179:9    0   512K  0 part 
+├─mmcblk0p10 179:10   0    64M  0 part /boot/efi
+├─mmcblk0p11 179:11   0    80M  0 part 
+├─mmcblk0p12 179:12   0   512K  0 part 
+├─mmcblk0p13 179:13   0    64M  0 part 
+├─mmcblk0p14 179:14   0   400M  0 part 
+└─mmcblk0p15 179:15   0 479.5M  0 part 
+zram0        252:0    0   635M  0 disk [SWAP]
+zram1        252:1    0   635M  0 disk [SWAP]
+zram2        252:2    0   635M  0 disk [SWAP]
+zram3        252:3    0   635M  0 disk [SWAP]
+zram4        252:4    0   635M  0 disk [SWAP]
+zram5        252:5    0   635M  0 disk [SWAP]
+=== hdparm (if available) ===
+hdparm not installed. Install: sudo apt-get update && sudo apt-get install -y hdparm
+=== WRITE/READ TEST (dd, 512MB) ===
+=== DONE ===

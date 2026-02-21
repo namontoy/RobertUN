@@ -1,0 +1,29 @@
+# --- ROS 2 / colcon (inside ros2_ws) ---
+ros2_ws/build/
+ros2_ws/install/
+ros2_ws/log/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+
+# --- Editor/OS ---
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+
+# --- Data artifacts (future weeks) ---
+datasets/
+recordings/
+*.bag
+*.db3
+*.svo
+
+# --- Misc logs ---
+*.log

@@ -1,5 +1,5 @@
 # Robotics Development Environment — Project Context Document
-# Last updated: March 30, 2026
+# Last updated: March 31, 2026
 # Paste this at the start of a new Claude session to restore full context
 
 ## HARDWARE
@@ -197,7 +197,7 @@
   - 0x500–0x5FF: telemetry / diagnostics / heartbeat
 
 ### OSI layer mapping
-- Layer 1 (Physical): SN65HVD230 transceiver IC + DeviceNet cable + 120Ω termination
+- Layer 1 (Physical): SN65HVD230 transceiver IC + flex Cat-5/6 cable + 120Ω termination
 - Layer 2 (Data Link): bxCAN peripheral (STM32) / MTTCAN peripheral (Jetson)
   - Both are implemented in hardware silicon — no software CAN stack needed
 - Layers 3–7: not defined by CAN itself; to be implemented at application layer
@@ -326,14 +326,17 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
    understands all ZED APIs (sl::Camera, sl::Mat, etc.)
 
 4. **CAN Bus — first hardware test:**
+   - Order/acquire Canable USB CAN sniffer (AliExpress clone ~$10-15 USD)
+     Flash candlelight firmware on arrival (preferred over slcan)
    - Solder 4-pin header to J17 on Jetson dev kit
    - Wire SN65HVD230 breakout to J17 (TX→TXD, RX→RXD, 3.3V, GND)
    - Run software setup: remove mttcan blacklist, configure pinmux,
-     load modules, bring up can0
+     load modules, bring up can0 at 125000 bps
    - Loopback self-test first (short TX+RX on J17, no transceiver needed)
-   - Then test with STM32 node: configure bxCAN at same bitrate,
-     wire via SN65HVD230, add 120Ω termination at both ends
-   - Use Cat-5 cable acceptable for bench test; use DeviceNet for rover
+   - Then bench test with STM32 node + Canable sniffer on Dell laptop:
+     configure bxCAN at 125 kbps, wire via SN65HVD230,
+     add 120Ω termination at both ends, use any available Cat-5/6 cable
+   - Verify three-way communication: Jetson ↔ STM32 ↔ Canable sniffer
 
 5. **CAN Bus — STM32 firmware:**
    - Configure bxCAN peripheral registers (bit timing for target bitrate)
@@ -372,12 +375,25 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
   JetPack 6.2.2 / CUDA 12.6 — fixes ZED2i positional tracking lock bug
 - **SN65HVD230 for CAN transceiver:** 3.3V compatible with both Jetson
   and STM32F4xx; widely used, well-documented, available as breakout board
-- **DeviceNet cable for CAN bus:** 120Ω characteristic impedance (correct
-  for CAN), flex-rated for Rocker-Bogie articulation, industrial standard
-- **Backbone + T-tap topology:** Standard for multi-node CAN installations;
-  DeviceNet connectors allow node insertion without cutting backbone
+- **Flexible Cat-5/6 over DeviceNet cable:** At 125 kbps the 100Ω vs 120Ω
+  impedance mismatch is negligible (reflection = ~2.5% of bit time); flex-rated
+  Cat-5/6 is cost-effective and locally available. DeviceNet / LAPP UNITRONIC
+  BUS CAN remain the correct choice if bitrate is ever raised significantly.
+- **Bulgin 400 Series Buccaneer 8-pin IP68 connectors:** 17 units available;
+  14 used (2 per middle node, 1 per end node), 3 spare. IP68 suits rover
+  outdoor environment; robust latching for repeated maintenance connections.
+- **Linear backbone with PCB pass-through topology:** Backbone passes through
+  middle node PCBs via direct copper trace; short on-PCB branch to transceiver.
+  Cleaner than T-tap with separate junction hardware; stub length is PCB-scale
+  and irrelevant at 125 kbps.
+- **125 kbps bus bitrate:** Sufficient for 8-node slow rover; leaves large
+  margin for future expansion before cable/topology changes are needed.
 - **Message-centric CAN ID priority:** Priority assigned per message type,
   not per node — safety-critical messages win regardless of source node
+- **Canable (STM32 USB dongle) for bench CAN sniffer:** Appears as native
+  SocketCAN interface on Linux; works with existing candump/cansend tools;
+  clone versions (~$10-15 USD) available on AliExpress. Flash candlelight
+  firmware (preferred over slcan) when it arrives.
 
 ## USEFUL COMMANDS REFERENCE
 ### Host

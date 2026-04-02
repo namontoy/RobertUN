@@ -1,5 +1,5 @@
 # Robotics Development Environment — Project Context Document
-# Last updated: April 2, 2026
+# Last updated: April 2, 2026 (network update)
 # Paste this at the start of a new Claude session to restore full context
 
 ## HARDWARE
@@ -30,23 +30,41 @@
   - Camera detected by Linux (lsusb shows 2b03:f880) but running at USB 2.0
     speeds due to wrong cable — will be fixed when new cable arrives
 
+### Network switch
+- **Status:** Gigabit switch installed and running at home
+- **Role:** Primary development network backbone — all wired traffic routes
+  through the switch rather than WiFi
+- **Topology:** Switch connects to router (internet access) + Dell + Jetson
+  via Ethernet; WiFi remains active on both machines as automatic fallback
+
 ### Robot platform
 - **Design:** 6-wheeled Mars rover inspired by Spirit/Opportunity
 - **Suspension:** Rocker-Bogie
 - **CAN bus cable length:** estimated 15–20 meters (accounting for frame routing,
   joint articulation, and service loops at flex points)
-- **Planned:** Gigabit network switch for dedicated development network
 
 ## NETWORK CONFIGURATION
 
 ### Home network (Dell laptop + Jetson)
-- **Dell IP:** 192.168.1.12 (static, via NetworkManager)
-- **Jetson IP:** 192.168.1.11 (static, via NetworkManager)
+- **Network convention:** Ethernet IP = 200 + WiFi IP (easy to remember)
+- **Gigabit switch:** installed, connects router + Dell + Jetson via Ethernet
+
+#### Dell laptop
+- **Ethernet (primary):** 192.168.1.212 (static, interface enp4s0, metric 100)
+- **WiFi (backup):** 192.168.1.12 (static, interface wlp5s0, metric 600)
+- **WiFi network:** Gotham_Castle
+
+#### Jetson Orin Nano
+- **Ethernet (primary):** 192.168.1.211 (static, interface enP8p1s0, metric 100)
+- **WiFi (backup):** 192.168.1.11 (static, interface wlP1p1s0, metric 600)
+- **WiFi network:** Gotham_Castle
+
+#### Shared
 - **Gateway:** 192.168.1.1
 - **DNS:** 8.8.8.8 / 8.8.4.4 (Google DNS on both machines)
-- **WiFi network:** Gotham_Castle
-- **Dell WiFi interface:** wlp5s0
-- **Jetson WiFi interface:** wlP1p1s0
+- **Routing behavior:** Linux metric system automatically prefers Ethernet
+  (metric 100) over WiFi (metric 600); failover to WiFi is automatic
+  when Ethernet cable is disconnected
 
 ### University network (IsaacUN)
 - **IsaacUN:** on university private network
@@ -62,7 +80,7 @@
 - **Dell:** username=talos, hostname=deadelus
 - **Jetson:** username=talos, hostname=orion
 - **IsaacUN:** username=talos, hostname=IsaacUN
-- **SSH config on Dell:** ~/.ssh/config has 'Host jetson' → 192.168.1.11:44252
+- **SSH config on Dell:** ~/.ssh/config has 'Host jetson' → 192.168.1.211:44252 (Ethernet)
 - **IsaacUN SSH:** systemd socket activation override at
   /etc/systemd/system/ssh.socket.d/override.conf (port 44252)
 - **Aliases on Dell:**
@@ -91,7 +109,9 @@
 - **ROS 2:** Humble Desktop (/opt/ros/humble/)
 - **DDS:** Cyclone DDS (rmw_cyclonedds_cpp)
   - Config: ~/.ros/cyclone_dds.xml
-  - Unicast peer: 192.168.1.11, interface: wlp5s0
+  - Interface: enp4s0 (Ethernet, via switch)
+  - Unicast peer: 192.168.1.211 (Jetson Ethernet address)
+  - Dev Container also updated: ~/ros2_ws/.devcontainer/cyclone_dds.xml
 - **Cross-compiler:** aarch64-linux-gnu-gcc/g++ 11.4.0
 - **QEMU:** 6.2.0 with binfmt F-flag (permanent via systemd service)
   - Service: /etc/systemd/system/qemu-aarch64-binfmt-fix.service
@@ -176,7 +196,8 @@
 - **ROS 2:** Humble Base (/opt/ros/humble/)
 - **DDS:** Cyclone DDS (rmw_cyclonedds_cpp)
   - Config: ~/.ros/cyclone_dds.xml
-  - Unicast peer: 192.168.1.12, interface: wlP1p1s0
+  - Interface: enP8p1s0 (Ethernet, via switch)
+  - Unicast peer: 192.168.1.212 (Dell Ethernet address)
 - **Docker:** 29.3.0
   - NVIDIA Container Runtime: DEFAULT runtime in /etc/docker/daemon.json
   - Local images:
@@ -495,9 +516,10 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
     Current README is minimal — describe the project properly
     Document repository structure and purpose of each folder
 
-11. **Gigabit switch network (when switch purchased):**
-    Configure dedicated development subnet (e.g. 10.0.0.x)
-    Separate from home WiFi for faster jsync and Docker transfers
+11. **Gigabit switch network:** ✅ COMPLETED
+    Switch installed; Dell and Jetson have static Ethernet IPs via switch;
+    Cyclone DDS and SSH updated to use Ethernet addresses;
+    WiFi remains as automatic fallback
 
 12. **Begin robot ROS 2 development:**
     SLAM/Mapping, Visual Odometry/Navigation, Object Detection/AI
@@ -566,7 +588,7 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
 ### Dell Host
 - `ssh jetson` → connect to Jetson
 - `jsync` → sync ~/ros2_ws/ to Jetson
-- `jscp <file> talos@192.168.1.11:<path>` → copy file to Jetson
+- `jscp <file> talos@192.168.1.211:<path>` → copy file to Jetson
 - `docker buildx build --platform linux/arm64 --tag <n> --load .`
 - `cd ~/github/RobertUN && git pull origin main` → sync repository
 

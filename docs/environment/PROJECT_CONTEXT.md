@@ -1,38 +1,71 @@
 # Robotics Development Environment — Project Context Document
-# Last updated: March 31, 2026
+# Last updated: April 2, 2026
 # Paste this at the start of a new Claude session to restore full context
 
 ## HARDWARE
-- **Host machine:** Dell laptop, dual boot (Ubuntu 22.04 + Linux Mint Mate)
-- **Host GPU:** NVIDIA GeForce GTX 1650 Ti Mobile (TU117M)
-- **Host display:** Laptop screen (eDP-1) + external monitor (HDMI-1-0), both 1920x1080
-- **Jetson:** NVIDIA Jetson Orin Nano, 7.4GB RAM, 233GB NVMe SSD
-- **Camera:** Stereolabs ZED 2i stereo camera
-- **Camera status:** SDK installed, USB cable ordered (USB-IF certified 10Gbps Gen2)
+
+### Dell Laptop (home development machine)
+- **Machine:** Dell laptop, dual boot (Ubuntu 22.04 + Linux Mint Mate)
+- **GPU:** NVIDIA GeForce GTX 1650 Ti Mobile (TU117M)
+- **Display:** Laptop screen (eDP-1) + external monitor (HDMI-1-0), both 1920x1080
+- **Hostname:** deadelus, username: talos
+
+### IsaacUN (office simulation workstation)
+- **Machine:** Desktop PC, Universidad Nacional de Colombia
+- **CPU:** AMD Ryzen 7 9700X 8-Core (16 threads, 5.58GHz max)
+- **RAM:** 64GB
+- **GPU:** NVIDIA GeForce RTX 5080 (Blackwell GB203, 16GB VRAM)
+- **OS:** Ubuntu 24.04.3 LTS (noble)
+- **Kernel:** 6.17.0-19-generic
+- **Display:** 2x Dell monitors via DP-2 (primary, left) and DP-3 (right), both 1440x900
+- **Hostname:** IsaacUN, username: talos
+
+### Jetson (embedded robot compute)
+- **Machine:** NVIDIA Jetson Orin Nano, 7.4GB RAM, 233GB NVMe SSD
+- **Hostname:** orion, username: talos
+
+### Camera
+- **Model:** Stereolabs ZED 2i stereo camera
+- **Status:** SDK installed, USB cable ordered (USB-IF certified 10Gbps Gen2)
   - Camera detected by Linux (lsusb shows 2b03:f880) but running at USB 2.0
-  - speeds due to wrong cable — will be fixed when new cable arrives
+    speeds due to wrong cable — will be fixed when new cable arrives
+
+### Robot platform
+- **Design:** 6-wheeled Mars rover inspired by Spirit/Opportunity
+- **Suspension:** Rocker-Bogie
+- **CAN bus cable length:** estimated 15–20 meters (accounting for frame routing,
+  joint articulation, and service loops at flex points)
 - **Planned:** Gigabit network switch for dedicated development network
-- **Robot platform:** 6-wheeled Mars rover inspired by Spirit/Opportunity
-  - Rocker-Bogie suspension frame
-  - Estimated CAN bus cable length: 15–20 meters (accounting for frame routing,
-    joint articulation, and service loops at flex points)
 
 ## NETWORK CONFIGURATION
-- **Host IP:** 192.168.1.12 (static, via NetworkManager)
+
+### Home network (Dell laptop + Jetson)
+- **Dell IP:** 192.168.1.12 (static, via NetworkManager)
 - **Jetson IP:** 192.168.1.11 (static, via NetworkManager)
 - **Gateway:** 192.168.1.1
 - **DNS:** 8.8.8.8 / 8.8.4.4 (Google DNS on both machines)
 - **WiFi network:** Gotham_Castle
-- **Host WiFi interface:** wlp5s0
+- **Dell WiFi interface:** wlp5s0
 - **Jetson WiFi interface:** wlP1p1s0
 
+### University network (IsaacUN)
+- **IsaacUN:** on university private network
+- **Remote access:** University VPN → NoMachine (NX protocol, port 4000)
+- **Note:** IsaacUN and Jetson/Dell are on separate networks (university vs home)
+  Direct ROS 2 communication between IsaacUN and Jetson is not configured —
+  simulation and real robot workflows are developed in parallel and synchronized
+  deliberately via file transfer rather than always-connected DDS
+
 ## SSH CONFIGURATION
-- **SSH port:** 44252 (0xACDC)
+- **SSH port:** 44252 (0xACDC) on ALL machines
 - **Authentication:** ED25519 key pair, passwordless
-- **Host:** username=talos, hostname=deadelus
+- **Dell:** username=talos, hostname=deadelus
 - **Jetson:** username=talos, hostname=orion
-- **SSH config on host:** ~/.ssh/config has 'Host jetson' → 192.168.1.11:44252
-- **Aliases on host:**
+- **IsaacUN:** username=talos, hostname=IsaacUN
+- **SSH config on Dell:** ~/.ssh/config has 'Host jetson' → 192.168.1.11:44252
+- **IsaacUN SSH:** systemd socket activation override at
+  /etc/systemd/system/ssh.socket.d/override.conf (port 44252)
+- **Aliases on Dell:**
   - `jetson` → ssh to Jetson
   - `jsync` → rsync ~/ros2_ws/ to Jetson with correct port
   - `jscp` → scp with correct port (-P 44252)
@@ -41,7 +74,7 @@
   - /etc/NetworkManager/dispatcher.d/99-disable-wifi-powersave
   - /etc/udev/rules.d/70-wifi-powersave.rules
 
-## HOST MACHINE — Ubuntu 22.04.5 LTS x86_64
+## DELL LAPTOP — Ubuntu 22.04.5 LTS x86_64
 - **Display server:** X11 (Wayland permanently disabled)
 - **NVIDIA Driver:** 580.126.09 (nvidia-driver-580-open)
 - **CUDA Toolkit:** 12.6.3 (/usr/local/cuda-12.6/)
@@ -53,6 +86,8 @@
 - **pip:** 26.0.1
 - **Python packages:** numpy, opencv-python, pyserial, transforms3d,
   scipy, matplotlib, pytest, pyzed
+- **Python environment:** conda environments not yet configured on Dell
+  (pending task — mirror IsaacUN approach)
 - **ROS 2:** Humble Desktop (/opt/ros/humble/)
 - **DDS:** Cyclone DDS (rmw_cyclonedds_cpp)
   - Config: ~/.ros/cyclone_dds.xml
@@ -65,6 +100,69 @@
   - Buildx builder: jetson-builder (linux/amd64 + linux/arm64)
   - Local images: jetson-test:arm64, ubuntu:22.04
 - **QEMU_LD_PREFIX:** /usr/aarch64-linux-gnu (in ~/.bashrc)
+- **Git:** configured (user: namontoy, email: namontoy@unal.edu.co)
+  - GitHub SSH key: ED25519 (reused from Jetson connection, labeled
+    "Deadelus to Orion")
+  - Repository: git@github.com:namontoy/RobertUN.git
+  - Local clone: ~/github/RobertUN/
+
+## ISAACUN — Ubuntu 24.04.3 LTS x86_64
+- **Display server:** X11 (Wayland disabled by session type)
+- **Display manager:** GDM3 (switched from LightDM — required for GNOME
+  ScreenShield lock screen and correct session initialization)
+- **Desktop:** GNOME 46 on Xorg
+- **NVIDIA Driver:** 570.211.01
+- **CUDA Toolkit:** 12.8 (/usr/local/cuda-12.8/, symlinked at /usr/local/cuda)
+  - nvcc confirmed working: release 12.8, V12.8.93
+  - PATH: /usr/local/cuda/bin added to ~/.bashrc
+  - LD_LIBRARY_PATH: /usr/local/cuda/lib64 added to ~/.bashrc
+- **Isaac Sim:** 5.1.0-rc.19 installed at ~/isaac-sim/
+  - Launch: ~/isaac-sim/isaac-sim.sh
+  - Internal ROS 2: Jazzy (auto-loaded on Ubuntu 24.04)
+  - Health check: confirmed working after GDM switch and CUDA install
+  - Note: must be launched outside any conda environment
+- **ROS 2:** Jazzy Desktop (/opt/ros/jazzy/)
+  - Jazzy is the recommended distro for Isaac Sim 5.x on Ubuntu 24.04
+  - Jazzy and Humble are wire-compatible for standard message types
+- **DDS:** FastDDS (default for Jazzy) — CycloneDDS not configured
+  (IsaacUN not connected to Jetson/Dell network)
+- **Python:** via Miniconda3 (/home/talos/miniconda3/)
+  - Philosophy: always work inside conda environments, never system Python
+  - conda env `ros2`: Python 3.12, ROS 2 Jazzy auto-sourced on activation
+    Packages: numpy 2.4.4, opencv-python 4.13, scipy 1.17.1, matplotlib 3.10,
+    pyserial 3.5, transforms3d 0.4.2, pytest 9.0.2, pyyaml 6.0.3,
+    rclpy 7.1.9, full ROS 2 Python stack, catkin-pkg, empy==3.3.4, lark
+  - Activation script: ~/miniconda3/envs/ros2/etc/conda/activate.d/ros2.sh
+    (auto-sources /opt/ros/jazzy/setup.bash and sets ROS_DOMAIN_ID=0)
+- **tmux:** installed, config at ~/.tmux.conf
+  - Prefix: Ctrl+B (Ctrl+A as alternative)
+  - Mouse support enabled
+  - Split: Ctrl+B | (vertical), Ctrl+B - (horizontal)
+  - Navigation: Ctrl+B h/j/k/l (vim-style)
+  - History limit: 50000 lines
+- **colcon:** installed (python3-colcon-common-extensions)
+- **rosdep:** 0.26.0 (initialized)
+- **Git:** not yet configured (pending task)
+
+## ISAACUN — SESSION AND REMOTE ACCESS
+- **Autologin:** GDM3 autologin for talos, config at /etc/gdm3/custom.conf
+- **Screen lock:** Locks automatically ~15 seconds after boot via
+  ~/.config/autostart/lock-after-autologin.desktop (gdbus call to ScreenSaver)
+- **Dual monitor fix:** DP-3 auto-detected via
+  ~/.config/autostart/restore-monitors.desktop (xrandr --auto at 8s)
+- **GNOME keyring:** Unlocks during autologin via PAM config
+  at /etc/pam.d/lightdm-autologin (pam_gnome_keyring.so)
+- **NoMachine:** 9.3.7, nxserver running, EGL GPU capture enabled
+  - Connect: university VPN → NoMachine to IsaacUN IP, port 4000
+  - Login: talos credentials
+  - node.cfg: EnableEGLCapture=1 (GPU-accelerated screen capture)
+  - Known issue: on some client machines, NoMachine shows DP-3 (right
+    monitor) instead of DP-2 (primary/left). Client-side fix: set
+    "View a specific monitor among available monitors" = 1 in .nxs file.
+    Mouse coordinate offset remains unresolved on affected clients.
+    Dell laptop works correctly without any special configuration.
+- **SSH:** port 44252 via systemd socket override
+  - /etc/systemd/system/ssh.socket.d/override.conf
 
 ## JETSON ORIN NANO — JetPack 6.5 / L4T R36.5.0, aarch64
 - **OS:** Ubuntu 22.04.5 LTS
@@ -96,10 +194,11 @@
     and 2b03:f881 (ZED-2i HID Interface)
   - Root cause: generic USB-C cable is USB 2.0 only (bcdUSB 2.10)
     ZED SDK requires USB 3.0+ (needs bcdUSB 3.x)
-  - Fix: Cable Matters USB-IF certified 10Gbps Gen2 cable ordered,
-    arriving in ~2 days
+  - Fix: Cable Matters USB-IF certified 10Gbps Gen2 cable ordered
+- **Git:** not yet configured (pending task)
 
 ## CAN BUS — HARDWARE DESIGN DECISIONS
+
 ### Jetson Orin Nano CAN capability
 - **Built-in MTTCAN controller:** yes — T234 SoC has native CAN hardware
   - No USB-to-CAN adapter, SPI bridge, or M.2 card required
@@ -149,7 +248,6 @@
   - Must use flex-rated Cat-5/6 (not standard structured cabling patch cable)
     due to continuous Rocker-Bogie joint articulation
   - Cost-effective and locally available vs industrial CAN cable
-  - Acceptable for bench testing at any speed with short cable runs
   - NOTE — if bitrate is ever raised significantly or rover design changes,
     consider upgrading to proper 120Ω cable:
     - DeviceNet cable: 120Ω, flex-rated, industrial standard
@@ -184,7 +282,7 @@
   - Jetson is a mid-bus node — no termination resistor
   - Never place termination at every node — collapses bus impedance
 
-### Message ID design principles (decided in session)
+### Message ID design principles
 - Priority is message-centric, not node-centric
 - Lower ID = higher priority (wins arbitration)
 - ID table uses two-level hierarchy: upper bits = group, lower bits = message type
@@ -205,6 +303,7 @@
     rover message definitions
 
 ## CAN BUS — JETSON SOFTWARE SETUP (JetPack 6.x / L4T R36.x)
+
 ### Prerequisites
 ```bash
 sudo apt-get install busybox can-utils
@@ -231,8 +330,8 @@ echo "mttcan" | sudo tee /etc/modules-load.d/mttcan.conf
 
 ### Bring up CAN interface (SocketCAN)
 ```bash
-# Classical CAN at 500 kbps:
-sudo ip link set can0 type can bitrate 500000
+# Classical CAN at 125 kbps (selected rover bitrate):
+sudo ip link set can0 type can bitrate 125000
 sudo ip link set can0 up
 
 # CAN FD (500 kbps nominal / 1 Mbps data):
@@ -248,7 +347,7 @@ cansend can0 123#ABCDABCD           # send a frame
 ### Loopback self-test (no transceiver needed — short TX and RX pins on J17)
 ```bash
 sudo ip link set can0 down
-sudo ip link set can0 type can bitrate 500000 loopback on
+sudo ip link set can0 type can bitrate 125000 loopback on
 sudo ip link set can0 up
 candump can0 &
 cansend can0 123#ABCDABCD
@@ -264,26 +363,44 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
 - mttcan blacklist is the #1 cause of "CAN doesn't work" — always check first
 - Pinmux resets on reboot when using devmem method — use systemd service for persistence
 - If timing sync issues with external nodes: add sjw 4 parameter:
-  `sudo ip link set can0 type can bitrate 500000 sjw 4`
+  `sudo ip link set can0 type can bitrate 125000 sjw 4`
 - CAN FD at 5 Mbps may need TDCR tuning via sysfs
 
-## SYSTEMD SERVICES (HOST)
+## SYSTEMD SERVICES (DELL HOST)
 - **qemu-aarch64-binfmt-fix.service:**
   Runs multiarch/qemu-user-static --reset -p yes on every boot
   Registers QEMU with F-flag for ARM64 Docker container support
 
+## SYSTEMD SERVICES (ISAACUN)
+- **ssh.socket override:**
+  /etc/systemd/system/ssh.socket.d/override.conf
+  Forces SSH to listen on port 44252 instead of default 22
+
 ## WORKSPACE STRUCTURE
-- **Host workspace:** ~/ros2_ws/
+- **Dell workspace:** ~/ros2_ws/
   - .devcontainer/ (devcontainer.json, Dockerfile, cyclone_dds.xml)
   - src/ (ROS2 packages go here)
   - docker/ (Docker-related files)
   - testing/ (test binaries, e.g. hello_jetson ARM64 cross-compiled)
-- **Jetson workspace:** ~/ros2_ws/ (mirrored from host via jsync)
+- **IsaacUN workspace:** ~/ros2_ws/
+  - src/ (simulation-side ROS 2 packages)
+  - Role: robot descriptions, simulation launch files, Isaac Sim ROS 2 bridges
+- **Jetson workspace:** ~/ros2_ws/ (mirrored from Dell via jsync)
 - **Jetson ZED test folder:** ~/zed2i/
   - test_zed.py (camera open + depth grab test — ready to run)
   - zed_version.py (device detection test)
 
-## VS CODE DEV CONTAINER (HOST)
+## GITHUB REPOSITORY
+- **Repository:** git@github.com:namontoy/RobertUN.git
+- **Local clone (Dell):** ~/github/RobertUN/
+- **Structure:**
+  - BoardRover2/ (hardware design files)
+  - docs/environment/PROJECT_CONTEXT.md (this file)
+  - docs/research/can-bus/CAN-Bus-JetsonOrinNano.md
+- **Git configured on:** Dell laptop only (pending: IsaacUN, Jetson)
+- **SSH key added to GitHub:** Dell laptop ED25519 key
+
+## VS CODE DEV CONTAINER (DELL HOST)
 - **Status:** Fully configured and working
 - **Name:** ROS2 Humble + ZED 2i Development
 - **Base:** Ubuntu 22.04 amd64 (native speed, not emulated)
@@ -297,19 +414,32 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
   geometry_msgs, sensor_msgs
 
 ## ROS 2 COMMUNICATION
-- **DDS:** Cyclone DDS on ALL environments (host, Dev Container, Jetson)
+
+### Home network (Dell ↔ Jetson)
+- **DDS:** Cyclone DDS on ALL environments (Dell, Dev Container, Jetson)
 - **Discovery:** Unicast peer-to-peer (WiFi router blocks multicast)
 - **Verified paths:**
-  - Host ↔ Jetson ✅
+  - Dell ↔ Jetson ✅
   - Dev Container ↔ Jetson ✅
   - C++ nodes (demo_nodes_cpp) ✅
   - Python nodes (demo_nodes_py) ✅
 
-## CROSS-COMPILATION
+### IsaacUN (standalone)
+- **DDS:** FastDDS (Jazzy default)
+- **Discovery:** Local only — not connected to Jetson/Dell
+- **Verified:** talker/listener on IsaacUN ✅
+
+## CROSS-COMPILATION (DELL HOST)
 - ARM64 binary compiled on host: ~/ros2_ws/testing/hello_jetson
 - Runs on host via QEMU: ✅
 - Runs natively on Jetson: ✅
 - Docker ARM64 images build and run: ✅
+
+## WORKFLOW SEPARATION
+- **IsaacUN:** Robot simulation, Isaac Sim training, Jazzy ROS 2 development
+- **Dell + Jetson:** Real robot development, Humble ROS 2, embedded deployment
+- **Sim-to-real transfer:** Package source code synced manually between
+  machines — not via live network bridge
 
 ## NEXT TASKS (IN PRIORITY ORDER)
 1. **ZED cable arrives → test camera:**
@@ -347,21 +477,57 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
    - Bridge CAN frames to ROS 2 topics (ros2_socketcan or custom node)
    - Define message ID table for rover subsystems
 
-7. **Gigabit switch network (when switch purchased):**
-   Configure dedicated development subnet (e.g. 10.0.0.x)
-   Separate from home WiFi for faster jsync and Docker transfers
+7. **Configure Isaac Sim ROS 2 bridge:**
+   Set up CycloneDDS or FastDDS for IsaacUN ROS 2 bridge
+   Test Isaac Sim publishing to ROS 2 topics (e.g. /clock, /odom)
 
-8. **Begin robot ROS 2 development:**
-   SLAM/Mapping, Visual Odometry/Navigation, Object Detection/AI
+8. **Python conda environment on Dell laptop:**
+   Configure conda environments on Dell (not yet done)
+   Mirror the ros2 conda env approach used on IsaacUN
+   Philosophy: always work inside conda environments, never system Python
+
+9. **Git configuration on IsaacUN and Jetson:**
+   Configure git user credentials on IsaacUN and Jetson
+   Add SSH keys from both machines to GitHub
+   Enable direct push to RobertUN repository from all three machines
+
+10. **Update RobertUN README.md:**
+    Current README is minimal — describe the project properly
+    Document repository structure and purpose of each folder
+
+11. **Gigabit switch network (when switch purchased):**
+    Configure dedicated development subnet (e.g. 10.0.0.x)
+    Separate from home WiFi for faster jsync and Docker transfers
+
+12. **Begin robot ROS 2 development:**
+    SLAM/Mapping, Visual Odometry/Navigation, Object Detection/AI
+
+13. **NoMachine display/mouse issue (new laptop — low priority):**
+    Mouse coordinates offset by +1440px when viewing primary monitor
+    Client-side fix partially works (correct image with value=1 in .nxs)
+    but mouse lands on DP-3 instead of DP-2
+    Server-side DisplayGeometry/PhysicalDisplays parameters ineffective
+    Dell laptop works correctly without any special configuration
 
 ## KEY DECISIONS AND RATIONALE
-- **X11 over Wayland:** Wayland has incomplete NVIDIA PRIME support
+- **X11 over Wayland (Dell):** Wayland has incomplete NVIDIA PRIME support
   for multi-monitor on Dell laptops
-- **CUDA 12.6 on both machines:** Cross-compilation compatibility
-- **Cyclone DDS over Fast DDS:** WiFi routers block multicast;
+- **X11 over Wayland (IsaacUN):** Isaac Sim + NVIDIA driver more stable on X11
+- **GDM3 over LightDM (IsaacUN):** GNOME Shell 46 requires GDM for
+  ScreenShield — LightDM causes silent screen lock failure
+- **CUDA 12.6 on Dell+Jetson:** Cross-compilation compatibility
+- **CUDA 12.8 on IsaacUN:** Matches RTX 5080 (Blackwell) driver runtime
+- **Cyclone DDS over Fast DDS (Dell+Jetson):** WiFi routers block multicast;
   Cyclone DDS unicast bypasses this reliably
-- **Static IPs via NetworkManager:** Router not accessible
-- **SSH port 44252 (0xACDC):** Reduces automated bot scanning
+- **FastDDS on IsaacUN:** Default for Jazzy; no need for unicast config
+  since IsaacUN is not bridged to home network
+- **ROS 2 Jazzy on IsaacUN:** Official Isaac Sim 5.x recommendation for
+  Ubuntu 24.04; Humble packages have dependency conflicts on noble
+- **ROS 2 Humble on Dell+Jetson:** LTS release matching Ubuntu 22.04;
+  wire-compatible with Jazzy for standard message types
+- **Static IPs via NetworkManager (Dell+Jetson):** Router not accessible
+- **SSH port 44252 (0xACDC):** Reduces automated bot scanning; consistent
+  across all three machines
 - **libnvdla_compiler.so fix:** Extracted from nvidia-l4t-dla-compiler
   _36.4.1 .deb — known NVIDIA packaging omission in R36.4+ packages
 - **dustynv/ros over nvcr.io/nvidia/l4t-base:** l4t-base tags beyond
@@ -369,8 +535,8 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
   with CUDA + cuDNN + TensorRT + ROS 2 pre-integrated
 - **amd64 Dev Container:** Native speed for IntelliSense; ARM64
   emulation via QEMU is too slow for daily development
-- **VS Code over Antigravity:** Mature ROS 2 extensions, Remote SSH,
-  Dev Containers; Antigravity is preview-stage with no robotics support
+- **conda environments (IsaacUN):** Isaac Sim uses internal Python 3.11;
+  system Python must remain unmodified; all dev work in conda envs
 - **ZED SDK 5.2.2 for L4T R36.5:** Specific version matching
   JetPack 6.2.2 / CUDA 12.6 — fixes ZED2i positional tracking lock bug
 - **SN65HVD230 for CAN transceiver:** 3.3V compatible with both Jetson
@@ -396,13 +562,24 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
   firmware (preferred over slcan) when it arrives.
 
 ## USEFUL COMMANDS REFERENCE
-### Host
+
+### Dell Host
 - `ssh jetson` → connect to Jetson
 - `jsync` → sync ~/ros2_ws/ to Jetson
 - `jscp <file> talos@192.168.1.11:<path>` → copy file to Jetson
-- `docker buildx build --platform linux/arm64 --tag <name> --load .`
+- `docker buildx build --platform linux/arm64 --tag <n> --load .`
+- `cd ~/github/RobertUN && git pull origin main` → sync repository
 
-### Jetson
+### IsaacUN
+- `conda activate ros2` → enter ROS 2 development environment
+  (auto-sources /opt/ros/jazzy/setup.bash)
+- `tmux new-session -s <n>` → start a new named tmux session
+- `tmux ls` → list running tmux sessions
+- `tmux attach -t <n>` → reattach to a session
+- `~/isaac-sim/isaac-sim.sh` → launch Isaac Sim (run from base conda env)
+- `nvcc --version` → verify CUDA toolkit
+
+### Jetson — General
 - `python3 ~/zed2i/test_zed.py` → test ZED camera (needs USB 3.x cable)
 - `ros2 run demo_nodes_cpp talker` → test ROS 2
 - `docker run --env NVIDIA_VISIBLE_DEVICES=all <image> nvcc --version`
@@ -410,12 +587,21 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
 ### Jetson — CAN Bus
 - `sudo busybox devmem 0x0c303018 w 0xc458 && sudo busybox devmem 0x0c303010 w 0xc400` → configure pinmux
 - `sudo modprobe can && sudo modprobe can_raw && sudo modprobe mttcan` → load modules
-- `sudo ip link set can0 type can bitrate 500000 && sudo ip link set can0 up` → bring up interface
+- `sudo ip link set can0 type can bitrate 125000 && sudo ip link set can0 up` → bring up interface
 - `candump can0` → monitor all CAN traffic
 - `cansend can0 123#DEADBEEF` → send test frame
 - `cat /proc/device-tree/bus@0/mttcan@c310000/status` → verify CAN hardware active
 
-### VS Code
+### VS Code (Dell)
 - `Ctrl+Shift+P` → `Dev Containers: Reopen in Container` → open Dev Container
 - `Ctrl+Shift+P` → `Remote-SSH: Connect to Host` → jetson → connect to Jetson
 - `Ctrl+Shift+P` → `Dev Containers: Rebuild and Reopen` → only when Dockerfile changes
+
+### tmux Quick Reference (IsaacUN)
+- `Ctrl+B d` → detach from session (session keeps running)
+- `Ctrl+B |` → split pane vertically
+- `Ctrl+B -` → split pane horizontally
+- `Ctrl+B h/j/k/l` → navigate between panes (vim-style)
+- `Ctrl+B c` → new window (opens in same directory)
+- `Ctrl+B r` → reload tmux config
+- `tmux send-keys -t <session> "command" Enter` → send command to session headlessly

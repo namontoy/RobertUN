@@ -137,22 +137,52 @@
   - No built-in transceiver — external IC always required (same as Jetson)
 
 ### Physical bus
-- **Cable:** DeviceNet cable (120Ω characteristic impedance, flex-rated)
-  - Do NOT use Cat-5 (100Ω, no flex rating) for the rover
-  - Cat-5 acceptable for bench testing only at short distances
-  - Alternatives: LAPP UNITRONIC BUS CAN — check LAPP Latin America distributor
-    or industrial automation suppliers in Medellín for local availability
-- **Topology:** Backbone + T-tap (stub) topology
-  - Single backbone cable snakes through rover frame
-  - Each node connects via a short stub (< 30cm) off the backbone
-  - DeviceNet Mini/Micro Open style 5-pin connectors for T-tap insertion
-    without cutting the backbone cable
-- **Termination:** Two 120Ω resistors only — one at each physical end of backbone
-  - End nodes: one wheel node at each extreme of the rover frame
-  - Jetson is a mid-bus node, NOT a termination point
-  - Never place termination resistors at every node — this collapses bus impedance
-- **Bitrate:** all nodes must be configured identically (e.g. 500 kbps)
-  - Mismatch = arbitration failure and bus corruption
+- **Selected bitrate: 125 kbps**
+  - Rover moves slowly, 8 nodes, no high-frequency control loops requiring > 125 kbps
+  - At 125 kbps, bit time = 8 µs; reflections from impedance mismatch arrive in
+    ~200 ns (2.5% of bit time) — well within CAN bit timing tolerance
+  - This makes 120Ω vs 100Ω cable impedance mismatch irrelevant for this application
+  - All nodes must be configured identically — mismatch = arbitration failure
+
+- **Selected cable: flexible Cat-5/6 (100Ω)**
+  - Rationale: at 125 kbps the impedance mismatch is negligible (see above)
+  - Must use flex-rated Cat-5/6 (not standard structured cabling patch cable)
+    due to continuous Rocker-Bogie joint articulation
+  - Cost-effective and locally available vs industrial CAN cable
+  - Acceptable for bench testing at any speed with short cable runs
+  - NOTE — if bitrate is ever raised significantly or rover design changes,
+    consider upgrading to proper 120Ω cable:
+    - DeviceNet cable: 120Ω, flex-rated, industrial standard
+    - LAPP UNITRONIC BUS CAN: check LAPP Latin America distributor or
+      industrial automation suppliers in Medellín for local availability
+
+- **Selected connectors: Bulgin 400 Series Buccaneer (8-pin, IP68)**
+  - 17 units available — sufficient for 8-node system (14 used, 3 spare)
+  - IP68 rated: dust-tight, suitable for outdoor rover environment
+  - Robust latching mechanism, rated for repeated connection cycles
+  - 8 pins — enough for CAN signals + power on single connector
+  - Suggested pin allocation:
+    - Pin 1: CAN_H
+    - Pin 2: CAN_L
+    - Pin 3: GND
+    - Pin 4: Power (5V or 12V — TBD)
+    - Pins 5–8: spare / future use
+
+- **Topology: linear backbone, pass-through on node PCBs**
+  - Single backbone cable snakes through rover frame end to end
+  - Middle nodes (6 total): 2× Bulgin connectors per PCB
+    - Backbone passes through via direct copper trace (CAN_H, CAN_L, GND, Power)
+    - Short branch on PCB trace taps off backbone to SN65HVD230 transceiver
+    - Tap point at electrical midpoint of the pass-through trace
+    - At 125 kbps, tap position on PCB trace has no signal integrity impact
+  - End nodes (2 total — one wheel at each extreme of rover frame): 1× Bulgin connector
+    - 120Ω termination resistor on PCB
+  - Connector count: 2×6 + 1×2 = 14 connectors used, 3 spare
+
+- **Termination: two 120Ω resistors only**
+  - One at each physical end of backbone (the two extreme wheel nodes)
+  - Jetson is a mid-bus node — no termination resistor
+  - Never place termination at every node — collapses bus impedance
 
 ### Message ID design principles (decided in session)
 - Priority is message-centric, not node-centric

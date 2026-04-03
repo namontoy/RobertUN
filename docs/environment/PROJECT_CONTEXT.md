@@ -1,5 +1,5 @@
 # Robotics Development Environment — Project Context Document
-# Last updated: April 2, 2026
+# Last updated: April 2, 2026 (ZED camera verified)
 # Paste this at the start of a new Claude session to restore full context
 
 ## HARDWARE
@@ -26,9 +26,15 @@
 
 ### Camera
 - **Model:** Stereolabs ZED 2i stereo camera
-- **Status:** SDK installed, USB cable ordered (USB-IF certified 10Gbps Gen2)
-  - Camera detected by Linux (lsusb shows 2b03:f880) but running at USB 2.0
-    speeds due to wrong cable — will be fixed when new cable arrives
+- **Status:** ✅ FULLY OPERATIONAL
+- **Cable:** Cable Matters USB-IF certified 10Gbps Gen2 — confirmed USB 3.00 (bcdUSB 3.00)
+- **Serial number:** 32047842
+- **Firmware:** 1523
+- **Resolution:** HD720 @ 30fps
+- **Calibration:** factory calibration file downloaded and cached on Jetson
+- **Depth pipeline:** verified — 5 consecutive frames at ~3.25m, stable and consistent
+- **Note:** Argus socket errors on camera close are expected/harmless on Jetson (known ZED SDK behavior)
+- **Note:** PERFORMANCE depth mode deprecated — use NEURAL in future ROS 2 nodes
 
 ### Network switch
 - **Status:** Gigabit switch installed and running at home
@@ -223,12 +229,9 @@
   - TensorRT models optimized: Neural Depth, Neural Light Depth,
     Neural Plus Depth, Object Detection (3 tiers), Person ReID,
     Skeleton Body18/38, Person Head
-  - Camera NOT yet working — waiting for USB 3.2 Gen2 cable
-  - Camera IS detected by Linux: lsusb shows 2b03:f880 (ZED 2i)
-    and 2b03:f881 (ZED-2i HID Interface)
-  - Root cause: generic USB-C cable is USB 2.0 only (bcdUSB 2.10)
-    ZED SDK requires USB 3.0+ (needs bcdUSB 3.x)
-  - Fix: Cable Matters USB-IF certified 10Gbps Gen2 cable ordered
+  - Camera: ✅ FULLY OPERATIONAL (USB 3.00, depth pipeline verified)
+  - Test script: ~/zed2i/test_zed.py — confirmed working
+  - Calibration file: downloaded and cached for S/N 32047842
 - **Git:** not yet configured (pending task)
 
 ## CAN BUS — HARDWARE DESIGN DECISIONS
@@ -476,10 +479,10 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
   machines — not via live network bridge
 
 ## NEXT TASKS (IN PRIORITY ORDER)
-1. **ZED cable arrives → test camera:**
-   On Jetson run: python3 ~/zed2i/test_zed.py
-   First verify: lsusb -v -d 2b03:f880 | grep bcdUSB
-   Expected: bcdUSB 3.10 or 3.20
+1. **ZED camera test:** ✅ COMPLETED
+   Cable confirmed USB 3.00 (bcdUSB 3.00); camera opened successfully;
+   depth pipeline verified with 5 stable frames at ~3.25m;
+   calibration file downloaded for S/N 32047842
 
 2. **Install ZED ROS 2 wrapper on Jetson:**
    Clone stereolabs/zed-ros2-wrapper, install deps, build with colcon

@@ -1,5 +1,5 @@
 # Robotics Development Environment — Project Context Document
-# Last updated: April 2, 2026 (network update)
+# Last updated: April 2, 2026
 # Paste this at the start of a new Claude session to restore full context
 
 ## HARDWARE
@@ -100,12 +100,25 @@
 - **CMake:** 3.22.1
 - **Java JDK:** 21.0.10 (OpenJDK)
 - **VS Code:** 1.112.0
-- **Python:** 3.10.12 (~/.local/bin on PATH)
-- **pip:** 26.0.1
-- **Python packages:** numpy, opencv-python, pyserial, transforms3d,
-  scipy, matplotlib, pytest, pyzed
-- **Python environment:** conda environments not yet configured on Dell
-  (pending task — mirror IsaacUN approach)
+- **Python:** 3.10.12 (system), managed via Miniconda3 (~/miniconda3/)
+- **Philosophy:** always work inside conda environments, never system Python
+  auto_activate_base = false (base environment does not activate automatically)
+- **conda env `ros2`:** Python 3.10, ROS 2 Humble auto-sourced on activation
+  - Activation script: ~/miniconda3/envs/ros2/etc/conda/activate.d/ros2.sh
+    (sources /opt/ros/humble/setup.bash, sets ROS_DOMAIN_ID=0,
+    sets RMW_IMPLEMENTATION=rmw_cyclonedds_cpp)
+  - Packages: numpy 2.2.6, opencv-python 4.13, pyserial, transforms3d,
+    scipy, matplotlib, pytest, pyyaml, rclpy 3.3.20, full ROS 2 Python stack,
+    catkin-pkg, empy==3.3.4, lark
+- **conda env `ml`:** Python 3.11, GPU-accelerated machine learning
+  - Activation script: ~/miniconda3/envs/ml/etc/conda/activate.d/ml.sh
+    (sets TORCH_HOME=~/.cache/torch, PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,
+    OMP_NUM_THREADS=8)
+  - Packages: torch 2.11.0+cu126, torchvision 0.26.0+cu126,
+    torchaudio 2.11.0+cu126, numpy 2.4.3, scipy 1.17.1, matplotlib,
+    pandas, jupyter, scikit-learn 1.8.0, pyyaml
+  - GPU confirmed: GTX 1650 Ti, CUDA 12.6, tensor ops verified on cuda:0
+- **pyzed:** installed system-wide for ZED camera SDK access
 - **ROS 2:** Humble Desktop (/opt/ros/humble/)
 - **DDS:** Cyclone DDS (rmw_cyclonedds_cpp)
   - Config: ~/.ros/cyclone_dds.xml
@@ -502,10 +515,9 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
    Set up CycloneDDS or FastDDS for IsaacUN ROS 2 bridge
    Test Isaac Sim publishing to ROS 2 topics (e.g. /clock, /odom)
 
-8. **Python conda environment on Dell laptop:**
-   Configure conda environments on Dell (not yet done)
-   Mirror the ros2 conda env approach used on IsaacUN
-   Philosophy: always work inside conda environments, never system Python
+8. **Python conda environment on Dell laptop:** ✅ COMPLETED
+   Miniconda3 installed; ros2 env (Python 3.10, Humble, Cyclone DDS) and
+   ml env (Python 3.11, PyTorch 2.11+cu126, GPU verified) both configured
 
 9. **Git configuration on IsaacUN and Jetson:**
    Configure git user credentials on IsaacUN and Jetson

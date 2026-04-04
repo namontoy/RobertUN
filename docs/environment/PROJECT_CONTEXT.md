@@ -1,5 +1,5 @@
 # Robotics Development Environment — Project Context Document
-# Last updated: April 2, 2026 (ZED camera verified)
+# Last updated: April 3, 2026 (ZED ROS 2 wrapper fully operational)
 # Paste this at the start of a new Claude session to restore full context
 
 ## HARDWARE
@@ -30,11 +30,12 @@
 - **Cable:** Cable Matters USB-IF certified 10Gbps Gen2 — confirmed USB 3.00 (bcdUSB 3.00)
 - **Serial number:** 32047842
 - **Firmware:** 1523
-- **Resolution:** HD720 @ 30fps
+- **Resolution:** HD1080 @ 30fps (grab resolution); publishes at 960x540 (downscale factor 2)
 - **Calibration:** factory calibration file downloaded and cached on Jetson
-- **Depth pipeline:** verified — 5 consecutive frames at ~3.25m, stable and consistent
+- **Depth pipeline:** verified — NEURAL depth mode active, ~15% GPU utilization on Orin Nano
+- **ROS 2 wrapper:** ✅ FULLY OPERATIONAL — zed-ros2-wrapper v5.2.2 built and running
 - **Note:** Argus socket errors on camera close are expected/harmless on Jetson (known ZED SDK behavior)
-- **Note:** PERFORMANCE depth mode deprecated — use NEURAL in future ROS 2 nodes
+- **Note:** PERFORMANCE depth mode deprecated in SDK 5.x — use NEURAL mode
 
 ### Network switch
 - **Status:** Gigabit switch installed and running at home
@@ -129,7 +130,9 @@
 - **DDS:** Cyclone DDS (rmw_cyclonedds_cpp)
   - Config: ~/.ros/cyclone_dds.xml
   - Interface: enp4s0 (Ethernet, via switch)
-  - Unicast peer: 192.168.1.211 (Jetson Ethernet address)
+  - Peers: 127.0.0.1 (loopback, for local composable nodes) + 192.168.1.211 (Jetson)
+  - CRITICAL: 127.0.0.1 must be first peer — enables local ROS 2 service calls
+    between processes on the same machine (required for composable node loading)
   - Dev Container also updated: ~/ros2_ws/.devcontainer/cyclone_dds.xml
 - **Cross-compiler:** aarch64-linux-gnu-gcc/g++ 11.4.0
 - **QEMU:** 6.2.0 with binfmt F-flag (permanent via systemd service)
@@ -210,13 +213,28 @@
   - libnvdla_compiler.so: manually extracted from nvidia-l4t-dla-compiler_36.4.1
     and placed at /usr/lib/aarch64-linux-gnu/nvidia/libnvdla_compiler.so
     (missing from R36.5 packages — known NVIDIA packaging bug)
+  - nvidia-jetpack and nvidia-jetpack-dev installed via apt (required for
+    ZED ROS 2 wrapper CMake to find CUDA_TOOLKIT_ROOT_DIR correctly)
 - **cuDNN:** installed via apt
 - **Python:** 3.10.12
 - **ROS 2:** Humble Base (/opt/ros/humble/)
+- **rosdep:** initialized (sudo rosdep init + rosdep update completed)
 - **DDS:** Cyclone DDS (rmw_cyclonedds_cpp)
   - Config: ~/.ros/cyclone_dds.xml
   - Interface: enP8p1s0 (Ethernet, via switch)
-  - Unicast peer: 192.168.1.212 (Dell Ethernet address)
+  - Peers: 127.0.0.1 (loopback) + 192.168.1.212 (Dell Ethernet address)
+  - CRITICAL: 127.0.0.1 MUST be the first peer in the list. Without the
+    loopback peer, ROS 2 composable node loading (load_node service calls)
+    fails silently — the component_container_isolated starts but the ZED
+    component is never injected into it, causing an infinite hang with zero
+    CPU and zero GPU activity. This was the root cause of all ZED launch
+    failures on first installation.
+- **jtop:** installed (sudo pip3 install jetson-stats)
+  - Launch: jtop (requires fresh login session after first install)
+  - Note: "JetPack not detected" warning in red is cosmetic — jtop's version
+    detection heuristic doesn't support JetPack 6.x file layout yet, but all
+    hardware monitoring functions work correctly
+  - GPU utilization visible as GR3D bar; ~15% during ZED NEURAL depth mode
 - **Docker:** 29.3.0
   - NVIDIA Container Runtime: DEFAULT runtime in /etc/docker/daemon.json
   - Local images:
@@ -226,13 +244,121 @@
     - hello-world:latest
 - **ZED SDK:** 5.2.2 installed at /usr/local/zed/
   - Python API: pyzed 5.2.2 confirmed working
-  - TensorRT models optimized: Neural Depth, Neural Light Depth,
-    Neural Plus Depth, Object Detection (3 tiers), Person ReID,
-    Skeleton Body18/38, Person Head
+  - TensorRT models optimized and cached at /usr/local/zed/resources/:
+    Neural Depth (5.3), Neural Light Depth (5.2), Neural Plus Depth,
+    Object Detection (3 tiers), Person ReID, Skeleton Body18/38, Person Head
   - Camera: ✅ FULLY OPERATIONAL (USB 3.00, depth pipeline verified)
   - Test script: ~/zed2i/test_zed.py — confirmed working
   - Calibration file: downloaded and cached for S/N 32047842
-- **Git:** not yet configured (pending task)
+- **ZED ROS 2 Wrapper:** ✅ FULLY OPERATIONAL
+  - Repository: ~/ros2_ws/src/zed-ros2-wrapper (master branch, v5.2.2)
+  - Built with: colcon build --symlink-install --packages-skip zed_debug
+    --cmake-args -DCMAKE_BUILD_TYPE=Release --parallel-workers $(nproc)
+  - Binary dependencies installed via apt: ros-humble-zed-msgs,
+    ros-humble-zed-description, ros-humble-robot-localization,
+    ros-humble-image-transport-plugins, ros-humble-backward-ros,
+    ros-humble-nmea-msgs, ros-humble-geographic-msgs, nlohmann-json3-dev
+  - Depth mode: NEURAL (changed from deprecated PERFORMANCE)
+  - Workspace sourced in ~/.bashrc: source ~/ros2_ws/install/local_setup.bash
+  - Verified topics: RGB, depth, point cloud, IMU (100Hz), odometry, pose
+  - GPU utilization: ~15% GR3D with NEURAL depth at HD1080/30fps
+- **Git:** ✅ CONFIGURED (April 3, 2026)
+  - user.name: namontoy, user.email: namontoy@unal.edu.co
+  - GitHub SSH key: ED25519 at ~/.ssh/id_ed25519_github
+  - SSH config: ~/.ssh/config → Host github.com uses id_ed25519_github
+  - Key registered on GitHub as "Jetson Orin Nano - orion"
+  - Authentication verified: ssh -T git@github.com ✅
+- **Performance mode:** sudo nvpmodel -m 0 (MAXN) + sudo jetson_clocks
+  - Not persistent across reboots — run after each reboot before launching ZED
+
+## ZED ROS 2 WRAPPER — CRITICAL OPERATIONAL NOTES
+
+### The Cyclone DDS loopback fix (ROOT CAUSE OF ALL LAUNCH FAILURES)
+The zed-ros2-wrapper uses ROS 2 composable nodes. The launch system must call
+a `/zed/zed_container/_container/load_node` service to inject the ZED camera
+component into the component_container_isolated process. Without 127.0.0.1 as
+a Cyclone DDS peer, this service call is routed externally and never reaches
+the container process sitting on the same machine — causing a silent infinite
+hang with zero CPU and zero GPU activity. Fix: add 127.0.0.1 as the FIRST
+peer in ~/.ros/cyclone_dds.xml on every machine running composable nodes.
+
+### Correct cyclone_dds.xml format (Jetson and Dell)
+```xml
+<?xml version="1.0" encoding="UTF-8" ?>
+<CycloneDDS>
+  <Domain>
+    <General>
+      <Interfaces>
+        <NetworkInterface name="enP8p1s0" multicast="false"/>
+      </Interfaces>
+    </General>
+    <Discovery>
+      <Peers>
+        <Peer address="127.0.0.1"/>
+        <Peer address="192.168.1.212"/>
+      </Peers>
+    </Discovery>
+  </Domain>
+</CycloneDDS>
+```
+(Use enp4s0 for Dell, enP8p1s0 for Jetson. Second peer is the remote machine.)
+
+### Orphaned process safety rule (CRITICAL)
+Always run `ps aux | grep component_container` before relaunching the ZED node.
+Orphaned component_container_isolated and robot_state_publisher processes from
+previous sessions will silently compete for the USB camera handle and cause
+deadlocks that are indistinguishable from other failures. If any survivors are
+found, kill them before relaunching:
+```bash
+pkill -f component_container_isolated && pkill -f robot_state_publisher
+sleep 2
+ps aux | grep -E "component_container|robot_state" | grep -v grep
+# Output should be empty before proceeding
+```
+
+### Correct launch procedure
+```bash
+# 1. Check for orphaned processes (mandatory)
+ps aux | grep component_container | grep -v grep
+
+# 2. Set performance mode (after every reboot)
+sudo nvpmodel -m 0 && sudo jetson_clocks
+
+# 3. Source full environment
+source /opt/ros/humble/setup.bash
+source ~/ros2_ws/install/local_setup.bash
+
+# 4. Launch with verbose SDK output
+export ZED_SDK_VERBOSE=1
+ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zed2i
+```
+
+### What a successful launch looks like
+After the URDF segments load, the component loads in ~1 second (thanks to the
+loopback fix), then the SDK prints:
+- "Camera successfully opened"
+- "Serial Number: S/N 32047842"
+- "Depth mode selected: NEURAL"
+- "=== zed started ===" — node is fully operational at this point
+- "Starting Positional Tracking" — visual-inertial odometry initializing
+- "Gravity alignment issues detected. Recomputing alignment..." — harmless,
+  IMU is computing gravity vector from accelerometer (one-time at startup)
+
+### Verifying live data (second terminal)
+```bash
+source /opt/ros/humble/setup.bash
+source ~/ros2_ws/install/local_setup.bash
+ros2 node list          # Should show 5 nodes including /zed/zed_node
+ros2 topic list | grep zed   # Should show 21 topics
+ros2 topic echo /zed/zed_node/imu/data --once   # Verify real sensor data
+```
+
+### Known harmless warnings in launch output
+- "Invalid configuration: enable_ipc:=true with debug.disable_nitros:=false"
+  — NITROS is not installed; warning is benign, IPC is forced off automatically
+- "selected interface enP8p1s0 is not multicast-capable: disabling multicast"
+  — Expected with Cyclone DDS unicast configuration
+- Argus socket errors on camera close — known ZED SDK behavior on Jetson
 
 ## CAN BUS — HARDWARE DESIGN DECISIONS
 
@@ -423,6 +549,8 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
   - src/ (simulation-side ROS 2 packages)
   - Role: robot descriptions, simulation launch files, Isaac Sim ROS 2 bridges
 - **Jetson workspace:** ~/ros2_ws/ (mirrored from Dell via jsync)
+  - src/zed-ros2-wrapper/ (ZED ROS 2 wrapper, master branch)
+  - install/ (colcon build output, sourced in ~/.bashrc)
 - **Jetson ZED test folder:** ~/zed2i/
   - test_zed.py (camera open + depth grab test — ready to run)
   - zed_version.py (device detection test)
@@ -434,8 +562,8 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
   - BoardRover2/ (hardware design files)
   - docs/environment/PROJECT_CONTEXT.md (this file)
   - docs/research/can-bus/CAN-Bus-JetsonOrinNano.md
-- **Git configured on:** Dell laptop only (pending: IsaacUN, Jetson)
-- **SSH key added to GitHub:** Dell laptop ED25519 key
+- **Git configured on:** Dell laptop ✅ and Jetson ✅ (IsaacUN pending)
+- **SSH keys added to GitHub:** Dell ED25519 ✅ and Jetson ED25519 ✅
 
 ## VS CODE DEV CONTAINER (DELL HOST)
 - **Status:** Fully configured and working
@@ -449,17 +577,21 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
 - **Verified:** ROS 2 talker/listener working Dev Container ↔ Jetson
 - **IntelliSense:** Confirmed working for rclcpp, std_msgs,
   geometry_msgs, sensor_msgs
+- **ZED IntelliSense:** PENDING — ZED SDK headers not yet added to Dockerfile
 
 ## ROS 2 COMMUNICATION
 
 ### Home network (Dell ↔ Jetson)
 - **DDS:** Cyclone DDS on ALL environments (Dell, Dev Container, Jetson)
 - **Discovery:** Unicast peer-to-peer (WiFi router blocks multicast)
+- **Loopback peer:** 127.0.0.1 added as first peer on both Dell and Jetson
+  (required for composable node service calls on same machine)
 - **Verified paths:**
   - Dell ↔ Jetson ✅
   - Dev Container ↔ Jetson ✅
   - C++ nodes (demo_nodes_cpp) ✅
   - Python nodes (demo_nodes_py) ✅
+  - ZED ROS 2 wrapper on Jetson ✅ (NEURAL depth, 21 topics, IMU at 100Hz)
 
 ### IsaacUN (standalone)
 - **DDS:** FastDDS (Jazzy default)
@@ -484,15 +616,24 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
    depth pipeline verified with 5 stable frames at ~3.25m;
    calibration file downloaded for S/N 32047842
 
-2. **Install ZED ROS 2 wrapper on Jetson:**
-   Clone stereolabs/zed-ros2-wrapper, install deps, build with colcon
-   Can be done WITHOUT camera present
+2. **Install ZED ROS 2 wrapper on Jetson:** ✅ COMPLETED (April 3, 2026)
+   zed-ros2-wrapper v5.2.2 cloned, built, and fully operational.
+   Root cause of launch failures identified and fixed: missing 127.0.0.1
+   loopback peer in Cyclone DDS config prevented composable node loading.
+   NEURAL depth mode active, 21 topics publishing, IMU at 100Hz verified.
+   Git configured on Jetson. jtop installed for hardware monitoring.
+   Cyclone DDS loopback fix applied to both Jetson and Dell configs.
 
-3. **Update Dev Container for ZED IntelliSense:**
+3. **Update Dev Container for ZED IntelliSense:** ← CURRENT TASK
    Add ZED SDK headers to .devcontainer/Dockerfile so VS Code
    understands all ZED APIs (sl::Camera, sl::Mat, etc.)
 
-4. **CAN Bus — first hardware test:**
+4. **Update cyclone_dds.xml on Dell host and Dev Container:**
+   Verify 127.0.0.1 loopback peer is present in both:
+   - ~/.ros/cyclone_dds.xml (Dell host)
+   - ~/ros2_ws/.devcontainer/cyclone_dds.xml (Dev Container)
+
+5. **CAN Bus — first hardware test:**
    - Order/acquire Canable USB CAN sniffer (AliExpress clone ~$10-15 USD)
      Flash candlelight firmware on arrival (preferred over slcan)
    - Solder 4-pin header to J17 on Jetson dev kit
@@ -505,41 +646,40 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
      add 120Ω termination at both ends, use any available Cat-5/6 cable
    - Verify three-way communication: Jetson ↔ STM32 ↔ Canable sniffer
 
-5. **CAN Bus — STM32 firmware:**
+6. **CAN Bus — STM32 firmware:**
    - Configure bxCAN peripheral registers (bit timing for target bitrate)
    - Implement acceptance filter with mask-based ID table
    - Test frame exchange: Jetson candump ↔ STM32 cansend and vice versa
 
-6. **CAN Bus — ROS 2 integration:**
+7. **CAN Bus — ROS 2 integration:**
    - Bridge CAN frames to ROS 2 topics (ros2_socketcan or custom node)
    - Define message ID table for rover subsystems
 
-7. **Configure Isaac Sim ROS 2 bridge:**
+8. **Configure Isaac Sim ROS 2 bridge:**
    Set up CycloneDDS or FastDDS for IsaacUN ROS 2 bridge
    Test Isaac Sim publishing to ROS 2 topics (e.g. /clock, /odom)
 
-8. **Python conda environment on Dell laptop:** ✅ COMPLETED
+9. **Python conda environment on Dell laptop:** ✅ COMPLETED
    Miniconda3 installed; ros2 env (Python 3.10, Humble, Cyclone DDS) and
    ml env (Python 3.11, PyTorch 2.11+cu126, GPU verified) both configured
 
-9. **Git configuration on IsaacUN and Jetson:**
-   Configure git user credentials on IsaacUN and Jetson
-   Add SSH keys from both machines to GitHub
-   Enable direct push to RobertUN repository from all three machines
+10. **Git configuration on IsaacUN and Jetson:**
+    Jetson ✅ COMPLETED (April 3, 2026)
+    IsaacUN: still pending — configure git credentials and add SSH key to GitHub
 
-10. **Update RobertUN README.md:**
+11. **Update RobertUN README.md:**
     Current README is minimal — describe the project properly
     Document repository structure and purpose of each folder
 
-11. **Gigabit switch network:** ✅ COMPLETED
+12. **Gigabit switch network:** ✅ COMPLETED
     Switch installed; Dell and Jetson have static Ethernet IPs via switch;
     Cyclone DDS and SSH updated to use Ethernet addresses;
     WiFi remains as automatic fallback
 
-12. **Begin robot ROS 2 development:**
+13. **Begin robot ROS 2 development:**
     SLAM/Mapping, Visual Odometry/Navigation, Object Detection/AI
 
-13. **NoMachine display/mouse issue (new laptop — low priority):**
+14. **NoMachine display/mouse issue (new laptop — low priority):**
     Mouse coordinates offset by +1440px when viewing primary monitor
     Client-side fix partially works (correct image with value=1 in .nxs)
     but mouse lands on DP-3 instead of DP-2
@@ -556,6 +696,10 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
 - **CUDA 12.8 on IsaacUN:** Matches RTX 5080 (Blackwell) driver runtime
 - **Cyclone DDS over Fast DDS (Dell+Jetson):** WiFi routers block multicast;
   Cyclone DDS unicast bypasses this reliably
+- **Cyclone DDS loopback peer (127.0.0.1):** Required on any machine running
+  ROS 2 composable nodes. Without it, the load_node service call between the
+  launch system and component_container_isolated fails silently, hanging
+  indefinitely with zero CPU/GPU activity. First peer in config, always.
 - **FastDDS on IsaacUN:** Default for Jazzy; no need for unicast config
   since IsaacUN is not bridged to home network
 - **ROS 2 Jazzy on IsaacUN:** Official Isaac Sim 5.x recommendation for
@@ -576,6 +720,9 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
   system Python must remain unmodified; all dev work in conda envs
 - **ZED SDK 5.2.2 for L4T R36.5:** Specific version matching
   JetPack 6.2.2 / CUDA 12.6 — fixes ZED2i positional tracking lock bug
+- **NEURAL depth mode:** PERFORMANCE mode deprecated in ZED SDK 5.x;
+  NEURAL provides superior depth quality with pre-cached TensorRT engines
+  loading in seconds (no recompilation needed after first ZED SDK install)
 - **SN65HVD230 for CAN transceiver:** 3.3V compatible with both Jetson
   and STM32F4xx; widely used, well-documented, available as breakout board
 - **Flexible Cat-5/6 over DeviceNet cable:** At 125 kbps the 100Ω vs 120Ω
@@ -620,6 +767,21 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
 - `python3 ~/zed2i/test_zed.py` → test ZED camera (needs USB 3.x cable)
 - `ros2 run demo_nodes_cpp talker` → test ROS 2
 - `docker run --env NVIDIA_VISIBLE_DEVICES=all <image> nvcc --version`
+- `sudo nvpmodel -m 0 && sudo jetson_clocks` → set maximum performance mode
+- `jtop` → interactive hardware monitor (GPU, CPU, RAM, power, temperature)
+- `sudo tegrastats --interval 500` → raw text hardware monitor (no install needed)
+
+### Jetson — ZED ROS 2 Wrapper
+- Safety check before any launch:
+  `ps aux | grep component_container | grep -v grep`
+- Kill orphaned processes:
+  `pkill -f component_container_isolated && pkill -f robot_state_publisher`
+- Launch ZED node:
+  `export ZED_SDK_VERBOSE=1 && source /opt/ros/humble/setup.bash && source ~/ros2_ws/install/local_setup.bash && ros2 launch zed_wrapper zed_camera.launch.py camera_model:=zed2i`
+- Verify topics: `ros2 topic list | grep zed`
+- Check IMU rate: `ros2 topic hz /zed/zed_node/imu/data --window 20`
+- Check nodes: `ros2 node list`
+- Run ZED diagnostic: `/usr/local/zed/tools/ZED_Diagnostic -c`
 
 ### Jetson — CAN Bus
 - `sudo busybox devmem 0x0c303018 w 0xc458 && sudo busybox devmem 0x0c303010 w 0xc400` → configure pinmux

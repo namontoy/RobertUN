@@ -1,5 +1,5 @@
 # Robotics Development Environment — Project Context Document
-# Last updated: April 3, 2026 (ZED ROS 2 wrapper fully operational)
+# Last updated: April 3, 2026 (ZED ROS 2 wrapper + Dev Container IntelliSense fully operational)
 # Paste this at the start of a new Claude session to restore full context
 
 ## HARDWARE
@@ -570,14 +570,29 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
 - **Name:** ROS2 Humble + ZED 2i Development
 - **Base:** Ubuntu 22.04 amd64 (native speed, not emulated)
 - **Contents:** ROS 2 Humble Desktop + Cyclone DDS + CUDA headers
-  + OpenCV + Python robotics packages
+  + OpenCV + Python robotics packages + ZED SDK headers
 - **Network:** --network=host
 - **Note:** --runtime=nvidia was REMOVED from runArgs (host has no
   NVIDIA Container Runtime — only needed on Jetson)
 - **Verified:** ROS 2 talker/listener working Dev Container ↔ Jetson
 - **IntelliSense:** Confirmed working for rclcpp, std_msgs,
   geometry_msgs, sensor_msgs
-- **ZED IntelliSense:** PENDING — ZED SDK headers not yet added to Dockerfile
+- **ZED IntelliSense:** ✅ COMPLETED (April 3, 2026)
+  - ZED SDK 5.2.2 headers installed at /usr/local/zed/include/sl/ inside container
+  - Headers: Camera.hpp, CameraOne.hpp, Fusion.hpp, Lidar.hpp, Sensors.hpp
+  - Installation method: download ubuntu22/cu12 installer, run with
+    -- silent skip_cuda skip_od_module skip_tools, keep only include/,
+    chmod a+rX /usr/local/zed and chmod -R a+rX /usr/local/zed/include
+  - IMPORTANT: Two chmod commands required — parent directory /usr/local/zed
+    must also be made world-readable, not just /usr/local/zed/include
+    (ZED installer sets drwxrwx--- on both, blocking non-zed-group users)
+  - devcontainer.json already had /usr/local/zed/include in includePath —
+    no changes to devcontainer.json were needed
+  - Verified: sl::Camera, sl::InitParameters, sl::DEPTH_MODE::NEURAL,
+    sl::Mat all resolve correctly with hover documentation in VS Code
+- **Dev Container purpose:** Write and edit code on Dell with full IntelliSense
+  for ROS 2 + ZED APIs; sync to Jetson via jsync for building and execution
+  on real hardware. Dev Container runs on Dell (amd64), not on Jetson (ARM64).
 
 ## ROS 2 COMMUNICATION
 
@@ -624,12 +639,14 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
    Git configured on Jetson. jtop installed for hardware monitoring.
    Cyclone DDS loopback fix applied to both Jetson and Dell configs.
 
-3. **Update Dev Container for ZED IntelliSense:** ← CURRENT TASK
-   Add ZED SDK headers to .devcontainer/Dockerfile so VS Code
-   understands all ZED APIs (sl::Camera, sl::Mat, etc.)
+3. **Update Dev Container for ZED IntelliSense:** ✅ COMPLETED (April 3, 2026)
+   ZED SDK 5.2.2 headers installed in Dev Container at /usr/local/zed/include/sl/.
+   Two-stage chmod required (parent dir + include dir). IntelliSense verified
+   working for sl::Camera, sl::Mat, sl::InitParameters, sl::DEPTH_MODE::NEURAL.
+   Dockerfile committed to RobertUN repository.
 
-4. **Update cyclone_dds.xml on Dell host and Dev Container:**
-   Verify 127.0.0.1 loopback peer is present in both:
+4. **Update cyclone_dds.xml on Dell host and Dev Container:** ✅ COMPLETED (April 3, 2026)
+   127.0.0.1 loopback peer added as first peer in both:
    - ~/.ros/cyclone_dds.xml (Dell host)
    - ~/ros2_ws/.devcontainer/cyclone_dds.xml (Dev Container)
 

@@ -1,0 +1,191 @@
+# Base image: Ubuntu 22.04 native amd64 for fast host-side development
+# We use the same Ubuntu version as the Jetson (22.04 / jammy)
+# to ensure maximum compatibility with ROS2 Humble packages
+FROM ubuntu:22.04
+
+# Prevent interactive prompts during package installation
+# This is essential for Docker builds since there's no terminal to respond to prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Set the timezone to avoid tzdata asking for input during installation
+ENV TZ=America/Bogota
+
+# ================================================================
+# LAYER 1: System fundamentals
+# We put these first because they change rarely, so Docker caches
+# them aggressively - future rebuilds skip this layer entirely
+# ================================================================
+RUN apt-get update && apt-get install -y \
+    # Essential build tools
+    build-essential \
+    cmake \
+    ninja-build \
+    gdb \
+    # Python development
+    python3 \
+    python3-pip \
+    python3-dev \
+    # Network and system utilities
+    curl \
+    wget \
+    git \
+    sudo \
+    # For ROS2 repository setup
+    software-properties-common \
+    gnupg2 \
+    lsb-release \
+    # For GUI tools like RViz2 (needs X11 forwarding)
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# ================================================================
+# LAYER 2: ROS2 Humble
+# We add the ROS2 apt repository exactly as we did on the host
+# and Jetson - same process, same packages, guaranteed consistency
+# ================================================================
+RUN curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+        -o /usr/share/keyrings/ros-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) \
+        signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
+        http://packages.ros.org/ros2/ubuntu jammy main" \
+        | tee /etc/apt/sources.list.d/ros2.list \
+    && apt-get update && apt-get install -y \
+        # Full desktop install gives us RViz2 for visualization
+        ros-humble-desktop \
+        # Development tools for building ROS2 packages
+        ros-dev-tools \
+        # Cyclone DDS - our chosen DDS implementation
+        ros-humble-rmw-cyclonedds-cpp \
+        # Navigation and SLAM packages relevant to your robot
+        ros-humble-navigation2 \
+        ros-humble-nav2-bringup \
+        ros-humble-slam-toolbox \
+        ros-humble-robot-localization \
+        # Control packages
+        ros-humble-ros2-control \
+        ros-humble-ros2-controllers \
+        # Visualization and debugging
+        ros-humble-rviz2 \
+        ros-humble-tf2-tools \
+        ros-humble-rqt \
+        ros-humble-rqt-common-plugins \
+    && rm -rf /var/lib/apt/lists/*
+
+# ================================================================
+# LAYER 3: CUDA headers and development libraries
+# IMPORTANT: We install CUDA *headers* only, not the full runtime
+# The actual GPU computation happens on the Jetson - on the host
+# we only need the header files so IntelliSense understands
+# CUDA syntax and the compiler can check our code
+# ================================================================
+RUN apt-get update && apt-get install -y \
+    # CUDA toolkit for header files and compilation tools
+    # This matches the CUDA 12.6 version on both our host and Jetson
+    nvidia-cuda-toolkit \
+    && rm -rf /var/lib/apt/lists/*
+
+# ================================================================
+# LAYER 4: ZED SDK headers and Python bindings
+# We install the ZED SDK in "headless" mode without requiring
+# a physical camera. This gives IntelliSense access to all ZED
+# APIs without needing the camera hardware attached to the host.
+# The actual ZED SDK runtime runs on the Jetson with the camera.
+# ================================================================
+RUN apt-get update && apt-get install -y \
+    # USB and serial port access for camera communication
+    libusb-1.0-0-dev \
+    libhidapi-dev \
+    # Image processing libraries that ZED SDK depends on
+    libopencv-dev \
+    python3-opencv \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python packages for robotics development
+# These mirror what we installed on the host and what
+# the Jetson will have available at runtime
+RUN pip3 install --no-cache-dir \
+    numpy \
+    scipy \
+    matplotlib \
+    pyserial \
+    transforms3d \
+    Pillow \
+    pytest \
+    # ZED Python API - installs the Python bindings and type stubs
+    # that give IntelliSense ZED API awareness without needing hardware
+    pyzed
+
+
+# ================================================================
+# LAYER 4b: ZED SDK C++ headers for IntelliSense (rebuilt: 2026-04-03)
+# We download the full x86_64 SDK installer but run it in minimal
+# silent mode — skipping CUDA checks, AI models, and tools.
+# After installation we keep ONLY /usr/local/zed/include/ for
+# IntelliSense, then delete everything else to keep the image lean.
+# The devcontainer.json already points IntelliSense at this path:
+#   "C_Cpp.default.includePath": [..., "/usr/local/zed/include", ...]
+# Added other permission in one up folder.
+# ================================================================
+RUN apt-get update && apt-get install -y zstd \
+    && rm -rf /var/lib/apt/lists/* \
+    # Download the ZED SDK installer for Ubuntu 22.04 / CUDA 12 / x86_64
+    && wget -q "https://download.stereolabs.com/zedsdk/5.2/cu12/ubuntu22" \
+       -O /tmp/zed_sdk_installer.run \
+    && chmod +x /tmp/zed_sdk_installer.run \
+    # Install in silent mode:
+    #   skip_cuda      — no GPU in build container, skip CUDA detection
+    #   skip_od_module — skip 500MB+ AI model files, we don't need them
+    #   skip_tools     — skip ZED Explorer, Diagnostic, etc.
+    && /tmp/zed_sdk_installer.run -- silent skip_cuda skip_od_module skip_tools \
+    # Keep ONLY the headers — delete everything else from the SDK
+    && find /usr/local/zed -mindepth 1 -maxdepth 1 \
+       ! -name 'include' -exec rm -rf {} + \
+
+    # Fix permissions so the ros user can read the headers for IntelliSense
+    # The ZED installer creates a 'zed' group and locks down the directory —
+    # we make the include tree world-readable since this is a dev container
+    && chmod a+rX /usr/local/zed \
+    && chmod -R a+rX /usr/local/zed/include \
+
+    # Clean up the installer
+    && rm /tmp/zed_sdk_installer.run
+
+    
+# ================================================================
+# LAYER 5: Create development user
+# We create a non-root user called 'ros' for security best practices
+# Running as root inside containers is discouraged because it means
+# any security vulnerability in your code has root access to your system
+# ================================================================
+RUN useradd -m -s /bin/bash ros \
+    && echo "ros ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers \
+    && usermod -aG dialout ros \
+    && usermod -aG plugdev ros
+
+# Switch to the ros user for all subsequent operations
+USER ros
+WORKDIR /home/ros
+
+# ================================================================
+# LAYER 6: Configure the development environment
+# These settings make the container feel like a fully configured
+# development machine rather than a bare OS installation
+# ================================================================
+RUN mkdir -p /home/ros/.ros \
+    && mkdir -p /home/ros/ros2_ws/src
+
+# Source ROS2 automatically in every terminal session
+# This is the container equivalent of what we added to ~/.bashrc
+RUN echo "source /opt/ros/humble/setup.bash" >> /home/ros/.bashrc \
+    && echo "export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp" >> /home/ros/.bashrc \
+    && echo "export CYCLONEDDS_URI=file:///home/ros/.ros/cyclone_dds.xml" >> /home/ros/.bashrc \
+    && echo "export NVIDIA_VISIBLE_DEVICES=all" >> /home/ros/.bashrc \
+    # Convenient aliases matching what we set up on the host
+    && echo "alias jetson='ssh -p 44252 talos@192.168.1.11'" >> /home/ros/.bashrc \
+    && echo "alias jsync='rsync -avz --delete -e \"ssh -p 44252\" ~/ros2_ws/ talos@192.168.1.11:~/ros2_ws/'" >> /home/ros/.bashrc \
+    && echo "alias jscp='scp -P 44252'" >> /home/ros/.bashrc
+
+# Set the working directory to the ROS2 workspace
+# This is where VS Code will open the terminal by default
+WORKDIR /home/ros/ros2_ws

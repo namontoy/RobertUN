@@ -1,5 +1,5 @@
 # Robotics Development Environment — Project Context Document
-# Last updated: April 3, 2026 (ZED ROS 2 wrapper + Dev Container IntelliSense fully operational)
+# Last updated: April 5, 2026 (CAN Bus protocol decisions: CANopen/CANopenNode selected, 250 kbps bitrate)
 # Paste this at the start of a new Claude session to restore full context
 
 ## HARDWARE
@@ -399,12 +399,14 @@ ros2 topic echo /zed/zed_node/imu/data --once   # Verify real sensor data
   - No built-in transceiver — external IC always required (same as Jetson)
 
 ### Physical bus
-- **Selected bitrate: 125 kbps**
-  - Rover moves slowly, 8 nodes, no high-frequency control loops requiring > 125 kbps
-  - At 125 kbps, bit time = 8 µs; reflections from impedance mismatch arrive in
-    ~200 ns (2.5% of bit time) — well within CAN bit timing tolerance
+- **Selected bitrate: 250 kbps**
+  - Rover moves slowly, 8 nodes; 250 kbps provides comfortable headroom for
+    CANopen protocol overhead (PDO, SDO, NMT, heartbeat traffic) across 8 nodes
+  - At 250 kbps, bit time = 4 µs; reflections from impedance mismatch arrive in
+    ~200 ns (5% of bit time) — still well within CAN bit timing tolerance
   - This makes 120Ω vs 100Ω cable impedance mismatch irrelevant for this application
   - All nodes must be configured identically — mismatch = arbitration failure
+  - Note: 125 kbps also viable if bus load headroom is needed later
 
 - **Selected cable: flexible Cat-5/6 (100Ω)**
   - Rationale: at 125 kbps the impedance mismatch is negligible (see above)
@@ -461,9 +463,13 @@ ros2 topic echo /zed/zed_node/imu/data --once   # Verify real sensor data
 - Layer 1 (Physical): SN65HVD230 transceiver IC + flex Cat-5/6 cable + 120Ω termination
 - Layer 2 (Data Link): bxCAN peripheral (STM32) / MTTCAN peripheral (Jetson)
   - Both are implemented in hardware silicon — no software CAN stack needed
-- Layers 3–7: not defined by CAN itself; to be implemented at application layer
-  - Future consideration: CANopen or custom application-layer protocol for
-    rover message definitions
+- Layers 3–7: not defined by CAN itself; implemented at application layer
+  - **Selected protocol: CANopen with CANopenNode**
+    - CiA 402 motor control profile for wheel nodes (STM32)
+    - ros2_canopen (Fraunhofer IPA / ROS-Industrial) for Jetson integration
+    - See KEY DECISIONS for full rationale
+  - Plain CAN message ID hierarchy (designed in session) serves as reference
+    for understanding arbitration and filtering — not used in final rover
 
 ## CAN BUS — JETSON SOFTWARE SETUP (JetPack 6.x / L4T R36.x)
 
@@ -493,8 +499,8 @@ echo "mttcan" | sudo tee /etc/modules-load.d/mttcan.conf
 
 ### Bring up CAN interface (SocketCAN)
 ```bash
-# Classical CAN at 125 kbps (selected rover bitrate):
-sudo ip link set can0 type can bitrate 125000
+# Classical CAN at 250 kbps (selected rover bitrate):
+sudo ip link set can0 type can bitrate 250000
 sudo ip link set can0 up
 
 # CAN FD (500 kbps nominal / 1 Mbps data):
@@ -510,7 +516,7 @@ cansend can0 123#ABCDABCD           # send a frame
 ### Loopback self-test (no transceiver needed — short TX and RX pins on J17)
 ```bash
 sudo ip link set can0 down
-sudo ip link set can0 type can bitrate 125000 loopback on
+sudo ip link set can0 type can bitrate 250000 loopback on
 sudo ip link set can0 up
 candump can0 &
 cansend can0 123#ABCDABCD
@@ -526,7 +532,7 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
 - mttcan blacklist is the #1 cause of "CAN doesn't work" — always check first
 - Pinmux resets on reboot when using devmem method — use systemd service for persistence
 - If timing sync issues with external nodes: add sjw 4 parameter:
-  `sudo ip link set can0 type can bitrate 125000 sjw 4`
+  `sudo ip link set can0 type can bitrate 250000 sjw 4`
 - CAN FD at 5 Mbps may need TDCR tuning via sysfs
 
 ## SYSTEMD SERVICES (DELL HOST)
@@ -668,9 +674,20 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
    - Implement acceptance filter with mask-based ID table
    - Test frame exchange: Jetson candump ↔ STM32 cansend and vice versa
 
-7. **CAN Bus — ROS 2 integration:**
-   - Bridge CAN frames to ROS 2 topics (ros2_socketcan or custom node)
-   - Define message ID table for rover subsystems
+7. **CAN Bus — ROS 2 integration (CANopen stack):**
+   - STM32 side: CANopenNode + CanOpenSTM32 (HAL-integrated, CubeMX compatible)
+     - Implement CiA 402 motor profile (state machine, controlword/statusword,
+       cyclic synchronous velocity mode) on each wheel STM32 node
+     - Heartbeat, EMCY (emergency), and SDO configuration support
+   - Jetson side: ros2_canopen (Fraunhofer IPA / ROS-Industrial)
+     - YAML bus topology configuration with EDS file per device
+     - CiA 402 driver with ros2_control hardware interface integration
+     - Lifecycle-managed nodes (configure → activate → deactivate)
+   - Resources:
+     - CANopenNode: https://github.com/CANopenNode/CANopenNode
+     - CanOpenSTM32: https://github.com/CANopenNode/CanOpenSTM32
+     - ros2_canopen: https://github.com/ros-industrial/ros2_canopen
+     - ros2_canopen manual: https://ros-industrial.github.io/ros2_canopen/manual/rolling/
 
 8. **Configure Isaac Sim ROS 2 bridge:**
    Set up CycloneDDS or FastDDS for IsaacUN ROS 2 bridge
@@ -753,14 +770,33 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
   middle node PCBs via direct copper trace; short on-PCB branch to transceiver.
   Cleaner than T-tap with separate junction hardware; stub length is PCB-scale
   and irrelevant at 125 kbps.
-- **125 kbps bus bitrate:** Sufficient for 8-node slow rover; leaves large
-  margin for future expansion before cable/topology changes are needed.
+- **250 kbps bus bitrate:** Provides comfortable headroom for CANopen protocol
+  overhead (PDO, SDO, NMT, heartbeat) across 8 nodes. At this speed the 100Ω
+  vs 120Ω impedance mismatch of flex Cat-5/6 cable is still negligible
+  (reflection ~5% of bit time). Previous candidate was 125 kbps — both are
+  valid; 250 kbps chosen to accommodate CANopen traffic budget.
 - **Message-centric CAN ID priority:** Priority assigned per message type,
   not per node — safety-critical messages win regardless of source node
 - **Canable (STM32 USB dongle) for bench CAN sniffer:** Appears as native
   SocketCAN interface on Linux; works with existing candump/cansend tools;
   clone versions (~$10-15 USD) available on AliExpress. Flash candlelight
   firmware (preferred over slcan) when it arrives.
+- **CANopen with CANopenNode as application-layer protocol:** Selected over
+  plain CAN and OpenCyphal (Cyphal/UAVCAN v1) for the following reasons:
+  - CiA 402 motor control profile provides a standardized state machine,
+    controlword/statusword, and cyclic synchronous velocity mode — exactly
+    what 6-wheel rover motor control requires, without designing it from scratch
+  - ros2_canopen (Fraunhofer IPA / ROS-Industrial) provides turnkey ROS 2
+    Humble integration with lifecycle nodes, CiA 402 drivers, and ros2_control
+    hardware interfaces — the only CAN protocol with a maintained ROS 2 stack
+  - CANopenNode + CanOpenSTM32 provides direct STM32 HAL integration with
+    CubeMX compatibility and working examples including STM32F103 Blue Pill
+  - Largest open-source ecosystem (~1,800 GitHub stars vs ~399 for libcanard)
+    with video tutorials, CSS Electronics guides, and decades of industrial use
+  - Plain CAN rejected: at 8 nodes with motor control + fault reporting,
+    would require reimplementing half of CANopen without the debugging tooling
+  - OpenCyphal rejected: more elegant architecture but steeper learning curve,
+    no ROS 2 integration, register-level STM32 driver (no HAL), thinner community
 
 ## USEFUL COMMANDS REFERENCE
 
@@ -803,7 +839,7 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
 ### Jetson — CAN Bus
 - `sudo busybox devmem 0x0c303018 w 0xc458 && sudo busybox devmem 0x0c303010 w 0xc400` → configure pinmux
 - `sudo modprobe can && sudo modprobe can_raw && sudo modprobe mttcan` → load modules
-- `sudo ip link set can0 type can bitrate 125000 && sudo ip link set can0 up` → bring up interface
+- `sudo ip link set can0 type can bitrate 250000 && sudo ip link set can0 up` → bring up interface
 - `candump can0` → monitor all CAN traffic
 - `cansend can0 123#DEADBEEF` → send test frame
 - `cat /proc/device-tree/bus@0/mttcan@c310000/status` → verify CAN hardware active

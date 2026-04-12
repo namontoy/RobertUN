@@ -27,3 +27,7 @@ recordings/
 
 # --- Misc logs ---
 *.log
+
+#The agent that review my code for errors or possible risky implementations
+AGENTS.md 
+.codex

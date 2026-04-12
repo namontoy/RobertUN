@@ -19,6 +19,7 @@ class AliveNode(Node):
         self.timer = self.create_timer(1.0 / rate_hz, self.tick)
 
         self.get_logger().info(f"Publishing /alive at {rate_hz} Hz")
+        self.get_logger().info("message from the docker")
 
     def tick(self):
         msg = Bool()

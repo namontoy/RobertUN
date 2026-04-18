@@ -18,6 +18,7 @@ The goal is simple:
 - `docker_Test/Dockerfile`
 - `docker_Test/.dockerignore`
 - `ros2_ws/src/alive_py/alive_py/alive_node.py`
+- `scripts/docker_scripts/docker_menu.sh`
 
 
 ## What the Dockerfile does
@@ -216,6 +217,25 @@ data: true
 
 That means the publisher and subscriber tools are communicating inside the same container.
 
+## Docker helper
+
+We also created an interactive helper script:
+
+`scripts/docker_scripts/docker_menu.sh`
+
+This helper is meant to reduce typing for future Docker work in this repo.
+
+What it can do:
+
+- build an image
+- run a container
+- exec into a running container
+- list current images, containers, and container mount directories
+
+This helper is explained in detail in:
+
+`Notes/helper_docker.md`
+
 
 ## How to understand this execution
 
@@ -242,6 +262,5 @@ After this minimal test works, the next useful Docker step would be one of these
 
 - create two containers for the echo and the alive
 - mount the workspace from the host instead of copying it into the image
-- add a helper script for build and run commands
+- expand the helper to support stop, remove, and mount-based development workflows
 - test ROS 2 GUI tools or networking
-

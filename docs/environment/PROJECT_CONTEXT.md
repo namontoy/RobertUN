@@ -1,5 +1,5 @@
 # Robotics Development Environment — Project Context Document
-# Last updated: April 5, 2026 (CAN Bus protocol decisions: CANopen/CANopenNode selected, 250 kbps bitrate)
+# Last updated: May 25, 2026 (Jetson Xavier NX added: JetPack 5.1.6, SATA SSD, llama.cpp LLM inference node)
 # Paste this at the start of a new Claude session to restore full context
 
 ## HARDWARE
@@ -23,6 +23,13 @@
 ### Jetson (embedded robot compute)
 - **Machine:** NVIDIA Jetson Orin Nano, 7.4GB RAM, 233GB NVMe SSD
 - **Hostname:** orion, username: talos
+
+### Jetson Xavier NX (experimental AI inference node)
+- **Machine:** NVIDIA Jetson Xavier NX Developer Kit, 8GB unified memory
+- **GPU:** Volta architecture, 384 CUDA cores, compute capability 7.2 (sm_72)
+- **Storage:** 16GB eMMC (OS) + 120GB Patriot Burst Elite SATA SSD via M.2-to-SATA adapter
+- **Hostname:** xavier, username: talos
+- **Role:** Experimental LLM inference node — natural language rover command interface
 
 ### Camera
 - **Model:** Stereolabs ZED 2i stereo camera
@@ -66,6 +73,10 @@
 - **WiFi (backup):** 192.168.1.11 (static, interface wlP1p1s0, metric 600)
 - **WiFi network:** Gotham_Castle
 
+#### Jetson Xavier NX
+- **Ethernet (primary):** 192.168.1.210 (static, interface eth0)
+- **WiFi:** not used (wpa_supplicant disabled)
+
 #### Shared
 - **Gateway:** 192.168.1.1
 - **DNS:** 8.8.8.8 / 8.8.4.4 (Google DNS on both machines)
@@ -85,16 +96,20 @@
 - **SSH port:** 44252 (0xACDC) on ALL machines
 - **Authentication:** ED25519 key pair, passwordless
 - **Dell:** username=talos, hostname=deadelus
-- **Jetson:** username=talos, hostname=orion
+- **Jetson Orin Nano:** username=talos, hostname=orion
+- **Jetson Xavier NX:** username=talos, hostname=xavier
 - **IsaacUN:** username=talos, hostname=IsaacUN
-- **SSH config on Dell:** ~/.ssh/config has 'Host jetson' → 192.168.1.211:44252 (Ethernet)
+- **SSH config on Dell:** ~/.ssh/config has:
+  - 'Host orion' → 192.168.1.211:44252 (Ethernet)
+  - 'Host xavier' → 192.168.1.210:44252 (Ethernet)
 - **IsaacUN SSH:** systemd socket activation override at
   /etc/systemd/system/ssh.socket.d/override.conf (port 44252)
 - **Aliases on Dell:**
-  - `jetson` → ssh to Jetson
-  - `jsync` → rsync ~/ros2_ws/ to Jetson with correct port
+  - `orion` → ssh to Jetson Orin Nano (previously named `jetson`)
+  - `xavier` → ssh to Jetson Xavier NX
+  - `jsync` → rsync ~/ros2_ws/ to Orion with correct port
   - `jscp` → scp with correct port (-P 44252)
-- **SSH auto-starts on Jetson boot:** confirmed
+- **SSH auto-starts on Jetson boot:** confirmed (both orion and xavier)
 - **WiFi power management:** DISABLED permanently on Jetson via:
   - /etc/NetworkManager/dispatcher.d/99-disable-wifi-powersave
   - /etc/udev/rules.d/70-wifi-powersave.rules
@@ -270,6 +285,72 @@
   - Authentication verified: ssh -T git@github.com ✅
 - **Performance mode:** sudo nvpmodel -m 0 (MAXN) + sudo jetson_clocks
   - Not persistent across reboots — run after each reboot before launching ZED
+
+## JETSON XAVIER NX — JetPack 5.1.6 / L4T R35.6.x, aarch64
+- **OS:** Ubuntu 20.04 LTS
+- **CUDA:** 11.4 (/usr/local/cuda-11.4/)
+- **TensorRT:** 8.5.2
+- **cuDNN:** 8.6.0
+- **Python:** 3.8.x (system)
+- **JetPack status:** JetPack 5.x is the final supported line for Xavier NX —
+  JetPack 6 is Orin-only. JetPack 5.1.6 is the latest and last major release.
+- **Boot target:** multi-user (headless) — desktop disabled to save ~300MB RAM
+  - gdm3 still installed but disabled; restore with: sudo systemctl set-default graphical.target
+- **Power mode:** MODE_20W_6CORE (mode 8) — all 6 Carmel cores, GPU @ 1100 MHz,
+  EMC @ 1866 MHz (~59.7 GB/s memory bandwidth)
+  - jetson_clocks enabled as systemd service: /etc/systemd/system/jetson_clocks.service
+- **Disabled services:** bluetooth, ModemManager, avahi-daemon, rpcbind,
+  rtkit-daemon, kerneloops, apport, openvpn, wpa_supplicant, pulseaudio
+
+### Xavier NX Storage
+- **eMMC:** 16GB (OS, CUDA stack, llama.cpp binaries)
+- **SATA SSD:** Patriot Burst Elite 120GB via M.2-to-SATA adapter (ASM1166 bridge chip)
+  - Mounted at: /data (EXT4, label=data, nofail in /etc/fstab)
+  - Symlink: ~/github → /data/github; models at /data/models/
+  - Performance: 525 MB/s read, 292 MB/s write (through ASM1166 PCIe bridge)
+  - Power solution: 5V injected from GPIO header pin 2 (ATX red wire)
+    GPIO pin 2 → SATA power pin 7 (5V); GPIO pins 6+14 → SATA pins 4+9 (GND)
+    M.2 slot provides 3.3V on SATA pins 1-3 automatically
+    WARNING: connect wiring with board POWERED OFF — GPIO 5V is always live
+- **Swap:** 8GB file at /data/swapfile (SSD-backed, required for NvMap VMM)
+  - zram (4×854MB) retained alongside — both active simultaneously
+
+### Xavier NX LLM Inference Stack
+- **Engine:** llama.cpp (built from source, CUDA-enabled)
+  - Repository: ~/github/llama.cpp
+  - Build flags: -DGGML_CUDA=ON -DCMAKE_CUDA_ARCHITECTURES=72 -DCMAKE_BUILD_TYPE=Release
+  - GPU: Volta sm_72 confirmed working; CUDA0: Xavier (6833 MiB)
+- **HuggingFace CLI:** huggingface-hub 0.28.1 (last version without hf-xet dependency)
+  - hf-xet fails to build on aarch64 Ubuntu 20.04 — use 0.28.1 specifically
+- **NvMap VMM ceiling:** ~2.5GB quantized weights — hard architectural limit on
+  Volta/JetPack 5.x. Models larger than ~2.5GB fail at load time regardless of
+  available RAM or batch size. This is a silicon-level constraint, not solvable
+  in software. Q4_K_M is the ONLY viable quantization for 3B-4B models.
+
+### Xavier NX Confirmed Working Models (full GPU offload, -ngl 99)
+| Model | File | Size | tg (t/s) | Special flags |
+|-------|------|------|----------|---------------|
+| Qwen2.5-3B-Instruct | Qwen2.5-3B-Instruct-Q4_K_M.gguf | 1.79 GB | 18.83 | none |
+| Qwen2.5-Coder-3B-Instruct | Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf | 1.79 GB | ~18 | none |
+| Phi-3.5-mini-instruct | Phi-3.5-mini-instruct-Q4_K_M.gguf | 2.23 GB | 15.63 | none |
+| gemma-3-4b-it | gemma-3-4b-it-Q4_K_M.gguf | 2.31 GB | 14.21 | -b 512 -ub 256 |
+
+Failed models (NvMap VMM ceiling): Qwen2.5-7B (4.36GB), Qwen2.5-Coder-7B (4.36GB)
+
+### Xavier NX Rover Command Interface (primary use case)
+- Model: Qwen2.5-3B-Instruct-Q4_K_M (fastest, best JSON output)
+- Temperature: 0.3 (deterministic structured output)
+- Context: 32768 tokens
+- Valid actions: move_forward, move_backward, turn_left, turn_right, stop,
+  take_photo, analyze_sample
+- Evaluation framework: /data/rover_eval/test_cases.json (12 test cases,
+  3 categories: precise, ambiguous, invalid commands)
+
+### Xavier NX GPU Cleanup Script
+~/cleanup_gpu.sh — resets GPU state after crashed model loads (4 steps):
+kills /dev/nvhost-gpu and /dev/nvmap holders, drops page cache,
+reloads nvgpu kernel module, displays memory status.
+NOTE: if NvMap errors persist after script, full reboot required.
 
 ## ZED ROS 2 WRAPPER — CRITICAL OPERATIONAL NOTES
 
@@ -713,6 +794,14 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
 13. **Begin robot ROS 2 development:**
     SLAM/Mapping, Visual Odometry/Navigation, Object Detection/AI
 
+15. **Xavier NX LLM evaluation and llama-server setup:**
+    - Complete rover evaluation framework (Python script running all 4 models
+      against 12 test cases via llama-server HTTP API, scoring JSON validity,
+      action compliance, semantic correctness, clarification quality)
+    - Set up llama-server as systemd service (port 8080, Qwen2.5-3B default)
+    - Configure tmux on xavier for comfortable multi-pane SSH workflow
+    - Integrate LLM REST endpoint with ROS 2 (language_commander node)
+
 14. **NoMachine display/mouse issue (new laptop — low priority):**
     Mouse coordinates offset by +1440px when viewing primary monitor
     Client-side fix partially works (correct image with value=1 in .nxs)
@@ -836,7 +925,19 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
 - Check nodes: `ros2 node list`
 - Run ZED diagnostic: `/usr/local/zed/tools/ZED_Diagnostic -c`
 
-### Jetson — CAN Bus
+### Xavier NX — LLM Inference
+- `xavier` → SSH to Xavier NX (alias on Dell)
+- `~/cleanup_gpu.sh` → reset GPU VMM state after crashed model load
+- `sudo nvpmodel -q` → verify power mode (should show MODE_20W_6CORE)
+- `sudo tegrastats --interval 1000` → monitor GPU/CPU/memory/power/temperature
+- `free -h` → check available RAM before running inference
+- Run benchmark (Qwen2.5-3B):
+  `~/github/llama.cpp/build/bin/llama-bench -m /data/models/Qwen2.5-3B-Instruct-Q4_K_M.gguf -p 512 -n 128 -ngl 99 -fa 1`
+- Run benchmark (Gemma-3-4B — requires reduced batch):
+  `~/github/llama.cpp/build/bin/llama-bench -m /data/models/gemma-3-4b-it-Q4_K_M.gguf -p 128 -n 64 -ngl 99 -fa 1 -b 512 -ub 256`
+- Interactive chat (rover commands, 32k context):
+  `~/github/llama.cpp/build/bin/llama-cli -m /data/models/Qwen2.5-3B-Instruct-Q4_K_M.gguf -ngl 99 -fa 1 -c 32768 -t 4 --temp 0.3 --conversation --chat-template chatml`
+- List available devices: `~/github/llama.cpp/build/bin/llama-cli --list-devices`
 - `sudo busybox devmem 0x0c303018 w 0xc458 && sudo busybox devmem 0x0c303010 w 0xc400` → configure pinmux
 - `sudo modprobe can && sudo modprobe can_raw && sudo modprobe mttcan` → load modules
 - `sudo ip link set can0 type can bitrate 250000 && sudo ip link set can0 up` → bring up interface

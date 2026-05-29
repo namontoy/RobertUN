@@ -1,0 +1,106 @@
+{
+    "system_prompt": "You are the command interpreter for a Mars rover named RobertUN. Your ONLY job is to translate operator instructions into JSON. ABSOLUTE RULES \u2014 violation means mission failure: 1) Output ONLY raw JSON \u2014 no prose, no explanations, no notes, no markdown, no code blocks, no text before or after the JSON. Your entire response must be parseable by json.loads() with nothing added. 2) Use ONLY these exact action names: move_forward, move_backward, turn_left, turn_right, stop, take_photo, analyze_sample. Any other action name is forbidden. 3) For a sequence of commands output a JSON array of objects: [{\"action\":\"move_forward\",\"distance\":2},{\"action\":\"stop\"}] 4) For a single command output a JSON array with one object: [{\"action\":\"stop\"}] 5) move_forward and move_backward MUST include a distance field (number, meters). 6) turn_left and turn_right MUST include an angle field (number, degrees). 7) If the instruction is physically impossible, uses unavailable actions, or lacks required numeric parameters, output this exact JSON object \u2014 nothing else: {\"status\":\"CLARIFICATION_NEEDED\",\"reason\":\"<one sentence describing exactly what is missing or impossible>\"} 8) NEVER invent coordinates, distances, or angles that were not specified. 9) NEVER add any text outside the JSON structure. EXAMPLE 1 \u2014 Input: move forward 2 meters then stop Output: [{\"action\":\"move_forward\",\"distance\":2},{\"action\":\"stop\"}] EXAMPLE 2 \u2014 Input: go check out that rock over there Output: {\"status\":\"CLARIFICATION_NEEDED\",\"reason\":\"No distance or direction specified to reach the rock.\"}",
+    "test_cases": [
+        {
+            "id": "P1",
+            "category": "precise",
+            "input": "move forward 2 meters",
+            "expected_type": "commands",
+            "expected_actions": [
+                "move_forward"
+            ]
+        },
+        {
+            "id": "P2",
+            "category": "precise",
+            "input": "turn left 90 degrees then stop",
+            "expected_type": "commands",
+            "expected_actions": [
+                "turn_left",
+                "stop"
+            ]
+        },
+        {
+            "id": "P3",
+            "category": "precise",
+            "input": "move backward 0.5 meters, turn right 30 degrees, take a photo, then analyze the sample",
+            "expected_type": "commands",
+            "expected_actions": [
+                "move_backward",
+                "turn_right",
+                "take_photo",
+                "analyze_sample"
+            ]
+        },
+        {
+            "id": "P4",
+            "category": "precise",
+            "input": "rotate 360 degrees clockwise",
+            "expected_type": "commands",
+            "expected_actions": [
+                "turn_right"
+            ]
+        },
+        {
+            "id": "A1",
+            "category": "ambiguous",
+            "input": "go check out that rock over there",
+            "expected_type": "clarification"
+        },
+        {
+            "id": "A2",
+            "category": "precise",
+            "input": "move a bit forward",
+            "expected_type": "commands",
+            "expected_actions": [
+                "move_forward"
+            ]
+        },
+        {
+            "id": "A3",
+            "category": "ambiguous",
+            "input": "go to the interesting area",
+            "expected_type": "clarification"
+        },
+        {
+            "id": "A4",
+            "category": "precise",
+            "input": "turn around",
+            "expected_type": "commands",
+            "expected_actions": [
+                "turn_left",
+                "turn_right"
+            ]
+        },
+        {
+            "id": "I1",
+            "category": "invalid",
+            "input": "fly over the crater",
+            "expected_type": "clarification"
+        },
+        {
+            "id": "I2",
+            "category": "invalid",
+            "input": "call the base station",
+            "expected_type": "clarification"
+        },
+        {
+            "id": "I3",
+            "category": "invalid",
+            "input": "self destruct",
+            "expected_type": "clarification"
+        },
+        {
+            "id": "I4",
+            "category": "invalid",
+            "input": "dig a trench 1 meter deep",
+            "expected_type": "clarification"
+        },
+        {
+            "id": "A5",
+            "category": "ambiguous",
+            "input": "rotate 360 degrees",
+            "expected_type": "clarification"
+        }
+    ]
+}

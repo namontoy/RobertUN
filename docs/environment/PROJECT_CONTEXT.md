@@ -1,5 +1,5 @@
 # Robotics Development Environment — Project Context Document
-# Last updated: May 27, 2026 (Xavier NX: LLM evaluation complete, CMA fix, cleanup script, rover eval framework)
+# Last updated: May 29, 2026 (IsaacUN: Isaac Sim ROS 2 bridge working, snap removed, Docker migrated to apt, conda restored)
 # Paste this at the start of a new Claude session to restore full context
 
 ## HARDWARE
@@ -174,23 +174,46 @@
   - PATH: /usr/local/cuda/bin added to ~/.bashrc
   - LD_LIBRARY_PATH: /usr/local/cuda/lib64 added to ~/.bashrc
 - **Isaac Sim:** 5.1.0-rc.19 installed at ~/isaac-sim/
-  - Launch: ~/isaac-sim/isaac-sim.sh
-  - Internal ROS 2: Jazzy (auto-loaded on Ubuntu 24.04)
+  - Launch: bash ~/isaac-sim/launch_isaacsim.bash (ALWAYS use this, not isaac-sim.sh directly)
+  - Internal ROS 2: Jazzy with Python 3.11 (auto-loaded on Ubuntu 24.04)
+  - ROS 2 bridge: ✅ FULLY OPERATIONAL — confirmed "rclpy loaded" at startup
   - Health check: confirmed working after GDM switch and CUDA install
   - Note: must be launched outside any conda environment
+  - Note: screenshot path configured at ~/.local/share/ov/data/Kit/Isaac-Sim Full/5.1/user.config.json
 - **ROS 2:** Jazzy Desktop (/opt/ros/jazzy/)
   - Jazzy is the recommended distro for Isaac Sim 5.x on Ubuntu 24.04
   - Jazzy and Humble are wire-compatible for standard message types
+  - Auto-sourced in ~/.bashrc: source /opt/ros/jazzy/setup.bash
 - **DDS:** FastDDS (default for Jazzy) — CycloneDDS not configured
   (IsaacUN not connected to Jetson/Dell network)
+- **Docker:** 29.5.2 — installed via apt from Docker's official repository
+  - Source: https://download.docker.com/linux/ubuntu
+  - Keyring: /etc/apt/keyrings/docker.asc
+  - Socket: /var/run/docker.sock (root:docker — correct apt behavior)
+  - User talos is member of docker group — no sudo needed
+  - NOTE: was previously installed via snap (removed May 2026) — apt version
+    is properly configured and does not have socket permission issues
+  - Local images:
+    - isaac_sim_ros:ubuntu_22_jazzy (13.1GB) — NVIDIA ROS 2 build environment
+    - isaac_sim_ros:ubuntu_24_jazzy (12GB) — NVIDIA ROS 2 build environment
+    - osrf/ros:jazzy-desktop (5.61GB) — standard ROS 2 Jazzy desktop image
+- **Snap:** ✅ COMPLETELY REMOVED (May 2026)
+  - snapd removed and held: sudo apt-mark hold snapd
+  - Blocked at repository level: /etc/apt/preferences.d/no-snapd
+  - All snap directories removed: /snap, /var/snap, /var/lib/snapd, ~/snap
+  - Firefox replaced with Mozilla official apt repository version (151.0.2)
+  - GNOME desktop unaffected — runtime snaps were orphans, not GNOME itself
 - **Python:** via Miniconda3 (/home/talos/miniconda3/)
   - Philosophy: always work inside conda environments, never system Python
-  - conda env `ros2`: Python 3.12, ROS 2 Jazzy auto-sourced on activation
-    Packages: numpy 2.4.4, opencv-python 4.13, scipy 1.17.1, matplotlib 3.10,
-    pyserial 3.5, transforms3d 0.4.2, pytest 9.0.2, pyyaml 6.0.3,
-    rclpy 7.1.9, full ROS 2 Python stack, catkin-pkg, empy==3.3.4, lark
-  - Activation script: ~/miniconda3/envs/ros2/etc/conda/activate.d/ros2.sh
-    (auto-sources /opt/ros/jazzy/setup.bash and sets ROS_DOMAIN_ID=0)
+  - auto_activate_base = false (base environment does not activate automatically)
+  - conda env `ros2`: Python 3.12, ROS 2 Jazzy
+    Packages: numpy, setuptools==79.0.1, catkin-pkg, empy==3.3.4, lark,
+    colcon-common-extensions
+  - NOTE: conda was broken by username change (namontoy → talos) —
+    fixed May 2026 by updating shebang lines and profile.d scripts to
+    use /home/talos/miniconda3 instead of /home/namontoy/miniconda3
+  - NOTE: do NOT use pip --break-system-packages or install into ~/.local/
+    alongside conda environments — causes setuptools conflicts during colcon builds
 - **tmux:** installed, config at ~/.tmux.conf
   - Prefix: Ctrl+B (Ctrl+A as alternative)
   - Mouse support enabled
@@ -201,7 +224,91 @@
 - **rosdep:** 0.26.0 (initialized)
 - **Git:** not yet configured (pending task)
 
-## ISAACUN — SESSION AND REMOTE ACCESS
+## ISAACUN — ISAAC SIM ROS 2 BRIDGE
+
+### The Python version conflict and why it matters
+Isaac Sim 5.x uses an internal Python 3.11 runtime. ROS 2 Jazzy on Ubuntu 24.04
+is compiled against Python 3.12. These two Python environments are binary-
+incompatible — rclpy .so extensions compiled for 3.12 cannot be loaded by 3.11.
+
+The system ~/.bashrc sources /opt/ros/jazzy/setup.bash automatically, injecting
+Python 3.12 ROS 2 paths into every terminal. If Isaac Sim is launched from such
+a terminal, it inherits those paths and fails to initialize its ROS 2 bridge.
+
+### The solution: launch_isaacsim.bash
+File: ~/isaac-sim/launch_isaacsim.bash
+Purpose: neutralizes the system ROS 2 environment, sources the Python 3.11
+compatible workspace built by NVIDIA's Docker, then launches Isaac Sim.
+ALWAYS use this script — never launch isaac-sim.sh directly.
+
+```bash
+#!/bin/bash
+# Step 1: neutralize everything that /opt/ros/jazzy/setup.bash injected
+source ~/isaac-sim/unros2.bash
+# Step 2: source the Python 3.11 compatible ROS 2 workspace built by NVIDIA's Docker
+source ~/Github/namontoy/IsaacSim-ros_workspaces/build_ws/jazzy/isaac_sim_ros_ws/install/setup.bash
+# Step 3: set the DDS middleware that Isaac Sim's ROS 2 bridge requires
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+# Step 4: launch Isaac Sim
+echo "Launching Isaac Sim..."
+~/isaac-sim/isaac-sim.sh --/persistent/isaac/asset_root/default="/home/talos/isaacsim_assets/Assets/Isaac/5.0"
+```
+
+### unros2.bash — ROS 2 environment neutralizer
+File: ~/isaac-sim/unros2.bash
+Purpose: undoes everything /opt/ros/jazzy/setup.bash injects. Removes:
+AMENT_PREFIX_PATH, CMAKE_PREFIX_PATH, GZ_CONFIG_PATH, LD_LIBRARY_PATH,
+PYTHONPATH, ROS_DISTRO, ROS_VERSION, ROS_PYTHON_VERSION,
+ROS_AUTOMATIC_DISCOVERY_RANGE. Strips /opt/ros/ entries from PATH.
+ROS_DOMAIN_ID=0 is intentionally preserved (harmless for Isaac Sim).
+
+### Confirmed successful bridge initialization (log output)
+```
+[isaacsim.ros2.bridge-4.12.4] startup
+Attempting to load system rclpy
+Could not import system rclpy: No module named 'rclpy'   ← expected, not an error
+Attempting to load internal rclpy for ROS Distro: jazzy
+rclpy loaded                                              ← bridge is operational
+```
+
+### NVIDIA IsaacSim-ros_workspaces — Docker build workflow
+Repository: ~/Github/namontoy/IsaacSim-ros_workspaces/
+Build script: build_ros.sh (uses Docker internally — do NOT fight native builds)
+
+Build command (run once; uses cached Docker image if available):
+```bash
+cd ~/Github/namontoy/IsaacSim-ros_workspaces
+./build_ros.sh -d jazzy -v 24.04
+```
+
+Output: build_ws/jazzy/
+  - jazzy_ws/         — core ROS 2 packages (Python 3.11 compiled)
+  - isaac_sim_ros_ws/ — Isaac Sim specific packages (install/ sourced at launch)
+
+Workspace source packages (jazzy_ws/src/):
+  ackermann_control, custom_message, humanoid_locomotion_policy_example,
+  isaac_compressed_image_decoder, isaac_ros2_messages, isaacsim,
+  isaac_tutorials, moveit, navigation (carter_navigation,
+  isaac_ros_navigation_goal, iw_hub_navigation), Universal_Robots_ROS2_Description
+
+CRITICAL: navigation2 is NOT included as source — it is a runtime dependency.
+The Ubuntu 24.04 apt package for ros-jazzy-navigation2 has a packaging gap
+(libcom-err2/libbsd0/libmd0 version mismatch after security updates). This is
+an upstream Ubuntu issue — do NOT attempt to fight it with apt. The Docker
+build handles all dependencies correctly inside its own clean environment.
+
+### Two-terminal workflow
+Terminal A — Isaac Sim:
+  bash ~/isaac-sim/launch_isaacsim.bash
+  (never source /opt/ros/jazzy/setup.bash in this terminal)
+
+Terminal B — External ROS 2 nodes, RViz, Nav2, tools:
+  source /opt/ros/jazzy/setup.bash
+  source ~/Github/namontoy/IsaacSim-ros_workspaces/build_ws/jazzy/isaac_sim_ros_ws/install/setup.bash
+  ros2 launch ...  (or any ROS 2 command)
+
+Communication between the two terminals happens via DDS topics — no shared
+Python environment required. Isaac Sim acts like a real robot on the network.
 - **Autologin:** GDM3 autologin for talos, config at /etc/gdm3/custom.conf
 - **Screen lock:** Locks automatically ~15 seconds after boot via
   ~/.config/autostart/lock-after-autologin.desktop (gdbus call to ScreenSaver)
@@ -286,15 +393,14 @@
 - **Performance mode:** sudo nvpmodel -m 0 (MAXN) + sudo jetson_clocks
   - Not persistent across reboots — run after each reboot before launching ZED
 
-## JETSON XAVIER NX — JetPack 5.1.6 / L4T R35.6.4, aarch64
+## JETSON XAVIER NX — JetPack 5.1.6 / L4T R35.6.x, aarch64
 - **OS:** Ubuntu 20.04 LTS
 - **CUDA:** 11.4 (/usr/local/cuda-11.4/)
 - **TensorRT:** 8.5.2
 - **cuDNN:** 8.6.0
 - **Python:** 3.8.x (system)
-- **Kernel:** 5.10.216-tegra (R35.6.4 — contains CVE-2025-33182/33177 NvMap fix)
 - **JetPack status:** JetPack 5.x is the final supported line for Xavier NX —
-  JetPack 6 is Orin-only. JetPack 5.1.6 / R35.6.4 is the latest and last major release.
+  JetPack 6 is Orin-only. JetPack 5.1.6 is the latest and last major release.
 - **Boot target:** multi-user (headless) — desktop disabled to save ~300MB RAM
   - gdm3 still installed but disabled; restore with: sudo systemctl set-default graphical.target
 - **Power mode:** MODE_20W_6CORE (mode 8) — all 6 Carmel cores, GPU @ 1100 MHz,
@@ -302,10 +408,6 @@
   - jetson_clocks enabled as systemd service: /etc/systemd/system/jetson_clocks.service
 - **Disabled services:** bluetooth, ModemManager, avahi-daemon, rpcbind,
   rtkit-daemon, kerneloops, apport, openvpn, wpa_supplicant, pulseaudio
-- **Locale:** en_US.UTF-8 only (all other variants removed from locale-archive)
-- **Timezone:** America/Bogota (GMT-5)
-- **tmux:** installed, configured at ~/.tmux.conf
-  - Prefix: Ctrl+A; splits: | and -; vim navigation; mouse support; status bar with CPU/RAM/time
 
 ### Xavier NX Storage
 - **eMMC:** 16GB (OS, CUDA stack, llama.cpp binaries)
@@ -320,21 +422,6 @@
 - **Swap:** 8GB file at /data/swapfile (SSD-backed, required for NvMap VMM)
   - zram (4×854MB) retained alongside — both active simultaneously
 
-### Xavier NX CMA Configuration (critical for LLM inference)
-- **CMA size:** 128MB (increased from default 64MB)
-  - Set in /boot/extlinux/extlinux.conf APPEND line: cma=128M
-  - Backup at /boot/extlinux/extlinux.conf.backup
-  - 64MB default caused intermittent NvMap error 12 after first model load
-  - 512MB caused over-reliance on CMA with incomplete recovery — 128MB is the sweet spot
-- **CMA behavior:** each model load consumes ~25MB of CMA that is not fully recovered
-  by cleanup. With 128MB total, up to 4 sequential model loads are safe.
-- **NvMap VMM ceiling:** ~2.5GB quantized weights — hard architectural limit on
-  Volta/JetPack 5.x. Models larger than ~2.5GB fail at load time regardless of
-  available RAM or batch size. Q4_K_M is the ONLY viable quantization for 3B-4B models.
-- **rmmod/modprobe nvgpu:** UNRELIABLE for sequential use — do NOT use between
-  model loads in evaluation loops. GPU module should stay loaded throughout a session.
-  Use only as absolute last resort before rebooting.
-
 ### Xavier NX LLM Inference Stack
 - **Engine:** llama.cpp (built from source, CUDA-enabled)
   - Repository: ~/github/llama.cpp
@@ -342,69 +429,35 @@
   - GPU: Volta sm_72 confirmed working; CUDA0: Xavier (6833 MiB)
 - **HuggingFace CLI:** huggingface-hub 0.28.1 (last version without hf-xet dependency)
   - hf-xet fails to build on aarch64 Ubuntu 20.04 — use 0.28.1 specifically
-  - Login token stored for gated model access (Gemma 3)
-- **Server flags for evaluation:** -ngl 99 -fa 1 -c 2048 -t 4 -np 1
-  - -np 1: single parallel slot prevents KV cache OOM on smaller context
-  - -c 2048: reduced from 4096 to fit KV cache within available CMA
-  - Gemma-3-4B additionally needs: -b 512 -ub 256 (NvMap batch size ceiling)
-- **Warmup:** always send one dummy query after server start before scoring
-  - First inference takes ~25s (CUDA context init); subsequent queries ~1s
-  - Warmup eliminates this delay for all scored test cases
+- **NvMap VMM ceiling:** ~2.5GB quantized weights — hard architectural limit on
+  Volta/JetPack 5.x. Models larger than ~2.5GB fail at load time regardless of
+  available RAM or batch size. This is a silicon-level constraint, not solvable
+  in software. Q4_K_M is the ONLY viable quantization for 3B-4B models.
 
 ### Xavier NX Confirmed Working Models (full GPU offload, -ngl 99)
-| Model | File | Size | tg (t/s) | Special flags | Eval score |
-|-------|------|------|----------|---------------|------------|
-| Qwen2.5-3B-Instruct | Qwen2.5-3B-Instruct-Q4_K_M.gguf | 1.79 GB | 18.83 | none | **48/52** |
-| Qwen2.5-Coder-3B-Instruct | Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf | 1.79 GB | ~18 | none | 45/52 |
-| gemma-3-4b-it | gemma-3-4b-it-Q4_K_M.gguf | 2.31 GB | 14.21 | -b 512 -ub 256 | 42.5/52 |
-| Phi-3.5-mini-instruct | Phi-3.5-mini-instruct-Q4_K_M.gguf | 2.23 GB | 15.63 | -b 512 -ub 256 | 34/52 |
+| Model | File | Size | tg (t/s) | Special flags |
+|-------|------|------|----------|---------------|
+| Qwen2.5-3B-Instruct | Qwen2.5-3B-Instruct-Q4_K_M.gguf | 1.79 GB | 18.83 | none |
+| Qwen2.5-Coder-3B-Instruct | Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf | 1.79 GB | ~18 | none |
+| Phi-3.5-mini-instruct | Phi-3.5-mini-instruct-Q4_K_M.gguf | 2.23 GB | 15.63 | none |
+| gemma-3-4b-it | gemma-3-4b-it-Q4_K_M.gguf | 2.31 GB | 14.21 | -b 512 -ub 256 |
 
 Failed models (NvMap VMM ceiling): Qwen2.5-7B (4.36GB), Qwen2.5-Coder-7B (4.36GB)
 
-### Xavier NX Model Evaluation Results (final, May 27 2026)
-- **Evaluation framework:** /data/rover_eval/ (13 test cases, 3 categories)
-  - Precise (6): specific commands with known expected actions
-  - Ambiguous (5): vague commands requiring clarification
-  - Invalid (4): impossible/unavailable commands requiring refusal
-- **Recommended model: Qwen2.5-3B-Instruct** — 48/52 score, clean JSON format,
-  perfect safety boundaries (4.0/4 on all invalid commands), ~1s response time after warmup
-- **Sequential model loading order:** alternate large-small for safety margin
-  (Phi/Gemma → Qwen variants). With 128MB CMA any order works but alternating
-  provides extra headroom against CMA fragmentation.
-- **Key model characteristics:**
-  - Qwen2.5-3B: over-conservative on ambiguous rotation/direction commands but
-    impeccable JSON format and safety record — best for production use
-  - Qwen2.5-Coder-3B: occasionally returns single objects instead of arrays,
-    wraps output in markdown despite system prompt — format unreliable
-  - Gemma-3-4B: best precise command handling (3.92/4) but invents plausible
-    commands for impossible instructions — unsafe for physical rover
-  - Phi-3.5-mini: adds explanatory prose after JSON on harder cases — content
-    correct but format fails JSON parsing; not suitable without post-processing
-
 ### Xavier NX Rover Command Interface (primary use case)
-- Model: Qwen2.5-3B-Instruct-Q4_K_M (fastest, best JSON output, best safety)
+- Model: Qwen2.5-3B-Instruct-Q4_K_M (fastest, best JSON output)
 - Temperature: 0.3 (deterministic structured output)
-- Context: 32768 tokens (interactive use); 2048 (evaluation/server)
+- Context: 32768 tokens
 - Valid actions: move_forward, move_backward, turn_left, turn_right, stop,
   take_photo, analyze_sample
-- System prompt: engineered with few-shot JSON example, strict action list,
-  explicit array format requirement, CLARIFICATION_NEEDED format defined
-- Evaluation scripts: /data/rover_eval/evaluate_models.py
-- Test cases: /data/rover_eval/test_cases.json (13 cases)
-- Reports saved with timestamp: /data/rover_eval/report_YYYYMMDD_HHMM.txt
+- Evaluation framework: /data/rover_eval/test_cases.json (12 test cases,
+  3 categories: precise, ambiguous, invalid commands)
 
 ### Xavier NX GPU Cleanup Script
-~/cleanup_gpu.sh — 5 steps (NO rmmod/modprobe between model loads):
-1. Kill processes holding /dev/nvhost-gpu, /dev/nvhost-ctrl-gpu, /dev/nvhost-prof-gpu,
-   /dev/nvhost-dbg-gpu, /dev/nvhost-ctrl, /dev/nvmap
-2. Drop Linux page cache (sync + echo 3 > /proc/sys/vm/drop_caches)
-3. Run memory compaction (echo 1 > /proc/sys/vm/compact_memory)
-4. Display memory status, CMA free, orphan NvMap handles
-NOTE: rmmod/modprobe nvgpu is REMOVED from between-model cleanup — it is
-unreliable for sequential use and causes GPU unavailability. Use only before
-the first model load or as absolute last resort before rebooting.
-Sudoers rule at /etc/sudoers.d/nvmap-diagnostics allows passwordless read
-of /sys/kernel/debug/nvmap/iovmm/orphan_handles.
+~/cleanup_gpu.sh — resets GPU state after crashed model loads (4 steps):
+kills /dev/nvhost-gpu and /dev/nvmap holders, drops page cache,
+reloads nvgpu kernel module, displays memory status.
+NOTE: if NvMap errors persist after script, full reboot required.
 
 ## ZED ROS 2 WRAPPER — CRITICAL OPERATIONAL NOTES
 
@@ -824,9 +877,13 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
      - ros2_canopen: https://github.com/ros-industrial/ros2_canopen
      - ros2_canopen manual: https://ros-industrial.github.io/ros2_canopen/manual/rolling/
 
-8. **Configure Isaac Sim ROS 2 bridge:**
-   Set up CycloneDDS or FastDDS for IsaacUN ROS 2 bridge
-   Test Isaac Sim publishing to ROS 2 topics (e.g. /clock, /odom)
+8. **Configure Isaac Sim ROS 2 bridge:** ✅ COMPLETED (May 2026)
+   ROS 2 bridge confirmed operational. Two-terminal workflow established.
+   launch_isaacsim.bash and unros2.bash scripts created at ~/isaac-sim/.
+   NVIDIA Docker workspace built at build_ws/jazzy/isaac_sim_ros_ws/.
+   AMENT_PREFIX_PATH correctly set; rclpy loaded message confirmed.
+   Remaining: run full example with Isaac Sim publishing to ROS 2 topics
+   and verifying reception from external terminal (e.g. Carter navigation demo).
 
 9. **Python conda environment on Dell laptop:** ✅ COMPLETED
    Miniconda3 installed; ros2 env (Python 3.10, Humble, Cyclone DDS) and
@@ -849,11 +906,12 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
     SLAM/Mapping, Visual Odometry/Navigation, Object Detection/AI
 
 15. **Xavier NX LLM evaluation and llama-server setup:**
-    - ✅ Complete rover evaluation framework (13 test cases, 4 models evaluated)
-    - ✅ CMA fix (128MB), cleanup script without rmmod, warmup query
-    - ⏳ Set up llama-server as systemd service (port 8080, Qwen2.5-3B default)
-    - ⏳ Integrate LLM REST endpoint with ROS 2 (language_commander node)
-    - ⏳ Rebuild llama.cpp with -DGGML_CUDA_FORCE_CUBLAS=ON (optional sm_72 optimization)
+    - Complete rover evaluation framework (Python script running all 4 models
+      against 12 test cases via llama-server HTTP API, scoring JSON validity,
+      action compliance, semantic correctness, clarification quality)
+    - Set up llama-server as systemd service (port 8080, Qwen2.5-3B default)
+    - Configure tmux on xavier for comfortable multi-pane SSH workflow
+    - Integrate LLM REST endpoint with ROS 2 (language_commander node)
 
 14. **NoMachine display/mouse issue (new laptop — low priority):**
     Mouse coordinates offset by +1440px when viewing primary monitor
@@ -893,7 +951,27 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
 - **amd64 Dev Container:** Native speed for IntelliSense; ARM64
   emulation via QEMU is too slow for daily development
 - **conda environments (IsaacUN):** Isaac Sim uses internal Python 3.11;
-  system Python must remain unmodified; all dev work in conda envs
+  system Python must remain unmodified; all dev work in conda envs.
+  conda was broken by username change (namontoy→talos) — fixed by updating
+  shebang lines in miniconda3/bin/ and profile.d scripts. Never run
+  sed on binary files in miniconda3/bin/ — use grep -l + targeted text-only sed.
+- **Isaac Sim ROS 2 bridge — two-terminal architecture:** Isaac Sim uses
+  internal Python 3.11 rclpy; external ROS 2 nodes use system Python 3.12.
+  Never source /opt/ros/jazzy/setup.bash in the terminal that launches Isaac Sim.
+  Use launch_isaacsim.bash (neutralizes env + sources Python 3.11 workspace).
+  External nodes communicate via DDS topics — no shared Python environment needed.
+- **NVIDIA Docker build for ROS 2 workspace:** The IsaacSim-ros_workspaces repo
+  provides Dockerfiles (dockerfiles/ubuntu_24_jazzy_python_312_minimal.dockerfile)
+  that correctly handle all dependency conflicts (empy==3.3.4, setuptools==70.0.0,
+  numpy reinstall, pybind11). Always use ./build_ros.sh instead of native colcon
+  build on IsaacUN — the Ubuntu 24.04 apt packaging gap for navigation2 makes
+  native builds unreliable. Docker build produces files on host disk; Docker
+  is not needed at runtime.
+- **Snap removed from IsaacUN (May 2026):** snap Docker had socket confinement
+  issues (root:root socket, private /tmp namespace) that prevented normal
+  group-based permissions from working. Replaced with apt Docker from
+  docker.com official repository. All snap packages removed; snapd held and
+  pinned to prevent reinstallation. Firefox replaced with Mozilla apt repo version.
 - **ZED SDK 5.2.2 for L4T R36.5:** Specific version matching
   JetPack 6.2.2 / CUDA 12.6 — fixes ZED2i positional tracking lock bug
 - **NEURAL depth mode:** PERFORMANCE mode deprecated in ZED SDK 5.x;
@@ -943,20 +1021,23 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
 ## USEFUL COMMANDS REFERENCE
 
 ### Dell Host
-- `ssh orion` → connect to Jetson Orin Nano (alias, was previously `jetson`)
-- `ssh xavier` → connect to Jetson Xavier NX (alias)
-- `jsync` → sync ~/ros2_ws/ to Orion
-- `jscp <file> talos@192.168.1.211:<path>` → copy file to Orion
+- `ssh jetson` → connect to Jetson
+- `jsync` → sync ~/ros2_ws/ to Jetson
+- `jscp <file> talos@192.168.1.211:<path>` → copy file to Jetson
 - `docker buildx build --platform linux/arm64 --tag <n> --load .`
 - `cd ~/github/RobertUN && git pull origin main` → sync repository
 
 ### IsaacUN
 - `conda activate ros2` → enter ROS 2 development environment
-  (auto-sources /opt/ros/jazzy/setup.bash)
+- `source /opt/ros/jazzy/setup.bash` → activate system ROS 2 (Terminal B only)
+- `source ~/Github/namontoy/IsaacSim-ros_workspaces/build_ws/jazzy/isaac_sim_ros_ws/install/setup.bash` → source Isaac workspace
+- `bash ~/isaac-sim/launch_isaacsim.bash` → safe Isaac Sim launcher (ALWAYS use this)
+- `source ~/isaac-sim/unros2.bash` → neutralize ROS 2 env before Isaac Sim
+- `cd ~/Github/namontoy/IsaacSim-ros_workspaces && ./build_ros.sh -d jazzy -v 24.04` → rebuild Docker workspace
+- `docker images` → list available Docker images
 - `tmux new-session -s <n>` → start a new named tmux session
 - `tmux ls` → list running tmux sessions
 - `tmux attach -t <n>` → reattach to a session
-- `~/isaac-sim/isaac-sim.sh` → launch Isaac Sim (run from base conda env)
 - `nvcc --version` → verify CUDA toolkit
 
 ### Jetson — General
@@ -981,10 +1062,10 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
 
 ### Xavier NX — LLM Inference
 - `xavier` → SSH to Xavier NX (alias on Dell)
-- `~/cleanup_gpu.sh` → reset GPU state between model loads (NO rmmod — stays loaded)
+- `~/cleanup_gpu.sh` → reset GPU VMM state after crashed model load
 - `sudo nvpmodel -q` → verify power mode (should show MODE_20W_6CORE)
 - `sudo tegrastats --interval 1000` → monitor GPU/CPU/memory/power/temperature
-- `free -h && grep -E 'CmaFree|CmaTotal' /proc/meminfo` → check RAM and CMA state
+- `free -h` → check available RAM before running inference
 - Run benchmark (Qwen2.5-3B):
   `~/github/llama.cpp/build/bin/llama-bench -m /data/models/Qwen2.5-3B-Instruct-Q4_K_M.gguf -p 512 -n 128 -ngl 99 -fa 1`
 - Run benchmark (Gemma-3-4B — requires reduced batch):
@@ -992,24 +1073,19 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
 - Interactive chat (rover commands, 32k context):
   `~/github/llama.cpp/build/bin/llama-cli -m /data/models/Qwen2.5-3B-Instruct-Q4_K_M.gguf -ngl 99 -fa 1 -c 32768 -t 4 --temp 0.3 --conversation --chat-template chatml`
 - List available devices: `~/github/llama.cpp/build/bin/llama-cli --list-devices`
-- Run full model evaluation: `cd /data/rover_eval && python3 evaluate_models.py 2>/dev/null`
-- View latest report: `ls -t /data/rover_eval/report_*.txt | head -1 | xargs more`
-
-### Xavier NX — tmux
-- `tmux new -s <name>` → start new session
-- `tmux attach -t <name>` → reattach to session
-- `Ctrl+A |` → split pane vertically
-- `Ctrl+A -` → split pane horizontally
-- `Ctrl+A h/j/k/l` → navigate panes (vim-style)
-- `Ctrl+A r` → reload tmux config
-- `Ctrl+A d` → detach session (keeps running)
+- `sudo busybox devmem 0x0c303018 w 0xc458 && sudo busybox devmem 0x0c303010 w 0xc400` → configure pinmux
+- `sudo modprobe can && sudo modprobe can_raw && sudo modprobe mttcan` → load modules
+- `sudo ip link set can0 type can bitrate 250000 && sudo ip link set can0 up` → bring up interface
+- `candump can0` → monitor all CAN traffic
+- `cansend can0 123#DEADBEEF` → send test frame
+- `cat /proc/device-tree/bus@0/mttcan@c310000/status` → verify CAN hardware active
 
 ### VS Code (Dell)
 - `Ctrl+Shift+P` → `Dev Containers: Reopen in Container` → open Dev Container
 - `Ctrl+Shift+P` → `Remote-SSH: Connect to Host` → jetson → connect to Jetson
 - `Ctrl+Shift+P` → `Dev Containers: Rebuild and Reopen` → only when Dockerfile changes
 
-### tmux Quick Reference (IsaacUN — prefix Ctrl+B; xavier — prefix Ctrl+A)
+### tmux Quick Reference (IsaacUN)
 - `Ctrl+B d` → detach from session (session keeps running)
 - `Ctrl+B |` → split pane vertically
 - `Ctrl+B -` → split pane horizontally

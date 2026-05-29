@@ -1,5 +1,5 @@
 # Robotics Development Environment — Project Context Document
-# Last updated: May 25, 2026 (Jetson Xavier NX added: JetPack 5.1.6, SATA SSD, llama.cpp LLM inference node)
+# Last updated: May 27, 2026 (Xavier NX: LLM evaluation complete, CMA fix, cleanup script, rover eval framework)
 # Paste this at the start of a new Claude session to restore full context
 
 ## HARDWARE
@@ -286,14 +286,15 @@
 - **Performance mode:** sudo nvpmodel -m 0 (MAXN) + sudo jetson_clocks
   - Not persistent across reboots — run after each reboot before launching ZED
 
-## JETSON XAVIER NX — JetPack 5.1.6 / L4T R35.6.x, aarch64
+## JETSON XAVIER NX — JetPack 5.1.6 / L4T R35.6.4, aarch64
 - **OS:** Ubuntu 20.04 LTS
 - **CUDA:** 11.4 (/usr/local/cuda-11.4/)
 - **TensorRT:** 8.5.2
 - **cuDNN:** 8.6.0
 - **Python:** 3.8.x (system)
+- **Kernel:** 5.10.216-tegra (R35.6.4 — contains CVE-2025-33182/33177 NvMap fix)
 - **JetPack status:** JetPack 5.x is the final supported line for Xavier NX —
-  JetPack 6 is Orin-only. JetPack 5.1.6 is the latest and last major release.
+  JetPack 6 is Orin-only. JetPack 5.1.6 / R35.6.4 is the latest and last major release.
 - **Boot target:** multi-user (headless) — desktop disabled to save ~300MB RAM
   - gdm3 still installed but disabled; restore with: sudo systemctl set-default graphical.target
 - **Power mode:** MODE_20W_6CORE (mode 8) — all 6 Carmel cores, GPU @ 1100 MHz,
@@ -301,6 +302,10 @@
   - jetson_clocks enabled as systemd service: /etc/systemd/system/jetson_clocks.service
 - **Disabled services:** bluetooth, ModemManager, avahi-daemon, rpcbind,
   rtkit-daemon, kerneloops, apport, openvpn, wpa_supplicant, pulseaudio
+- **Locale:** en_US.UTF-8 only (all other variants removed from locale-archive)
+- **Timezone:** America/Bogota (GMT-5)
+- **tmux:** installed, configured at ~/.tmux.conf
+  - Prefix: Ctrl+A; splits: | and -; vim navigation; mouse support; status bar with CPU/RAM/time
 
 ### Xavier NX Storage
 - **eMMC:** 16GB (OS, CUDA stack, llama.cpp binaries)
@@ -315,6 +320,21 @@
 - **Swap:** 8GB file at /data/swapfile (SSD-backed, required for NvMap VMM)
   - zram (4×854MB) retained alongside — both active simultaneously
 
+### Xavier NX CMA Configuration (critical for LLM inference)
+- **CMA size:** 128MB (increased from default 64MB)
+  - Set in /boot/extlinux/extlinux.conf APPEND line: cma=128M
+  - Backup at /boot/extlinux/extlinux.conf.backup
+  - 64MB default caused intermittent NvMap error 12 after first model load
+  - 512MB caused over-reliance on CMA with incomplete recovery — 128MB is the sweet spot
+- **CMA behavior:** each model load consumes ~25MB of CMA that is not fully recovered
+  by cleanup. With 128MB total, up to 4 sequential model loads are safe.
+- **NvMap VMM ceiling:** ~2.5GB quantized weights — hard architectural limit on
+  Volta/JetPack 5.x. Models larger than ~2.5GB fail at load time regardless of
+  available RAM or batch size. Q4_K_M is the ONLY viable quantization for 3B-4B models.
+- **rmmod/modprobe nvgpu:** UNRELIABLE for sequential use — do NOT use between
+  model loads in evaluation loops. GPU module should stay loaded throughout a session.
+  Use only as absolute last resort before rebooting.
+
 ### Xavier NX LLM Inference Stack
 - **Engine:** llama.cpp (built from source, CUDA-enabled)
   - Repository: ~/github/llama.cpp
@@ -322,35 +342,69 @@
   - GPU: Volta sm_72 confirmed working; CUDA0: Xavier (6833 MiB)
 - **HuggingFace CLI:** huggingface-hub 0.28.1 (last version without hf-xet dependency)
   - hf-xet fails to build on aarch64 Ubuntu 20.04 — use 0.28.1 specifically
-- **NvMap VMM ceiling:** ~2.5GB quantized weights — hard architectural limit on
-  Volta/JetPack 5.x. Models larger than ~2.5GB fail at load time regardless of
-  available RAM or batch size. This is a silicon-level constraint, not solvable
-  in software. Q4_K_M is the ONLY viable quantization for 3B-4B models.
+  - Login token stored for gated model access (Gemma 3)
+- **Server flags for evaluation:** -ngl 99 -fa 1 -c 2048 -t 4 -np 1
+  - -np 1: single parallel slot prevents KV cache OOM on smaller context
+  - -c 2048: reduced from 4096 to fit KV cache within available CMA
+  - Gemma-3-4B additionally needs: -b 512 -ub 256 (NvMap batch size ceiling)
+- **Warmup:** always send one dummy query after server start before scoring
+  - First inference takes ~25s (CUDA context init); subsequent queries ~1s
+  - Warmup eliminates this delay for all scored test cases
 
 ### Xavier NX Confirmed Working Models (full GPU offload, -ngl 99)
-| Model | File | Size | tg (t/s) | Special flags |
-|-------|------|------|----------|---------------|
-| Qwen2.5-3B-Instruct | Qwen2.5-3B-Instruct-Q4_K_M.gguf | 1.79 GB | 18.83 | none |
-| Qwen2.5-Coder-3B-Instruct | Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf | 1.79 GB | ~18 | none |
-| Phi-3.5-mini-instruct | Phi-3.5-mini-instruct-Q4_K_M.gguf | 2.23 GB | 15.63 | none |
-| gemma-3-4b-it | gemma-3-4b-it-Q4_K_M.gguf | 2.31 GB | 14.21 | -b 512 -ub 256 |
+| Model | File | Size | tg (t/s) | Special flags | Eval score |
+|-------|------|------|----------|---------------|------------|
+| Qwen2.5-3B-Instruct | Qwen2.5-3B-Instruct-Q4_K_M.gguf | 1.79 GB | 18.83 | none | **48/52** |
+| Qwen2.5-Coder-3B-Instruct | Qwen2.5-Coder-3B-Instruct-Q4_K_M.gguf | 1.79 GB | ~18 | none | 45/52 |
+| gemma-3-4b-it | gemma-3-4b-it-Q4_K_M.gguf | 2.31 GB | 14.21 | -b 512 -ub 256 | 42.5/52 |
+| Phi-3.5-mini-instruct | Phi-3.5-mini-instruct-Q4_K_M.gguf | 2.23 GB | 15.63 | -b 512 -ub 256 | 34/52 |
 
 Failed models (NvMap VMM ceiling): Qwen2.5-7B (4.36GB), Qwen2.5-Coder-7B (4.36GB)
 
+### Xavier NX Model Evaluation Results (final, May 27 2026)
+- **Evaluation framework:** /data/rover_eval/ (13 test cases, 3 categories)
+  - Precise (6): specific commands with known expected actions
+  - Ambiguous (5): vague commands requiring clarification
+  - Invalid (4): impossible/unavailable commands requiring refusal
+- **Recommended model: Qwen2.5-3B-Instruct** — 48/52 score, clean JSON format,
+  perfect safety boundaries (4.0/4 on all invalid commands), ~1s response time after warmup
+- **Sequential model loading order:** alternate large-small for safety margin
+  (Phi/Gemma → Qwen variants). With 128MB CMA any order works but alternating
+  provides extra headroom against CMA fragmentation.
+- **Key model characteristics:**
+  - Qwen2.5-3B: over-conservative on ambiguous rotation/direction commands but
+    impeccable JSON format and safety record — best for production use
+  - Qwen2.5-Coder-3B: occasionally returns single objects instead of arrays,
+    wraps output in markdown despite system prompt — format unreliable
+  - Gemma-3-4B: best precise command handling (3.92/4) but invents plausible
+    commands for impossible instructions — unsafe for physical rover
+  - Phi-3.5-mini: adds explanatory prose after JSON on harder cases — content
+    correct but format fails JSON parsing; not suitable without post-processing
+
 ### Xavier NX Rover Command Interface (primary use case)
-- Model: Qwen2.5-3B-Instruct-Q4_K_M (fastest, best JSON output)
+- Model: Qwen2.5-3B-Instruct-Q4_K_M (fastest, best JSON output, best safety)
 - Temperature: 0.3 (deterministic structured output)
-- Context: 32768 tokens
+- Context: 32768 tokens (interactive use); 2048 (evaluation/server)
 - Valid actions: move_forward, move_backward, turn_left, turn_right, stop,
   take_photo, analyze_sample
-- Evaluation framework: /data/rover_eval/test_cases.json (12 test cases,
-  3 categories: precise, ambiguous, invalid commands)
+- System prompt: engineered with few-shot JSON example, strict action list,
+  explicit array format requirement, CLARIFICATION_NEEDED format defined
+- Evaluation scripts: /data/rover_eval/evaluate_models.py
+- Test cases: /data/rover_eval/test_cases.json (13 cases)
+- Reports saved with timestamp: /data/rover_eval/report_YYYYMMDD_HHMM.txt
 
 ### Xavier NX GPU Cleanup Script
-~/cleanup_gpu.sh — resets GPU state after crashed model loads (4 steps):
-kills /dev/nvhost-gpu and /dev/nvmap holders, drops page cache,
-reloads nvgpu kernel module, displays memory status.
-NOTE: if NvMap errors persist after script, full reboot required.
+~/cleanup_gpu.sh — 5 steps (NO rmmod/modprobe between model loads):
+1. Kill processes holding /dev/nvhost-gpu, /dev/nvhost-ctrl-gpu, /dev/nvhost-prof-gpu,
+   /dev/nvhost-dbg-gpu, /dev/nvhost-ctrl, /dev/nvmap
+2. Drop Linux page cache (sync + echo 3 > /proc/sys/vm/drop_caches)
+3. Run memory compaction (echo 1 > /proc/sys/vm/compact_memory)
+4. Display memory status, CMA free, orphan NvMap handles
+NOTE: rmmod/modprobe nvgpu is REMOVED from between-model cleanup — it is
+unreliable for sequential use and causes GPU unavailability. Use only before
+the first model load or as absolute last resort before rebooting.
+Sudoers rule at /etc/sudoers.d/nvmap-diagnostics allows passwordless read
+of /sys/kernel/debug/nvmap/iovmm/orphan_handles.
 
 ## ZED ROS 2 WRAPPER — CRITICAL OPERATIONAL NOTES
 
@@ -795,12 +849,11 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
     SLAM/Mapping, Visual Odometry/Navigation, Object Detection/AI
 
 15. **Xavier NX LLM evaluation and llama-server setup:**
-    - Complete rover evaluation framework (Python script running all 4 models
-      against 12 test cases via llama-server HTTP API, scoring JSON validity,
-      action compliance, semantic correctness, clarification quality)
-    - Set up llama-server as systemd service (port 8080, Qwen2.5-3B default)
-    - Configure tmux on xavier for comfortable multi-pane SSH workflow
-    - Integrate LLM REST endpoint with ROS 2 (language_commander node)
+    - ✅ Complete rover evaluation framework (13 test cases, 4 models evaluated)
+    - ✅ CMA fix (128MB), cleanup script without rmmod, warmup query
+    - ⏳ Set up llama-server as systemd service (port 8080, Qwen2.5-3B default)
+    - ⏳ Integrate LLM REST endpoint with ROS 2 (language_commander node)
+    - ⏳ Rebuild llama.cpp with -DGGML_CUDA_FORCE_CUBLAS=ON (optional sm_72 optimization)
 
 14. **NoMachine display/mouse issue (new laptop — low priority):**
     Mouse coordinates offset by +1440px when viewing primary monitor
@@ -890,9 +943,10 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
 ## USEFUL COMMANDS REFERENCE
 
 ### Dell Host
-- `ssh jetson` → connect to Jetson
-- `jsync` → sync ~/ros2_ws/ to Jetson
-- `jscp <file> talos@192.168.1.211:<path>` → copy file to Jetson
+- `ssh orion` → connect to Jetson Orin Nano (alias, was previously `jetson`)
+- `ssh xavier` → connect to Jetson Xavier NX (alias)
+- `jsync` → sync ~/ros2_ws/ to Orion
+- `jscp <file> talos@192.168.1.211:<path>` → copy file to Orion
 - `docker buildx build --platform linux/arm64 --tag <n> --load .`
 - `cd ~/github/RobertUN && git pull origin main` → sync repository
 
@@ -927,10 +981,10 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
 
 ### Xavier NX — LLM Inference
 - `xavier` → SSH to Xavier NX (alias on Dell)
-- `~/cleanup_gpu.sh` → reset GPU VMM state after crashed model load
+- `~/cleanup_gpu.sh` → reset GPU state between model loads (NO rmmod — stays loaded)
 - `sudo nvpmodel -q` → verify power mode (should show MODE_20W_6CORE)
 - `sudo tegrastats --interval 1000` → monitor GPU/CPU/memory/power/temperature
-- `free -h` → check available RAM before running inference
+- `free -h && grep -E 'CmaFree|CmaTotal' /proc/meminfo` → check RAM and CMA state
 - Run benchmark (Qwen2.5-3B):
   `~/github/llama.cpp/build/bin/llama-bench -m /data/models/Qwen2.5-3B-Instruct-Q4_K_M.gguf -p 512 -n 128 -ngl 99 -fa 1`
 - Run benchmark (Gemma-3-4B — requires reduced batch):
@@ -938,19 +992,24 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
 - Interactive chat (rover commands, 32k context):
   `~/github/llama.cpp/build/bin/llama-cli -m /data/models/Qwen2.5-3B-Instruct-Q4_K_M.gguf -ngl 99 -fa 1 -c 32768 -t 4 --temp 0.3 --conversation --chat-template chatml`
 - List available devices: `~/github/llama.cpp/build/bin/llama-cli --list-devices`
-- `sudo busybox devmem 0x0c303018 w 0xc458 && sudo busybox devmem 0x0c303010 w 0xc400` → configure pinmux
-- `sudo modprobe can && sudo modprobe can_raw && sudo modprobe mttcan` → load modules
-- `sudo ip link set can0 type can bitrate 250000 && sudo ip link set can0 up` → bring up interface
-- `candump can0` → monitor all CAN traffic
-- `cansend can0 123#DEADBEEF` → send test frame
-- `cat /proc/device-tree/bus@0/mttcan@c310000/status` → verify CAN hardware active
+- Run full model evaluation: `cd /data/rover_eval && python3 evaluate_models.py 2>/dev/null`
+- View latest report: `ls -t /data/rover_eval/report_*.txt | head -1 | xargs more`
+
+### Xavier NX — tmux
+- `tmux new -s <name>` → start new session
+- `tmux attach -t <name>` → reattach to session
+- `Ctrl+A |` → split pane vertically
+- `Ctrl+A -` → split pane horizontally
+- `Ctrl+A h/j/k/l` → navigate panes (vim-style)
+- `Ctrl+A r` → reload tmux config
+- `Ctrl+A d` → detach session (keeps running)
 
 ### VS Code (Dell)
 - `Ctrl+Shift+P` → `Dev Containers: Reopen in Container` → open Dev Container
 - `Ctrl+Shift+P` → `Remote-SSH: Connect to Host` → jetson → connect to Jetson
 - `Ctrl+Shift+P` → `Dev Containers: Rebuild and Reopen` → only when Dockerfile changes
 
-### tmux Quick Reference (IsaacUN)
+### tmux Quick Reference (IsaacUN — prefix Ctrl+B; xavier — prefix Ctrl+A)
 - `Ctrl+B d` → detach from session (session keeps running)
 - `Ctrl+B |` → split pane vertically
 - `Ctrl+B -` → split pane horizontally

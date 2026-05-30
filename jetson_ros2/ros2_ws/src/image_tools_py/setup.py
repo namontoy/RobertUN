@@ -25,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             'color_car_counter = image_tools_py.color_car_counter_node:main',
+            'color_car_counter_service = image_tools_py.color_car_counter_service_node:main',
         ],
     },
 )

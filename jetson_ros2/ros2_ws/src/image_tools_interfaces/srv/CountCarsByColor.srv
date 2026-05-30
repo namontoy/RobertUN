@@ -1,0 +1,9 @@
+string image_path
+string target_color
+bool save_output_image
+string output_dir
+---
+bool success
+int32 count
+string summary
+string output_image_path

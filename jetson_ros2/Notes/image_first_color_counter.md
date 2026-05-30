@@ -13,13 +13,25 @@ Package:
 
 `ros2_ws/src/image_tools_py`
 
+Service interface package:
+
+`ros2_ws/src/image_tools_interfaces`
+
 Node:
 
 `color_car_counter`
 
+Service node:
+
+`color_car_counter_service`
+
 Source file:
 
 `ros2_ws/src/image_tools_py/image_tools_py/color_car_counter_node.py`
+
+Service source file:
+
+`ros2_ws/src/image_tools_py/image_tools_py/color_car_counter_service_node.py`
 
 ## What the node does
 
@@ -77,40 +89,123 @@ The parameter `target_color` accepts:
 - Default: `1.0`
 - Controls how often the result is published.
 
+## Service workflow
+
+This is the more useful interactive workflow.
+
+Terminal 1 runs a service server and waits.
+It does not process the image until another terminal sends a request.
+
+Service:
+
+`/count_cars_by_color`
+
+Service type:
+
+`image_tools_interfaces/srv/CountCarsByColor`
+
+Request fields:
+
+- `image_path`
+- `target_color`
+- `save_output_image`
+- `output_dir`
+
+Response fields:
+
+- `success`
+- `count`
+- `summary`
+- `output_image_path`
+
+### Terminal 1: start the service
+
+<pre>
+cd ~/RobertUN/jetson_ros2/ros2_ws
+colcon build --symlink-install
+ros2ws_init
+ros2 run image_tools_py color_car_counter_service
+</pre>
+
+Expected startup log:
+
+<pre>
+Ready: /count_cars_by_color
+</pre>
+
+### Terminal 2: use the helper menu
+
+<pre>
+cd ~/RobertUN/jetson_ros2
+ros2ws_init
+bash scripts/image_tools/request_color_count.sh
+</pre>
+
+The helper asks:
+
+<pre>
+Image path [/home/ingfisica/RobertUN/jetson_ros2/images/cars_Test.png]:
+Choose target color:
+1. red
+2. white
+3. black
+Save annotated output image? [Y/n]:
+Output directory [same as input image]:
+</pre>
+
+If output saving is enabled and the output directory is empty, the annotated image is saved next to the input image.
+
+Example output path:
+
+<pre>
+/home/ingfisica/RobertUN/jetson_ros2/images/cars_Test_red_detected.png
+</pre>
+
+### Direct service call
+
+The helper is only a convenience.
+The direct ROS 2 command is:
+
+<pre>
+ros2 service call /count_cars_by_color image_tools_interfaces/srv/CountCarsByColor \
+  "{image_path: '/home/ingfisica/RobertUN/jetson_ros2/images/cars_Test.png', target_color: 'red', save_output_image: true, output_dir: ''}"
+</pre>
+
 ## How to run
+
+This older workflow processes immediately at node startup.
+Use it when you want one quick run without the service/helper flow.
 
 Save the traffic image somewhere on the machine first.
 
 Recommended local path:
 
 <pre>
-~/RobertUN/jetson_ros2/datasets/sample_images/traffic_cars.png
+~/RobertUN/jetson_ros2/images/cars_Test.png
 </pre>
 
-The `datasets/` folder is ignored by Git, which is useful for local images and experiments.
+The `images/` folder is where the current traffic test image is stored.
 
 Build the workspace:
 
 <pre>
 cd ~/RobertUN/jetson_ros2/ros2_ws
 colcon build --symlink-install
-source /opt/ros/humble/setup.bash
-source install/setup.bash
+ros2ws_init
 </pre>
 
 Run the detector:
 
 <pre>
 ros2 run image_tools_py color_car_counter --ros-args \
-  -p image_path:=~/RobertUN/jetson_ros2/datasets/sample_images/traffic_cars.png \
+  -p image_path:=~/RobertUN/jetson_ros2/images/cars_Test.png \
   -p target_color:=red
 </pre>
 
 In a second terminal:
 
 <pre>
-source /opt/ros/humble/setup.bash
-source ~/RobertUN/jetson_ros2/ros2_ws/install/setup.bash
+ros2ws_init
 ros2 topic echo /color_car_count
 </pre>
 
@@ -118,7 +213,7 @@ To change color:
 
 <pre>
 ros2 run image_tools_py color_car_counter --ros-args \
-  -p image_path:=~/RobertUN/jetson_ros2/datasets/sample_images/traffic_cars.png \
+  -p image_path:=~/RobertUN/jetson_ros2/images/cars_Test.png \
   -p target_color:=white
 </pre>
 
@@ -126,7 +221,7 @@ Or:
 
 <pre>
 ros2 run image_tools_py color_car_counter --ros-args \
-  -p image_path:=~/RobertUN/jetson_ros2/datasets/sample_images/traffic_cars.png \
+  -p image_path:=~/RobertUN/jetson_ros2/images/cars_Test.png \
   -p target_color:=black
 </pre>
 
@@ -158,14 +253,14 @@ To use the local image inside Docker, also mount the image folder when running t
 In the helper prompt:
 
 <pre>
-Extra docker run args [none]: -v /home/ingfisica/RobertUN/jetson_ros2/datasets/sample_images:/workspace/sample_images
+Extra docker run args [none]: -v /home/ingfisica/RobertUN/jetson_ros2/images:/workspace/images
 </pre>
 
 Then inside Docker use:
 
 <pre>
 ros2 run image_tools_py color_car_counter --ros-args \
-  -p image_path:=/workspace/sample_images/traffic_cars.png \
+  -p image_path:=/workspace/images/cars_Test.png \
   -p target_color:=red
 </pre>
 

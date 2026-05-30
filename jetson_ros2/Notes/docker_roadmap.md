@@ -236,6 +236,28 @@ This helper is explained in detail in:
 
 `Notes/helper_docker.md`
 
+After the first validation, the helper was improved with:
+
+- `q`, `quit`, and `exit` support
+- recommended image/container names for the alive test
+- a warning when the container name is the same as the image name
+- an optional mount for live source edits from `ros2_ws/src`
+
+## Validation result
+
+This minimal Docker test was validated on the Jetson.
+
+What worked:
+
+- the helper script opened correctly
+- Docker listed the existing `alive-ros2-test` image
+- the container started and showed `/workspace/ros2_ws`
+- the workspace inside the image contained `build`, `install`, `log`, and `src`
+- `ros2 run alive_py alive_node` started the node
+- the node printed `message from the docker`
+- `ros2 topic echo /alive` received repeated `data: true` messages
+
+This proves the current Docker image can run the minimal ROS 2 heartbeat test.
 
 ## How to understand this execution
 
@@ -261,6 +283,6 @@ This test proves:
 After this minimal test works, the next useful Docker step would be one of these:
 
 - create two containers for the echo and the alive
-- mount the workspace from the host instead of copying it into the image
-- expand the helper to support stop, remove, and mount-based development workflows
+- test the new mounted-source helper mode during a live code edit
+- expand the helper to support stop and remove workflows
 - test ROS 2 GUI tools or networking

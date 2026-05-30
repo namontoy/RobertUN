@@ -100,6 +100,39 @@ The project is done when:
 
 ## Weekly plan
 
+### Camera-not-available path — Image-first perception
+
+The ZED 2i is not available yet, so camera-dependent work is postponed until the hardware is present.
+
+While waiting for the camera, we will build the perception pipeline using local images first.
+
+This temporary path lets us practice:
+
+* ROS 2 Python nodes for perception
+* image loading and OpenCV processing
+* configurable parameters such as `image_path` and `target_color`
+* publishing detection/count results as ROS 2 topics
+* Docker development with mounted source files
+
+Current image-first milestone:
+
+* Create an `image_tools_py` ROS 2 package.
+* Add a `color_car_counter` node.
+* Load a still traffic image from disk.
+* Detect one selected color class:
+
+  * `red`
+  * `white`
+  * `black`
+
+* Publish the count on `/color_car_count`.
+* Log the selected color and detected count through the ROS 2 logger.
+
+This does not replace the final ZED pipeline.
+It is a temporary development path so we can build perception logic before the camera arrives.
+
+When the ZED camera is available, the image source will move from local image files to live ZED ROS 2 topics.
+
 ### Week 0 — Baseline and repo foundation
 
 Goal: capture system info (Ubuntu/Jetson Linux/CUDA) + storage benchmark, create clean structure and creating a plan. This one.

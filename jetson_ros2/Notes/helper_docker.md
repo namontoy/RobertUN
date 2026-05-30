@@ -36,6 +36,8 @@ The helper has four actions:
 3. open a shell in a running container
 4. list images, containers, and mount directories
 
+The helper also accepts `q`, `quit`, or `exit` when you want to leave the menu or cancel a prompt.
+
 ---
 
 ## How to start the helper
@@ -67,6 +69,14 @@ When the script starts, it shows a small menu:
 </pre>
 
 Each number maps to one Docker task.
+
+You can also type:
+
+<pre>
+q
+</pre>
+
+to exit the helper.
 
 ---
 
@@ -128,6 +138,7 @@ Then it asks for:
 - image name
 - extra `docker run` arguments
 - whether to add `--rm`
+- whether to mount host `ros2_ws/src`
 
 Example:
 
@@ -136,6 +147,7 @@ Container name: alive-ros2-container
 Image name to run: alive-ros2-test
 Extra docker run args [none]:
 Add --rm for auto removal? [y/N]:
+Mount host ros2_ws/src for live source edits? [y/N]:
 </pre>
 
 If you do not enter extra arguments, the helper still uses:
@@ -143,6 +155,19 @@ If you do not enter extra arguments, the helper still uses:
 <pre>
 docker run -it --name alive-ros2-container alive-ros2-test
 </pre>
+
+If you answer `y` to the mount prompt, the helper adds:
+
+<pre>
+-v /home/ingfisica/RobertUN/jetson_ros2/ros2_ws/src:/workspace/ros2_ws/src
+</pre>
+
+That means:
+
+- host source folder: `~/RobertUN/jetson_ros2/ros2_ws/src`
+- container source folder: `/workspace/ros2_ws/src`
+
+The container then sees your current source files from the host.
 
 ### What the helper chooses by default
 
@@ -169,6 +194,47 @@ Examples:
 - `--network host`
 
 This makes the helper reusable for future images and containers.
+
+### Why the mount option matters
+
+Without mount mode, the Docker image uses the source code copied during `docker build`.
+
+That means:
+
+- edit code on the host
+- rebuild the image
+- run the container again
+
+With mount mode, the container sees the host `ros2_ws/src` directory directly.
+
+That means:
+
+- edit code on the host
+- run or rebuild inside the container depending on what changed
+
+For Python source edits in this `alive_py` package, `--symlink-install` usually makes this faster because the installed package points back to source files.
+
+For package metadata changes, new dependencies, or new executables, rebuild inside the container.
+
+### Name warning
+
+The helper warns if the container name is the same as the image name.
+
+Example of confusing names:
+
+<pre>
+image: alive-ros2-test
+container: alive-ros2-test
+</pre>
+
+This works, but it is harder to read later.
+
+Recommended names:
+
+<pre>
+image: alive-ros2-test
+container: alive-ros2-container
+</pre>
 
 ---
 
@@ -342,7 +408,12 @@ Container name: alive-ros2-container
 Image name to run: alive-ros2-test
 Extra docker run args [none]:
 Add --rm for auto removal? [y/N]:
+Mount host ros2_ws/src for live source edits? [y/N]:
 </pre>
+
+For the first basic Docker test, answer `n` to the mount prompt.
+
+For development, answer `y` to the mount prompt.
 
 ### Open a second shell
 
@@ -371,6 +442,66 @@ Inside that second shell, source the ROS environments if needed:
 source /opt/ros/humble/setup.bash
 source /workspace/ros2_ws/install/setup.bash
 </pre>
+
+### Use mount mode for development
+
+Mount mode is useful when you are actively editing source code.
+
+Start the helper:
+
+<pre>
+bash scripts/docker_scripts/docker_menu.sh
+</pre>
+
+Choose:
+
+<pre>
+2
+</pre>
+
+Then answer:
+
+<pre>
+Container name: alive-ros2-dev
+Image name to run: alive-ros2-test
+Extra docker run args [none]:
+Add --rm for auto removal? [y/N]: n
+Mount host ros2_ws/src for live source edits? [y/N]: y
+</pre>
+
+Inside the container:
+
+<pre>
+cd /workspace/ros2_ws
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 run alive_py alive_node
+</pre>
+
+If you edit only Python logic on the host, try stopping and rerunning the node first.
+
+If you edit `setup.py`, `package.xml`, add files, or add dependencies, rebuild inside the container:
+
+<pre>
+cd /workspace/ros2_ws
+source /opt/ros/humble/setup.bash
+colcon build --symlink-install
+source install/setup.bash
+</pre>
+
+### Validation result from the first test
+
+The first Docker test worked.
+
+Observed result:
+
+- the helper listed the existing `alive-ros2-test` image
+- the container entered `/workspace`
+- `/workspace/ros2_ws` contained `build`, `install`, `log`, and `src`
+- `ros2 run alive_py alive_node` printed `message from the docker`
+- `ros2 topic echo /alive` printed repeated `data: true`
+
+This confirms the minimal Docker image and ROS 2 heartbeat node are working together.
 
 ---
 

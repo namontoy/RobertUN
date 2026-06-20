@@ -270,3 +270,19 @@ This node detects color regions, not true cars.
 
 For the provided traffic image, red/white/black car counts are estimates.
 The next stage can replace this with a real detector while keeping the ROS 2 parameter and topic workflow.
+
+## Red detection tuning
+
+After inspecting the annotated red output image, the detector was tightened to remove obvious false positives.
+
+The improved filter now rejects:
+
+- very small boxes
+- boxes cut off by the bottom edge of the image
+- shapes with weak filled area inside the bounding box
+- shapes with aspect ratios that are less car-like
+
+The annotated image also includes a label with the selected color and count.
+
+This is still a heuristic.
+It improves the red demo, but it does not make white or black reliable because those colors overlap heavily with road markings, reflections, shadows, windows, and tires.

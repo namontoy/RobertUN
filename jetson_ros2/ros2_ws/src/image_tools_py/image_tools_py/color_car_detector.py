@@ -28,7 +28,7 @@ def count_cars_by_color(
         return DetectionResult(
             False,
             0,
-            f"Invalid target_color='{target_color}'. Use one   bash scripts/image_tools/request_color_count.shof: {valid}",
+            f"Invalid target_color='{target_color}'. Use one of: {valid}",
             '',
         )
 
@@ -93,6 +93,7 @@ def _clean_mask(mask):
 
 
 def _filter_candidates(contours, image_shape, min_area):
+    image_height, image_width = image_shape[:2]
     image_area = image_shape[0] * image_shape[1]
     candidates = []
 
@@ -105,10 +106,17 @@ def _filter_candidates(contours, image_shape, min_area):
         if width == 0 or height == 0:
             continue
 
+        if width < 30 or height < 18:
+            continue
+
+        if y + height > image_height - 8:
+            continue
+
         aspect_ratio = width / float(height)
         area_ratio = area / float(image_area)
+        fill_ratio = area / float(width * height)
 
-        if 0.45 <= aspect_ratio <= 4.5 and area_ratio <= 0.08:
+        if 0.8 <= aspect_ratio <= 4.2 and area_ratio <= 0.08 and fill_ratio >= 0.25:
             candidates.append((x, y, width, height, area))
 
     return candidates
@@ -122,6 +130,18 @@ def _save_annotated_image(image, image_path, target_color, candidates, output_di
     annotated = image.copy()
 
     box_color = _box_color(target_color)
+    label = f'{target_color}: {len(candidates)}'
+    cv2.putText(
+        annotated,
+        label,
+        (20, 35),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1.0,
+        box_color,
+        2,
+        cv2.LINE_AA,
+    )
+
     for x, y, width, height, _area in candidates:
         cv2.rectangle(annotated, (x, y), (x + width, y + height), box_color, 2)
 

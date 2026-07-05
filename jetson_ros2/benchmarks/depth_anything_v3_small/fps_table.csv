@@ -1,0 +1,9 @@
+video_name,frame_count,processed_frames,total_seconds,avg_fps,min_fps,max_fps,avg_inference_ms,output_video_path
+busyCity.mp4,315,312,591.117,0.528,0.077,0.768,1864.644,datasets/depth_anything_v3_small/output_videos/busyCity_depth_viz.mp4
+car_video.mp4,803,801,1485.543,0.539,0.369,0.789,1826.345,datasets/depth_anything_v3_small/output_videos/car_video_depth_viz.mp4
+forest.mp4,451,448,842.564,0.532,0.512,0.735,1854.987,datasets/depth_anything_v3_small/output_videos/forest_depth_viz.mp4
+hamilton.mp4,516,513,988.195,0.519,0.360,0.733,1896.721,datasets/depth_anything_v3_small/output_videos/hamilton_depth_viz.mp4
+humanoidrobot.mp4,285,281,534.505,0.526,0.366,0.748,1871.092,datasets/depth_anything_v3_small/output_videos/humanoidrobot_depth_viz.mp4
+lion-buffalo.mp4,647,640,1240.513,0.516,0.361,0.746,1906.633,datasets/depth_anything_v3_small/output_videos/lion-buffalo_depth_viz.mp4
+man_walking.mp4,359,356,670.180,0.531,0.370,0.748,1856.875,datasets/depth_anything_v3_small/output_videos/man_walking_depth_viz.mp4
+peoplewalking.mp4,345,341,629.463,0.542,0.515,0.779,1820.154,datasets/depth_anything_v3_small/output_videos/peoplewalking_depth_viz.mp4

@@ -28,6 +28,10 @@ recordings/
 # --- Misc logs ---
 *.log
 
+# --- Pre-ZED generated demonstration media ---
+final_preZED/outputs/*.mp4
+final_preZED/outputs/**/*.mp4
+
 #The agent that review my code for errors or possible risky implementations
 AGENTS.md 
 .codex

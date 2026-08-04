@@ -1,288 +1,213 @@
-# Weekly Plan — Jetson Orin Nano Stereo Perception (ROS 2)
+# Project Plan and Current Status
+
+## Project direction
+
+The first project idea was a complete stereo perception system for a ZED 2i
+camera on a Jetson Orin Nano. That target has not changed: the final system
+should publish tracked objects with distance in meters and should include the
+camera image, stereo depth, IMU, TF, visualization, benchmarks, and recovery
+tests.
 
-## Complete objective
+The camera was not available during the implementation period. Everything
+delivered in the current repository was therefore developed and tested
+**without the ZED camera**. Recorded videos replace the camera input, and Depth
+Anything V3 Small supplies normalized monocular relative depth instead of
+stereo metric depth.
+
+The current result is called the **pre-ZED pipeline**. It proves the ROS 2
+architecture and the perception workflow, while leaving hardware-dependent
+claims for the camera integration stage.
 
-Build a robotics-grade **edge perception subsystem** on Jetson Orin Nano using a **stereo camera (ZED 2i)**. The system will acquire synchronized left/right images, compute depth, run GPU-accelerated object detection, track objects over time with stable IDs, and publish results through ROS 2 with visualization and reliability features.
+## Scope summary
 
----
+| Area | Current result | ZED completion work |
+| --- | --- | --- |
+| Image source | Local MP4 published as `sensor_msgs/Image` | Use the verified rectified ZED image topic |
+| Detection | YOLO11n-640 through the local HTTP inference server | Validate performance with live camera images |
+| Tracking | C++ class-aware IoU tracker | Compare or integrate ZED tracking if useful |
+| Depth | Depth Anything V3 Small, normalized per frame | Use calibrated ZED stereo depth in meters |
+| Fusion | C++ exact-timestamp track and relative-depth fusion | Fuse tracks with synchronized metric depth |
+| Output | Temporary JSON on `/tracked_objects` | Review and stabilize the ROS message contract |
+| Visualization | Annotated ROS image and recorded MP4 | Add final live-camera RViz views |
+| IMU and TF | Not implemented without the camera | Validate IMU topics, transforms, and time alignment |
+| Reliability | Finite video workflow with timeout and output validation | Add camera reconnect, restart, and deployment tests |
+| Performance | Depth model benchmark and observed integration latency | Run final end-to-end camera benchmarks |
 
-## Systems we will use
+## Current software stack
 
-### Hardware
+- NVIDIA Jetson Orin Nano
+- Ubuntu 22.04
+- Jetson Linux R36.4.3
+- CUDA 12.6
+- ROS 2 Humble and `colcon`
+- Python for video I/O, HTTP inference clients, and visualization
+- C++ for tracking and depth-statistic fusion
+- Roboflow Inference Server for YOLO11 and Depth Anything V3
+- OpenCV for image conversion, drawing, and MP4 output
 
-* NVIDIA Jetson Orin Nano
-* **Stereolabs ZED 2i stereo camera**
+Docker is used for the local inference service and earlier ROS learning tests,
+but the repository is not a Docker-only project. The ROS 2 workspace can be
+built and run natively on the Jetson host.
 
-### Operating system and NVIDIA stack
+## Implemented pre-ZED workflow
 
-* Ubuntu 22.04 (Jammy)
-* Jetson Linux R36.4.3 (JetPack 6.x era)
-* CUDA 12.6
+```text
+MP4 -> image topic -> YOLO11 -> detections -> C++ tracker -> tracks
+  \-> image topic -> Depth Anything V3 -> relative depth -----> C++ fusion
+                                                           \-> /tracked_objects
+                                                               -> overlay MP4
+```
 
-### Robotics middleware and tooling
+The six nodes and their topic contracts are documented in
+[`final_preZED/docs/architecture.md`](final_preZED/docs/architecture.md).
+Build and run instructions are in
+[`final_preZED/README.md`](final_preZED/README.md).
 
-* ROS 2 Humble
-* colcon (build system for ROS 2)
-* RViz2 (visualization)
+## Milestone record
 
-### Perception, sensors, and acceleration
+### Foundation and ROS 2 learning
 
-* **Stereolabs ZED SDK + ZED ROS 2 wrapper (`zed-ros2-wrapper`)** for:
+**Completed without the camera**
 
-  * Left/right images (raw + rectified), depth, point cloud, and sensor streams
-  * IMU streams and transforms (camera↔IMU)
-  * **Object detection output (`~/obj_det/objects`)**
-  * **Tracking support (stable IDs when enabled)**
-* OpenCV (optional cross-checks, additional processing)
+- Captured the Jetson software baseline.
+- Created the ROS 2 workspace.
+- Built a minimal Python heartbeat publisher.
+- Practiced ROS 2 topics, packages, parameters, and services.
+- Tested a small Docker-based ROS 2 workflow.
 
-### Inertial sensing requirements (ZED 2i)
+The supporting milestones are summarized in
+[`docs/development_history.md`](docs/development_history.md). They are project
+history rather than instructions for the final pipeline.
+
+### Image-first perception experiment
+
+**Completed and superseded by the pre-ZED pipeline**
 
-We will ingest and publish:
+- Loaded local images with OpenCV.
+- Implemented color segmentation and a simple counting service.
+- Used ROS 2 parameters and standard messages.
 
-* **Accelerometer + gyroscope**
-* **IMU fused orientation**
-* **Magnetometer**
+This experiment did not perform learned object detection or depth estimation.
+It was a learning step before the YOLO and Depth Anything integration.
 
-### Languages
+### Depth model experiment and benchmark
+
+**Completed without the camera**
 
-* Python (rapid iteration, prototyping, ROS2 nodes early)
-* C++ (performance-critical nodes and memory/latency control later)
+- Integrated `depth-anything-v3/small` through the local HTTP inference server.
+- Processed eight recorded videos.
+- Stored per-video FPS and resource measurements.
+- Reviewed visual depth quality and documented limitations.
+- Measured an average of approximately `0.529 FPS` for that benchmark setup.
 
-### Docker utilization (Articulated Robotics approach) + ZED images
+The depth is monocular and relative. These measurements do not demonstrate
+metric accuracy or real-time ZED performance.
 
-We will containerize development and (optionally) deployment:
+### Detection and tracking
 
-* Use a **project Dockerfile** and/or **VS Code Dev Containers** workflow (Crafting Dockerfile → Devices in Docker → Dev Containers)
-* Leverage **Stereolabs-provided Docker resources** for ROS 2 + ZED on Jetson as reference/base:
+**Implemented without the camera**
 
-  * `Dockerfile.l4t-humble` (Jetson) and `Dockerfile.desktop-humble` (desktop)
-* Ensure containers can access:
+- Configured `yolov11n-640` with a `0.60` confidence threshold.
+- Added a detector allowlist for people, vehicles, and supported COCO animal
+  labels.
+- Added a C++ multi-object tracker using class-aware IoU matching.
+- Retained tracks for a small number of missed frames and marked whether each
+  track was observed in the current frame.
 
-  * GPU (NVIDIA container runtime)
-  * Camera devices and required permissions (device pass-through / privileged as needed)
-  * ROS 2 networking (host networking when appropriate)
+This is a transparent baseline tracker. It does not provide the robustness of
+a motion model or appearance-based tracker under difficult occlusion.
 
-### Deployment and reliability
+### Relative-depth fusion
 
-* systemd (autostart + restart on failure)
-* structured logging + benchmark reports
+**Implemented without the camera**
 
----
+- Preserved source timestamps through detection, tracking, and depth.
+- Fused only track and depth records with the same timestamp.
+- Calculated the median normalized depth over the center 60% of each bounding
+  box while excluding invalid zero pixels.
+- Published the result through the temporary `/tracked_objects` JSON contract.
 
-## Final product
+The field is explicitly marked `depth_is_metric: false`. It must not be
+renamed or interpreted as distance in meters.
 
-A ROS 2 stereo perception pipeline that runs on Jetson and outputs **tracked objects with distance** in real time.
+### Visualization and finite processing
 
-### Final system capabilities
+**Implemented; full-run validation remains in progress**
 
-* Stereo camera acquisition (left/right)
-* Stereo calibration + rectification
-* Depth estimation (depth in meters + point cloud where needed)
-* GPU-accelerated object detection
-* Multi-object tracking with stable IDs
-* Tracking + depth fusion: each tracked object includes estimated **distance (meters)**
-* **IMU sensing:** accelerometer + gyroscope + magnetometer streams available in ROS 2
-* ROS 2 topics + RViz visualization
-* Benchmarks: FPS, latency (p50/p95), CPU/RAM usage, depth sanity checks
-* Reliability: one-command launch + systemd autostart + restart on failure
+- Added an annotated image topic and MP4 writer.
+- Added a synchronized relative-depth inset.
+- Added a finite mode that processes one source frame at a time.
+- Added retries, timestamp deduplication, timeouts, and output-file checks.
+- Added a single-video runner and a shortest-first batch runner.
 
-### Definition of Done
+A ten-frame sampled smoke video was reported as complete and decodable. A
+later full-frame attempt exposed source-delivery losses and stopped after
+seven frames. The source path was changed to reliable ROS 2 QoS after that
+failure. A complete full-video and all-video run still needs to be repeated
+and recorded before those outputs can be claimed as validated.
 
-The project is done when:
+### Packaging and documentation
 
-1. One command starts the full pipeline (`ros2 launch ...`).
-2. RViz shows live stereo, detections, and tracked objects.
-3. Tracked objects include a distance estimate in meters.
-4. A final benchmark report exists with performance and depth sanity results.
-5. The system can auto-start and recover from simple failures (node crash/restart).
+**Implemented for the pre-ZED delivery**
 
----
+- Added one launch description for all six pre-ZED nodes.
+- Centralized runtime parameters in one YAML file.
+- Added package tests for HTTP response handling and tracker behavior.
+- Added developer documentation, architecture notes, and output conventions.
 
-## Weekly plan
+This packaging covers the camera-less milestone only. It is not the final ZED
+release package.
 
-### Camera-not-available path — Image-first perception
+## Remaining ZED stage
 
-The ZED 2i is not available yet, so camera-dependent work is postponed until the hardware is present.
+The following work cannot be completed honestly without access to the camera:
 
-While waiting for the camera, we will build the perception pipeline using local images first.
+1. Install and verify the ZED SDK and `zed-ros2-wrapper` versions compatible
+   with the Jetson software stack.
+2. Inspect the live topic list, message encodings, QoS, timestamps, and TF tree.
+3. Select the rectified color image and metric depth topics used by the project.
+4. Replace the video source and relative-depth branch without changing the
+   detector/tracker boundary unnecessarily.
+5. Handle invalid, missing, and out-of-range stereo depth values.
+6. Publish object distance in meters only after checking it against known
+   physical distances.
+7. Validate accelerometer, gyroscope, orientation, and magnetometer streams.
+8. Add the final RViz configuration for images, tracks, TF, and optional point
+   cloud data.
+9. Decide whether ZED object detection/tracking replaces the current detector,
+   runs beside it for comparison, or remains disabled.
+10. Replace the temporary JSON output with a reviewed ROS message contract.
+11. Run final FPS, p50/p95 latency, CPU, GPU, RAM, and metric-depth error tests.
+12. Test camera disconnect/reconnect, node failure, restart, and reboot-to-demo.
 
-This temporary path lets us practice:
+## Definition of done
 
-* ROS 2 Python nodes for perception
-* image loading and OpenCV processing
-* configurable parameters such as `image_path` and `target_color`
-* publishing detection/count results as ROS 2 topics
-* Docker development with mounted source files
+### Pre-ZED milestone
 
-Current image-first milestone:
+The software milestone is ready for demonstration when:
 
-* Create an `image_tools_py` ROS 2 package.
-* Add a `color_car_counter` node.
-* Load a still traffic image from disk.
-* Detect one selected color class:
+1. The inference server is available locally.
+2. One launch path starts the six camera-less ROS 2 nodes.
+3. Detection, tracking, relative-depth fusion, and overlay topics are visible.
+4. `/tracked_objects` identifies the depth as non-metric.
+5. A finite output MP4 passes decode, resolution, FPS, and frame-count checks.
+6. The build and package tests pass in the target environment.
 
-  * `red`
-  * `white`
-  * `black`
+Items 1-4 and a sampled ten-frame output were observed during validation on
+the target machine. The current reliable-delivery revision still needs a
+complete full-video run.
 
-* Publish the count on `/color_car_count`.
-* Log the selected color and detected count through the ROS 2 logger.
+### Final ZED project
 
-This does not replace the final ZED pipeline.
-It is a temporary development path so we can build perception logic before the camera arrives.
+The original project is complete only when:
 
-When the ZED camera is available, the image source will move from local image files to live ZED ROS 2 topics.
+1. The ZED 2i provides live rectified images, synchronized metric depth, IMU,
+   and valid TF data.
+2. Tracked objects include verified distance in meters.
+3. RViz displays the live pipeline.
+4. A final report contains measured performance and metric-depth accuracy.
+5. Camera and process recovery tests pass.
+6. One documented command starts the complete deployed system.
 
-### Week 0 — Baseline and repo foundation
-
-Goal: capture system info (Ubuntu/Jetson Linux/CUDA) + storage benchmark, create clean structure and creating a plan. This one.
-
-### Week 1 — ROS 2 Humble bring-up + workspace
-
-Goal: install ROS 2 Humble, create `ros2_ws`, build a first package, and run a basic node.
-Output: reproducible build instructions + a heartbeat node (`/alive`).
-
-**Additions for ZED + Docker:**
-
-* Install/verify **ZED SDK** and confirm the ZED 2i works using **Stereolabs tooling** (basic streaming + depth preview as a sanity check).
-* Add `docker/` folder:
-
-  * initial Jetson-focused Dockerfile (ROS 2 Humble base)
-  * optional `.devcontainer/` for Dev Containers workflow
-* Note whether Week 2+ development will be:
-
-  * (A) native on Jetson, (B) inside Docker on Jetson, or (C) devcontainer from a host PC targeting Jetson (documented choice)
-
-### Week 2 — ZED ROS 2 wrapper bring-up + topic verification
-
-Goal: bring up the **ZED ROS 2 wrapper** and confirm all required streams are publishing.
-Output: verified topics list + basic RViz visualization + stability notes.
-
-* Confirm left/right topics (raw + rectified availability) and TF tree consistency.
-* Confirm depth outputs (depth + point cloud where needed).
-* Confirm **IMU topics** are publishing (accel/gyro/orientation/magnetometer).
-* (Optional) create a small **adapter node** that republishes ZED topics into your preferred `/stereo/...` names (only if you really need those names).
-* If using Docker: confirm camera + IMU access from inside the container (device pass-through + permissions).
-
-### Week 3 — Stereo sync + dataset capture (Python)
-
-Goal: save synchronized stereo pairs with timestamps and verify frame pairing quality.
-Output: sync validation notes and sample dataset captured locally.
-
-* Capture a short dataset using **SVO recording** for repeatable testing (plus an exported stereo-pair dataset if needed).
-* Extend dataset capture to include **IMU samples** aligned to image timestamps (including magnetometer).
-
-### Week 4 — Stereo calibration + rectification
-
-Goal: validate calibration/rectification and lock the coordinate frames needed for fusion.
-Output: calibration notes committed + rectification demo.
-
-* Verify factory calibration/rectification pipeline via the ZED wrapper (rectified topics + TF consistency).
-* Validate and document camera↔IMU transforms for later stability checks and fusion.
-* (Optional) Run an OpenCV-based calibration cross-check if you want an independent baseline.
-
-### Week 5 — Depth estimation baseline
-
-Goal: validate depth quality and define the distance rule we will enforce for every tracked object.
-Output: depth sanity checks at multiple distances + error notes.
-
-* Use ZED depth outputs as the baseline (depth in meters + point cloud where required).
-* Define the project’s **distance rule** (per-object distance):
-
-  * Primary: use ZED 3D object position when available.
-  * Fallback: compute a robust statistic from depth inside the bbox (e.g., median/percentile) with invalid-depth handling.
-* Record depth sanity checks at multiple distances and document invalid-depth behavior.
-
-### Week 6 — Object detection baseline
-
-Goal: enable object detection and publish detections + overlays.
-Output: baseline inference FPS/latency benchmark.
-
-* Enable object detection and subscribe to `~/obj_det/objects`.
-* Select detection preset (FAST/MEDIUM/ACCURATE) and confidence thresholds.
-* Visualize detections in RViz and save a minimal RViz config for this stage.
-* Benchmark: FPS + p50/p95 latency as measured in the pipeline.
-
-### Week 7 — Detection tuning + tracking enablement
-
-Goal: enable tracking and tune performance + stability until IDs are reliable.
-Output: benchmark table with p50/p95 latency + stability notes.
-
-* Enable tracking and confirm stable IDs across frames.
-* Tune thresholds, filtering, max range, and reduced precision inference (if used).
-* Document caching/first-run behavior and how to reproduce consistent results.
-
-### Week 8 — Tracked objects publisher (project contract)
-
-Goal: publish `/tracked_objects` with a stable, clean message contract that will not change later.
-Output: tracking stability test notes (ID switches, lost tracks).
-
-* Convert tracked objects into the project output contract:
-
-  * stable ID
-  * bbox
-  * class/label
-  * 3D position (if available) or derived depth stats
-  * confidence
-* Add lifecycle handling (object lost → timeout → remove).
-
-### Week 9 — Distance fusion + stability rules
-
-Goal: every tracked object includes a stable distance in meters, with robust handling of invalid depth.
-Output: distance stability test (jitter, invalid depth handling).
-
-* Compute distance primarily from 3D object outputs; fallback to the Week 5 depth rule.
-* Add smoothing rules (low-pass / median over N frames) and handle:
-
-  * invalid depth
-  * sudden jumps
-  * close-range saturation
-* Add IMU “health + alignment” checks:
-
-  * accel/gyro/mag stream sanity
-  * timestamp consistency with image streams
-
-### Week 10 — C++ optimization
-
-Goal: rewrite one performance-critical node in C++ (fusion OR tracked objects publisher OR adapter/preprocessing).
-Output: measured performance improvement and clean CMake build.
-
-### Week 11 — Launch files + RViz integration
-
-Goal: one `ros2 launch` starts everything; a single RViz config shows the full system.
-Output: “one command demo” instructions.
-
-* Keep RViz workload reasonable on Jetson when benchmarking (avoid heavy point cloud + full-res images at once).
-
-### Week 12 — Reliability + deployment
-
-Goal: systemd service, restart-on-failure, structured logs, and a clear recovery workflow.
-Output: reboot-to-demo and crash recovery notes.
-
-**Docker option:**
-
-* Provide two service modes (documented):
-
-  * Native: systemd starts `ros2 launch ...`
-  * Containerized: systemd starts `docker run ...` (or docker compose) for the full pipeline
-
-### Week 13 — Final benchmarking and failure tests
-
-Goal: produce a final performance report (FPS, latency p50/p95, CPU/RAM, depth accuracy).
-Output: `benchmarks/final_report.md`.
-
-Include:
-
-* Depth sanity + per-object distance stability results
-* IMU stream sanity (accel/gyro/mag)
-* Failure tests: node crash/restart, container restart, reboot-to-demo, and camera re-plug test (if feasible)
-
-### Week 14 — Release packaging
-
-Goal: polish README, architecture diagram, and a final demo.
-Output: clear run instructions + results + roadmap for improvements.
-
-Additions:
-
-* Document ZED-specific setup (SDK + wrapper launch + key topics)
-* Document Docker workflow (how to build/run dev container + how to run on Jetson)
+Until these conditions are measured with the camera, the correct project
+description is **pre-ZED perception with relative monocular depth**.

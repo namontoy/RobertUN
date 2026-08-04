@@ -1,66 +1,76 @@
-# Depth Anything V3 Small Quality Notes
+# Depth Anything V3 Small Visual Review
 
-## busyCity.mp4
+## Evidence status
 
-- useful_depth: maybe
-- flicker: low
-- edge_quality: medium
-- relative_depth_consistency: medium
-- notes: Difficult to identify cars that are far from the camera. 
+These are qualitative observations from the eight recorded benchmark videos.
+They complement the timing CSV but are not ground-truth depth measurements.
+No ZED camera was used.
 
-## car_video.mp4
+## `busyCity.mp4`
 
-- useful_depth: yes
-- flicker: low
-- edge_quality: high
-- relative_depth_consistency: high
-- notes: Some fast frames appears to purple and black color, but only in those frames. When the video is consistent and smooth movement is perfect the depth estimation 
+- Useful depth: uncertain
+- Flicker: low
+- Edge quality: medium
+- Relative-depth consistency: medium
+- Notes: Cars far from the camera are difficult to separate reliably.
 
-## forest.mp4
+## `car_video.mp4`
 
-- useful_depth: yes
-- flicker: low
-- edge_quality: medium
-- relative_depth_consistency: high
-- notes: Only the grass with bushes have low quality in the edges. This is understandle because of same color and little differences. 
+- Useful depth: yes
+- Flicker: low
+- Edge quality: high
+- Relative-depth consistency: high
+- Notes: A few frames become purple or black during fast motion. Smooth parts
+  of the video produce a stable and useful depth visualization.
 
-## hamilton.mp4
+## `forest.mp4`
 
-- useful_depth: maybe
-- flicker: high
-- edge_quality: low
-- relative_depth_consistency: medium
-- notes: The worst video until here, but good useful data in some frames. The car dissapears from far distance. 
+- Useful depth: yes
+- Flicker: low
+- Edge quality: medium
+- Relative-depth consistency: high
+- Notes: Grass and bushes have weak boundaries where color and relative depth
+  are similar.
 
-## humanoidrobot.mp4
+## `hamilton.mp4`
 
-- useful_depth: yes
-- flicker: low
-- edge_quality: high
-- relative_depth_consistency: /high
-- notes: Almost perfect.
+- Useful depth: uncertain
+- Flicker: high
+- Edge quality: low
+- Relative-depth consistency: medium
+- Notes: This was the weakest video in the set, although some frames remain
+  useful. The distant car is not consistently separated.
 
-## lion-buffalo.mp4
+## `humanoidrobot.mp4`
 
-- useful_depth: yes
-- flicker: low
-- edge_quality: high
-- relative_depth_consistency: high
-- notes: We can difference each animal individually. Maybe the same color with little differences of distance, but useful. 
+- Useful depth: yes
+- Flicker: low
+- Edge quality: high
+- Relative-depth consistency: high
+- Notes: The depth visualization is stable across most of the short clip.
 
-## man_walking.mp4
+## `lion-buffalo.mp4`
 
-- useful_depth: yes
-- flicker: medium
-- edge_quality: high
-- relative_depth_consistency: high
-- notes: Only flicker at far distances. Some people appear a long distance walking and that flicker and made the depth not reliable. 
+- Useful depth: yes
+- Flicker: low
+- Edge quality: high
+- Relative-depth consistency: high
+- Notes: Individual animals are visually separated. Similar colors and small
+  depth differences still make some regions ambiguous. This review concerns
+  depth quality, not YOLO class accuracy.
 
-## peoplewalking.mp4
+## `man_walking.mp4`
 
-- useful_depth: yes
-- flicker: low
-- edge_quality:high
-- relative_depth_consistency:high
-- notes: Almost perfect. 
+- Useful depth: yes
+- Flicker: medium
+- Edge quality: high
+- Relative-depth consistency: high
+- Notes: Distant people flicker, so their relative depth is less reliable.
 
+## `peoplewalking.mp4`
+
+- Useful depth: yes
+- Flicker: low
+- Edge quality: high
+- Relative-depth consistency: high
+- Notes: Most people remain clearly separated in the depth visualization.

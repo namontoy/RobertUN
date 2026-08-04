@@ -1,8 +1,16 @@
 # Depth Anything V3 Small Video Benchmark
 
-This experiment benchmarks local inference for `depth-anything-v3/small` on MP4 videos.
+> **Document status:** This is the reproducible model experiment that preceded
+> the ROS 2 pre-ZED pipeline. It used recorded MP4 files and no ZED camera. The
+> measured results are in `benchmarks/depth_anything_v3_small/`; current ROS 2
+> integration instructions are in `final_preZED/README.md`.
 
-The goal is to decide whether the model is useful enough to continue toward ROS 2 integration.
+This experiment benchmarks local inference for `depth-anything-v3/small` on
+MP4 videos.
+
+The goal was to decide whether the model was useful enough to continue toward
+ROS 2 integration. That integration was later implemented in the pre-ZED
+workflow, while the model remained explicitly non-metric.
 
 ## Folders
 

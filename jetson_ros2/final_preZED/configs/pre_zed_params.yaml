@@ -1,0 +1,92 @@
+video_file_publisher:
+  ros__parameters:
+    video_path: datasets/depth_anything_v3_small/input_videos/car_video.mp4
+    output_topic: /prezed/image_raw
+    # Measured depth latency is 2.4-2.7 s; 0.3 Hz leaves processing margin.
+    playback_rate_hz: 0.3
+    loop: true
+    frame_id: prezed_camera
+    sequential_mode: false
+    completion_topic: /prezed/overlay
+    frame_stride: 1
+    completion_timeout_seconds: 150.0
+    minimum_image_subscribers: 3
+    startup_timeout_seconds: 30.0
+    subscriber_settle_seconds: 2.0
+    frame_retry_interval_seconds: 10.0
+    max_frame_retries: 5
+
+depth_anything_http_node:
+  ros__parameters:
+    input_topic: /prezed/image_raw
+    relative_depth_topic: /prezed/depth/relative_image
+    visualization_topic: /prezed/depth/visualization
+    server_url: http://localhost:9001
+    model_id: depth-anything-v3/small
+    api_key: ""
+    timeout_seconds: 120.0
+    jpeg_quality: 90
+
+yolo_http_detector_node:
+  ros__parameters:
+    input_topic: /prezed/image_raw
+    output_topic: /prezed/detections
+    server_url: http://localhost:9001
+    detector_model_id: "yolov11n-640"
+    api_key: ""
+    timeout_seconds: 120.0
+    jpeg_quality: 90
+    confidence_threshold: 0.60
+    iou_threshold: 0.5
+    # Presentation scope: people/humanoids, road vehicles, and COCO animals.
+    # Non-COCO robot labels are included in case the configured endpoint
+    # returns them; standard YOLO11 COCO usually maps a humanoid to person.
+    allowed_classes:
+      - person
+      - humanoid
+      - humanoid robot
+      - robot
+      - bicycle
+      - car
+      - motorcycle
+      - bus
+      - truck
+      - bird
+      - cat
+      - dog
+      - horse
+      - sheep
+      - cow
+      - elephant
+      - bear
+      - zebra
+      - giraffe
+
+simple_tracker_node:
+  ros__parameters:
+    input_topic: /prezed/detections
+    output_topic: /prezed/tracks
+    iou_threshold: 0.3
+    max_missed_frames: 3
+
+track_depth_fusion_node:
+  ros__parameters:
+    tracks_topic: /prezed/tracks
+    depth_topic: /prezed/depth/relative_image
+    output_topic: /tracked_objects
+    inner_bbox_scale: 0.6
+    minimum_depth_samples: 20
+    cache_size: 30
+
+pre_zed_overlay_node:
+  ros__parameters:
+    image_topic: /prezed/image_raw
+    depth_topic: /prezed/depth/relative_image
+    tracked_objects_topic: /tracked_objects
+    output_topic: /prezed/overlay
+    output_video_path: final_preZED/outputs/pre_zed_overlay.mp4
+    output_video_fps: 1.0
+    image_cache_size: 30
+    draw_unobserved_tracks: false
+    show_depth_inset: true
+    depth_inset_width_ratio: 0.28

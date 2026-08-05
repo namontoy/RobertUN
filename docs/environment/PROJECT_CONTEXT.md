@@ -1,5 +1,7 @@
 # Robotics Development Environment — Project Context Document
-# Last updated: May 29, 2026 (IsaacUN: Isaac Sim ROS 2 bridge working, snap removed, Docker migrated to apt, conda restored)
+# Last updated: August 4, 2026 (added forge workstation hardware/software profile;
+# Orion CAN bus software chain verified via loopback self-test, pre-wiring —
+# corrected the mttcan-blacklist assumption)
 # Paste this at the start of a new Claude session to restore full context
 
 ## HARDWARE
@@ -31,6 +33,16 @@
 - **Hostname:** xavier, username: talos
 - **Role:** Experimental LLM inference node — natural language rover command interface
 
+### forge (home LLM inference workstation)
+- **Machine:** Home workstation, Universidad Nacional / RobertUN project
+- **CPU:** Xeon E5-2680 v4 (28 threads)
+- **RAM:** 64GB ECC DDR4
+- **GPU:** NVIDIA GeForce RTX 3090 (24GB VRAM)
+- **Storage:** 4TB WD Red HDD
+- **OS:** Ubuntu 24.04
+- **Hostname:** forge, username: talos
+- **Role:** Primary local LLM inference machine
+
 ### Camera
 - **Model:** Stereolabs ZED 2i stereo camera
 - **Status:** ✅ FULLY OPERATIONAL
@@ -59,9 +71,9 @@
 
 ## NETWORK CONFIGURATION
 
-### Home network (Dell laptop + Jetson)
+### Home network (Dell laptop + Jetson + forge)
 - **Network convention:** Ethernet IP = 200 + WiFi IP (easy to remember)
-- **Gigabit switch:** installed, connects router + Dell + Jetson via Ethernet
+- **Gigabit switch:** installed, connects router + Dell + Jetson + forge via Ethernet
 
 #### Dell laptop
 - **Ethernet (primary):** 192.168.1.212 (static, interface enp4s0, metric 100)
@@ -76,6 +88,10 @@
 #### Jetson Xavier NX
 - **Ethernet (primary):** 192.168.1.210 (static, interface eth0)
 - **WiFi:** not used (wpa_supplicant disabled)
+
+#### forge
+- **Ethernet (primary):** 192.168.1.213 (static, interface enp7s0)
+- **IPv6:** disabled on enp7s0
 
 #### Shared
 - **Gateway:** 192.168.1.1
@@ -99,11 +115,14 @@
 - **Jetson Orin Nano:** username=talos, hostname=orion
 - **Jetson Xavier NX:** username=talos, hostname=xavier
 - **IsaacUN:** username=talos, hostname=IsaacUN
+- **forge:** username=talos, hostname=forge
 - **SSH config on Dell:** ~/.ssh/config has:
   - 'Host orion' → 192.168.1.211:44252 (Ethernet)
   - 'Host xavier' → 192.168.1.210:44252 (Ethernet)
 - **IsaacUN SSH:** systemd socket activation override at
   /etc/systemd/system/ssh.socket.d/override.conf (port 44252)
+- **forge SSH:** systemd socket activation override at
+  /etc/systemd/system/ssh.socket.d/override.conf (port 44252), same pattern as IsaacUN
 - **Aliases on Dell:**
   - `orion` → ssh to Jetson Orin Nano (previously named `jetson`)
   - `xavier` → ssh to Jetson Xavier NX
@@ -459,6 +478,37 @@ kills /dev/nvhost-gpu and /dev/nvmap holders, drops page cache,
 reloads nvgpu kernel module, displays memory status.
 NOTE: if NvMap errors persist after script, full reboot required.
 
+## FORGE — Ubuntu 24.04 x86_64
+- **CPU:** Xeon E5-2680 v4 (28 threads)
+- **RAM:** 64GB ECC DDR4
+- **GPU:** NVIDIA GeForce RTX 3090 (24GB VRAM)
+- **Storage:** 4TB WD Red HDD
+- **Role:** Primary local LLM inference machine for the project
+- **Setup status:** complete through Phase 8
+  - Snap fully removed (pinned via /etc/apt/preferences.d/no-snapd, same
+    approach as IsaacUN)
+  - Firefox installed from Mozilla apt repo (priority 1000 pin)
+  - Docker CE + NVIDIA Container Toolkit installed
+  - Miniconda3 installed, `ml` conda env (Python 3.11)
+  - llama.cpp built from source with CUDA backend
+    (-DGGML_CUDA=ON, -DCMAKE_CUDA_ARCHITECTURES=86)
+  - SSH on port 44252 via systemd socket override (see SSH CONFIGURATION)
+  - IPv6 disabled on enp7s0
+
+### forge Models (~/models)
+- Qwen2.5-3B Q4_K_M
+- Qwen2.5-32B Q4_K_M
+- Qwen2.5-32B Q3_K_M
+
+### forge RTX 3090 Benchmarks
+| Model | Quant | Generation | Prompt processing | VRAM |
+|-------|-------|------------|--------------------|------|
+| Qwen2.5-32B | Q4_K_M | ~35.7 t/s | 531.8 t/s | ~22.7GB |
+| Qwen2.5-32B | Q3_K_M (-c 8192) | — | — | ~17.4GB |
+
+Note: full 32K context on Q4_K_M pushes close to the 24GB VRAM ceiling —
+Q3_K_M is the safer choice when the full context window is needed.
+
 ## ZED ROS 2 WRAPPER — CRITICAL OPERATIONAL NOTES
 
 ### The Cyclone DDS loopback fix (ROOT CAUSE OF ALL LAUNCH FAILURES)
@@ -718,10 +768,49 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
 
 ### Known issues / gotchas
 - mttcan blacklist is the #1 cause of "CAN doesn't work" — always check first
+  (see verification log below: NOT assumed blanket-true, check per-machine)
 - Pinmux resets on reboot when using devmem method — use systemd service for persistence
 - If timing sync issues with external nodes: add sjw 4 parameter:
   `sudo ip link set can0 type can bitrate 250000 sjw 4`
 - CAN FD at 5 Mbps may need TDCR tuning via sysfs
+
+### Verification log — Aug 4, 2026 (Orion, pre-wiring)
+Confirmed via direct SSH session, before any physical CAN wiring or soldering
+(J17 header not yet installed at time of this check):
+- L4T release confirmed: R36.5 (matches expected build)
+- `busybox` was NOT installed by default on this Orion image (`can-utils` was
+  already present). Installed via:
+  `sudo apt-get install -y busybox can-utils`
+- **Correction to the assumption above:** `/etc/modprobe.d/denylist-mttcan.conf`
+  does NOT exist on this build — mttcan is not blacklisted here. Don't assume
+  the blacklist is present; check first with:
+  `cat /etc/modprobe.d/denylist-mttcan.conf 2>/dev/null || echo "no blacklist file found"`
+- `mttcan` module already loaded (`lsmod`): mttcan, nvpps (dep), can_dev (dep) —
+  0 references at check time, not yet claimed by an active can0 bring-up
+- Device tree node confirmed active:
+  `cat /proc/device-tree/bus@0/mttcan@c310000/status` → `okay`
+- `can0` netdev already present in `ls /sys/class/net` — module + active DT
+  node is sufficient to create the netdev; this does NOT mean pins are
+  wired/muxed yet, so don't over-read this as "CAN is ready"
+- **Loopback self-test PASSED** (controller-internal, no transceiver/pins needed):
+  ```bash
+  sudo ip link set can0 down
+  sudo ip link set can0 type can bitrate 250000 loopback on
+  sudo ip link set can0 up
+  candump can0 &
+  cansend can0 123#ABCDABCD
+  ```
+  Result: frame received twice in candump output (`AB CD AB CD`) — this is
+  expected SocketCAN behavior (local echo of sent frames + controller-level
+  loopback echo, both default-on), not a duplicate or an error.
+- `can0` brought back down after the test (`sudo ip link set can0 down`) to
+  leave a clean state before physical wiring begins
+- **Status: entire software chain (kernel module → driver → SocketCAN →
+  can-utils) verified working on Orion.** Remaining for real bus operation:
+  solder J17 header, wire SN65HVD230 transceiver, apply devmem pinmux, bring
+  up real can0 at 250 kbps, confirm with a second physical node (MKS CANable
+  V2.0 Pro via daedalus), then make pinmux + module load persistent via a
+  systemd service (devmem resets on every reboot).
 
 ## SYSTEMD SERVICES (DELL HOST)
 - **qemu-aarch64-binfmt-fix.service:**
@@ -732,6 +821,11 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
 - **ssh.socket override:**
   /etc/systemd/system/ssh.socket.d/override.conf
   Forces SSH to listen on port 44252 instead of default 22
+
+## SYSTEMD SERVICES (FORGE)
+- **ssh.socket override:**
+  /etc/systemd/system/ssh.socket.d/override.conf
+  Forces SSH to listen on port 44252 instead of default 22, same pattern as IsaacUN
 
 ## WORKSPACE STRUCTURE
 - **Dell workspace:** ~/ros2_ws/

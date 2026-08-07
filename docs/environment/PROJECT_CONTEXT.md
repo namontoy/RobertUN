@@ -1,6 +1,11 @@
 # Robotics Development Environment — Project Context Document
-# Last updated: August 6, 2026 (CAN bus W1 COMPLETE — MKS CANable V2.0 Pro flashed to candleLight, SN65HVD230 wired to J17, two-node physical bus validated at 250 kbps with 500-frame load test, pinmux + can0 config made persistent via systemd; earlier entry Aug 4: forge workstation profile, Orion loopback self-test, mttcan-blacklist assumption corrected) 
-
+# Last updated: August 6, 2026 (CAN bus W1 COMPLETE — MKS CANable V2.0 Pro flashed
+# to candleLight, SN65HVD230 wired to J17, two-node physical bus validated at
+# 250 kbps with 500-frame load test, pinmux + can0 config made persistent via
+# systemd; ALSO recovered the missing MKS SERVO42C UART protocol + torque
+# characterization from the June 8, 2026 bench session, which had never been
+# documented here; earlier entry Aug 4: forge workstation profile, Orion
+# loopback self-test, mttcan-blacklist assumption corrected)
 # Paste this at the start of a new Claude session to restore full context
 
 ## HARDWARE
@@ -1047,6 +1052,199 @@ to sample the same bits from different clocks; and — because the receiver must
 assert a dominant bit in the ACK slot of the transmitter's frame — **the link is
 bidirectional even if you only sent one direction.** A zero berr-counter on the
 transmitter is the proof the ACK arrived.
+
+## MKS SERVO42C V1.1 — UART PROTOCOL & BENCH VALIDATION
+
+**Recovered and added Aug 6, 2026. Source session: June 8, 2026 ("Rover wheel
+control board testing"). This was omitted from this file at the time — the whole
+session went undocumented, which later caused W3 to be misjudged as higher-risk
+than it is. The protocol below is validated against real hardware.**
+
+### Role in the architecture
+Steering actuator for the four corner modules. **UART-only — not CAN-native.**
+This is why each corner STM32F446RE is a bridge: CAN in from Orion, UART out to
+the SERVO42C. Motor is a NEMA 17 driving a custom 3D-printed 19:1 cycloidal
+gearbox.
+
+### Driver configuration (set via the onboard menu, per unit)
+```
+Menu → Mode     → CR_UART     (default is CR_vFOC — motion commands are IGNORED until changed)
+Menu → UartBaud → 38400       (factory default)
+Menu → UartAddr → 0xE0        (0xE0–0xE3, one per steering corner)
+```
+- **Bench unit as tested:** CR_UART, addr `0xE0`, 38400 baud, **Mstep = 8**
+- ⚠️ Read commands (e.g. `30`) respond in ANY mode; motion commands (`FD`, `F6`)
+  require CR_UART. A driver that answers an encoder read but ignores a move
+  command is almost certainly still in CR_vFOC.
+- **Only the 0xE0 unit has ever been configured.** The other three must have
+  UartAddr set individually before W7 replication.
+
+### Resolution with Mstep = 8 and the 19:1 gearbox
+```
+Pulses per motor revolution:   8 × 200        = 1,600
+Pulses per output revolution:  1,600 × 19     = 30,400
+Angular resolution at output:  360° / 30,400  = 0.01184°  (~43 arcseconds)
+```
+
+### Packet format
+```
+[addr] [function code] [data bytes...] [checksum]
+```
+Checksum = sum of ALL preceding bytes (addr and function code included), `& 0xFF`.
+It is a plain 8-bit additive checksum, not a real CRC, despite being called CRC.
+
+> **MANDATORY WORKING RULE — Claude has made repeated checksum errors on this
+> protocol.** Always write the full decimal breakdown before stating a checksum
+> byte, so the arithmetic can be checked at a glance. Example:
+> ```
+> E0 + 30 = 224 + 48 = 272
+> 272 & 0xFF = 272 − 256 = 16 = 0x10
+> ```
+
+### Verified command set (every checksum below re-verified Aug 6, 2026)
+
+**Read-only diagnostics — safe in any mode, no motion:**
+| Purpose | Full packet | Checksum arithmetic | Returns |
+|---|---|---|---|
+| Read encoder | `E0 30 10` | 224+48=272 → 16 | int32 carry + uint16 value |
+| Pulses received | `E0 33 13` | 224+51=275 → 19 | int32 pulse count |
+| Shaft angle error | `E0 39 19` | 224+57=281 → 25 | int16 (65536 = 360°) |
+| EN pin status | `E0 3A 1A` | 224+58=282 → 26 | `01`=enabled, `02`=disabled |
+| Protection state | `E0 3E 1E` | 224+62=286 → 30 | `01`=protected, `02`=clean |
+
+`E0 30 10` is the **safe first command** for any bring-up — no motion, no config change.
+
+**Motion (CR_UART only):**
+| Purpose | Full packet | Checksum arithmetic |
+|---|---|---|
+| Enable motor | `E0 F3 01 D4` | 224+243+1=468 → 212 |
+| Stop / hold | `E0 F7 D7` | 224+247=471 → 215 |
+| Move 1,600 pulses CW (1 motor rev @ Mstep 8) | `E0 FD 02 00 00 06 40 25` | 224+253+2+0+0+6+64=549 → 37 |
+| Move 1,600 pulses CCW | `E0 FD 82 00 00 06 40 A5` | 224+253+130+0+0+6+64=677 → 165 |
+| Move 160 pulses CW | `E0 FD 02 00 00 00 A0 7F` | 224+253+2+0+0+0+160=639 → 127 |
+| Move 160 pulses CCW | `E0 FD 82 00 00 00 A0 FF` | 224+253+130+0+0+0+160=767 → 255 |
+| Move 16 pulses CW (fine step) | `E0 FD 02 00 00 00 10 EF` | 224+253+2+0+0+0+16=495 → 239 |
+
+`FD` layout: `FD [VAL] [uint32 pulses, big-endian]`, where VAL bit7 = direction
+(0 = CW, 1 = CCW) and bits6–0 = speed. **`0x02` = CW speed 2; `0x82` = CCW speed 2.**
+
+`F6` runs at constant speed with the same VAL byte encoding. Speed formula for a
+1.8° motor: `RPM = (Speed × 30000) / (Mstep × 200)`.
+For steering, use low speed values (1–4) with `FD`, not `F6`.
+
+**Configuration (persistent, written to flash):**
+| Parameter | Code | Data | Default |
+|---|---|---|---|
+| Motor type | `81` | `00`=0.9°, `01`=1.8° | `01` |
+| Work mode | `82` | `00`=OPEN, `01`=vFOC, `02`=UART | `01` |
+| Microstepping | `84` | `00`–`FF` | `10` (16) |
+| EN pin polarity | `85` | `00`=L, `01`=H, `02`=Hold | `00` |
+| Direction | `86` | `00`=CW, `01`=CCW | `00` |
+| Locked-rotor protection | `88` | `00`=off, `01`=on | `00` |
+| Baud rate | `8A` | `01`=9600 … `06`=115200 | `04` (38400) |
+| UART address | `8B` | `00`–`09` → addr = `0xE0 + n` | `00` |
+| Restore defaults | `3F` | — | — |
+| **Kp** (position) | `A1` | uint16 | `0x0650` = 1616 |
+| **Ki** (position) | `A2` | uint16 | `0x0001` = 1 |
+| **Kd** (position) | `A3` | uint16 | `0x0650` = 1616 |
+| **ACC** (accel ramp) | `A4` | uint16 | `0x011E` = 286 — ⚠️ too large can damage the board |
+| **MaxT** (max torque) | `A5` | uint16, range 0–`0x04B0` | `0x04B0` = 1200 |
+
+Set MaxT to maximum: `E0 A5 04 B0 39` → 224+165+4+176 = 569 → 569−512 = 57 = 0x39
+Set Kp to default:   `E0 A1 06 50 D7` → 224+161+6+80 = 471 → 471−256 = 215 = 0xD7
+
+### Response format
+| Response | Meaning | Checksum |
+|---|---|---|
+| `E0 01 E1` | command accepted / run starting | 224+1=225 |
+| `E0 02 E2` | run complete | 224+2=226 |
+
+**Encoder read** `E0 30 10` → e.g. `E0 FF FF FF F8 2B B1 B1`
+```
+E0            addr
+FF FF FF F8   carry, int32 = −8 (full encoder overflows)
+2B B1         value, uint16 = 11,185
+B1            checksum
+```
+
+**Angle error** `E0 39 19` → e.g. `E0 FF 99 78`
+```
+0xFF99 as int16 = −103
+−103 / 65536 × 360° = −0.566°
+```
+Negative = shaft pushed back from its target by the external load.
+
+> ⚠️ **OPEN QUESTION for W9 precision calibration.** The SERVO42C encoder sits on
+> the **motor** shaft, so these angle-error degrees are motor-side. The stiffness
+> figures below pair motor-side degrees with output-side torque, so they are a
+> mixed-unit convenience number, not a true output stiffness. Divide by 19 for
+> output-referred deflection (−0.566° motor ≈ −0.0298° output). Resolve this
+> convention explicitly before quoting stiffness anywhere it matters.
+
+### Torque characterization — June 8, 2026
+
+**Rig:** AMF-300 digital force gauge (300 N max) rigidly frame-mounted at exactly
+**10 cm** from the rotation axis. A 20×20 aluminium profile on the gearbox output
+shaft presses against it. `Torque (N·m) = Force (N) × 0.10`. If the gauge reads
+kgf: `Torque = kgf × 9.81 × 0.10`.
+
+**Method:** enable, advance in 16-pulse steps (`E0 FD 02 00 00 00 10 EF`), and at
+each step record force, angle error (`E0 39 19`), and supply current.
+
+**Run 1 — default MaxT:**
+| Force (N) | Torque (N·m) | Angle error (°) |
+|---|---|---|
+| 7.3 | 0.73 | −0.566 |
+| 9.4 | 0.94 | −0.697 |
+| 11.6 | 1.16 | −0.900 |
+| 13.7 | 1.37 | −1.038 |
+| 15.7 | 1.57 | −1.170 |
+| 17.7 | 1.77 | −1.312 |
+| 19.7 | 1.97 | −1.471 |
+| 21.7 | 2.17 | −1.602 |
+| 23.7 | 2.37 | −1.794 |
+| 25.8 | 2.58 | −1.971 |
+| 27.5 | 2.75 | −2.234 |
+| 29.6 | 2.96 | −2.393 |
+| 31.6 | 3.16 | −2.658 |
+| 33.6 | 3.36 | −2.850 |
+| 35.7 | 3.57 | −3.091 |
+
+Run 1 peaked at **4.95 N·m** before the driver stopped.
+
+**Run 2 — MaxT raised to maximum (`E0 A5 04 B0 39`):** pushed to a true stall
+boundary at **5.57 N·m**, drawing **1550 mA** = **18.66 W** at 12.04 V.
+
+**Results:**
+- **Safe continuous operating torque: ~3.5 N·m**
+- **Peak / stall torque: 5.57 N·m**
+- Average stiffness ~1.36 N·m/° early, falling to ~0.90 N·m/° near 3.5 N·m
+  (see the mixed-unit caveat above)
+- Gearbox mechanical efficiency estimated **50–65%** — consistent with printed
+  cycloidal expectations
+- **Scrub torque required, 45 kg rover with 13 cm wide wheels: ~1.325 N·m**,
+  computed with the **contact-patch model, NOT the wheel-radius model**
+  → **4.2× safety margin** against the 5.57 N·m stall figure
+
+**Notable measured behaviour — current draw is remarkably low under load.** At
+3.36–3.57 N·m the supply drew only **135–166 mA at 12 V (~1.6–2.0 W)**, with no
+audible noise and no heat. Current climbs slowly as the PID works harder, then
+spikes sharply at the stall boundary (1550 mA). That transition is the reliable
+indicator of the true torque limit — watch current, not force.
+
+### What this means for W3 (STM32 UART firmware)
+**Already proven, do not re-derive:** packet format, checksum, command bytes,
+response decoding, motor behaviour under load.
+**Still unproven, this is the actual W3 work:** STM32 HAL UART configuration;
+asynchronous response timing (the driver replies in two stages for `FD` — start
+then complete — and `39` reads inside a control loop have latency implications);
+parsing responses in C rather than reading hex by eye; assigning and verifying
+addresses `0xE0`–`0xE3` across four physical drivers, only one of which has ever
+been on the bench.
+
+### Tooling
+Custom serial terminal running on daedalus (built earlier with Claude Design +
+Claude Code), used in hex mode — sends raw byte sequences and shows raw responses.
 
 ## SYSTEMD SERVICES (DELL HOST)
 - **qemu-aarch64-binfmt-fix.service:**

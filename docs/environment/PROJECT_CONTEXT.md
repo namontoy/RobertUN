@@ -1070,14 +1070,32 @@ gearbox.
 ```
 Menu → Mode     → CR_UART     (default is CR_vFOC — motion commands are IGNORED until changed)
 Menu → UartBaud → 38400       (factory default)
-Menu → UartAddr → 0xE0        (0xE0–0xE3, one per steering corner)
+Menu → UartAddr → 0xE0        (ALL units — see addressing note below)
 ```
 - **Bench unit as tested:** CR_UART, addr `0xE0`, 38400 baud, **Mstep = 8**
 - ⚠️ Read commands (e.g. `30`) respond in ANY mode; motion commands (`FD`, `F6`)
   require CR_UART. A driver that answers an encoder read but ignores a move
   command is almost certainly still in CR_vFOC.
-- **Only the 0xE0 unit has ever been configured.** The other three must have
-  UartAddr set individually before W7 replication.
+
+### Addressing: all four steering drivers stay at 0xE0
+The UART link is **point-to-point** — each corner STM32F446RE has its own
+dedicated UART to its own SERVO42C. There is no shared bus, so there is nothing
+for the address byte to disambiguate. `0xE0` is a protocol constant, not an
+identifier.
+
+**Module identity lives in the CAN ID, not the UART address.** Each STM32 has a
+unique CAN node ID; the SERVO42C behind it does not need one.
+
+Consequences, all favourable:
+- **Identical firmware on all four corners** — no per-unit address constant, no
+  build variants. Directly simplifies W7 replication.
+- **Drivers are interchangeable spares** — a failed unit is swapped from the
+  shelf with no menu reconfiguration.
+- One less commissioning step per module, and one less thing to get silently wrong.
+
+Addresses `0xE0`–`0xE3` would only be needed if several drivers shared one UART
+(multi-drop), which this architecture does not do. Keep it in mind only for a
+bench scenario where two drivers are deliberately hung off one USB-serial adapter.
 
 ### Resolution with Mstep = 8 and the 19:1 gearbox
 ```
@@ -1238,9 +1256,9 @@ response decoding, motor behaviour under load.
 **Still unproven, this is the actual W3 work:** STM32 HAL UART configuration;
 asynchronous response timing (the driver replies in two stages for `FD` — start
 then complete — and `39` reads inside a control loop have latency implications);
-parsing responses in C rather than reading hex by eye; assigning and verifying
-addresses `0xE0`–`0xE3` across four physical drivers, only one of which has ever
-been on the bench.
+parsing responses in C rather than reading hex by eye; and confirming the other
+three drivers are set to CR_UART / 38400 / Mstep 8 (address needs no change —
+all stay at `0xE0`), since only one unit has ever been on the bench.
 
 ### Tooling
 Custom serial terminal running on daedalus (built earlier with Claude Design +

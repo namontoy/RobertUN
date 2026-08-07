@@ -1,7 +1,6 @@
 # Robotics Development Environment — Project Context Document
-# Last updated: August 4, 2026 (added forge workstation hardware/software profile;
-# Orion CAN bus software chain verified via loopback self-test, pre-wiring —
-# corrected the mttcan-blacklist assumption)
+# Last updated: August 6, 2026 (CAN bus W1 COMPLETE — MKS CANable V2.0 Pro flashed to candleLight, SN65HVD230 wired to J17, two-node physical bus validated at 250 kbps with 500-frame load test, pinmux + can0 config made persistent via systemd; earlier entry Aug 4: forge workstation profile, Orion loopback self-test, mttcan-blacklist assumption corrected) 
+
 # Paste this at the start of a new Claude session to restore full context
 
 ## HARDWARE
@@ -628,6 +627,17 @@ ros2 topic echo /zed/zed_node/imu/data --once   # Verify real sensor data
     by NVIDIA for development)
   - All nodes (Jetson + all STM32 nodes) use this same transceiver
   - For CAN FD in the future: upgrade to TJA1051T/3 or MCP2562FD
+- **RS pin (pin 8) — mode control, verified on the actual breakout Aug 6, 2026**
+  - Three modes: RS→GND = high-speed; RS→VCC = standby (driver DISABLED,
+    receives but never transmits); RS→GND via resistor = slope control
+  - **The breakout in use has 10 kΩ from RS to GND → slope-control mode**
+    (~15 V/µs slew rate, deliberate EMI reduction, standard on these blue boards)
+  - Non-issue at 250 kbps: edges take ~0.1 µs against a 4 µs bit time
+  - CONSTRAINT IF BITRATE IS EVER RAISED — the 10 kΩ becomes a real limit;
+    check this before assuming a higher bitrate is achievable
+  - A FLOATING RS pin is undefined and commonly lands in standby. Symptom:
+    node looks perfectly healthy (ERROR-ACTIVE) but nothing ever reaches
+    the wire. Always verify RS before debugging wiring.
 
 ### STM32 CAN peripheral
 - **STM32F4xx uses bxCAN peripheral** (Basic Extended CAN)
@@ -728,8 +738,13 @@ sudo modprobe can
 sudo modprobe can_raw
 sudo modprobe mttcan
 ```
-**Critical:** mttcan is blacklisted by default in /etc/modprobe.d/denylist-mttcan.conf
-To enable permanently:
+**Check, don't assume:** mttcan is blacklisted on SOME L4T builds via
+/etc/modprobe.d/denylist-mttcan.conf — but it is **NOT blacklisted on Orion's
+R36.5 build** (verified Aug 4, 2026). Check per-machine first:
+```bash
+cat /etc/modprobe.d/denylist-mttcan.conf 2>/dev/null || echo "no blacklist file found"
+```
+If a blacklist file does exist:
 ```bash
 sudo rm /etc/modprobe.d/denylist-mttcan.conf
 echo "mttcan" | sudo tee /etc/modules-load.d/mttcan.conf
@@ -737,8 +752,8 @@ echo "mttcan" | sudo tee /etc/modules-load.d/mttcan.conf
 
 ### Bring up CAN interface (SocketCAN)
 ```bash
-# Classical CAN at 250 kbps (selected rover bitrate):
-sudo ip link set can0 type can bitrate 250000
+# Classical CAN at 250 kbps (selected rover bitrate) — ALWAYS set sjw explicitly:
+sudo ip link set can0 type can bitrate 250000 sjw 16 restart-ms 100
 sudo ip link set can0 up
 
 # CAN FD (500 kbps nominal / 1 Mbps data):
@@ -751,7 +766,7 @@ candump can0                        # receive all frames
 cansend can0 123#ABCDABCD           # send a frame
 ```
 
-### Loopback self-test (no transceiver needed — short TX and RX pins on J17)
+### Loopback self-test (controller-internal — does NOT touch the pins)
 ```bash
 sudo ip link set can0 down
 sudo ip link set can0 type can bitrate 250000 loopback on
@@ -759,6 +774,21 @@ sudo ip link set can0 up
 candump can0 &
 cansend can0 123#ABCDABCD
 ```
+**What this does and does not prove.** `loopback on` is a controller test mode —
+the signal never reaches J17. It validates kernel module → driver → SocketCAN →
+can-utils only.
+
+**There is NO useful "pins-only, no transceiver" test.** Physically shorting
+TX to RX on J17 adds nothing: SocketCAN's `loopback` flag bypasses the pins,
+and with `loopback off` a lone node shorting its own TX to RX cannot self-ACK
+(it sends recessive in the ACK slot and samples its own recessive), so it
+error-frames and retransmits forever. The pinmux is validated by (a) devmem
+register readback and (b) a real two-node bus test. Do not budget time for a
+short-pin test.
+
+**Also beware SocketCAN's software local echo**: `candump` displays frames you
+sent even if the controller is dead. A frame on screen proves almost nothing on
+its own — check the driver's RX packet counter via `ip -s link show can0`.
 
 ### Verify device tree node is active
 ```bash
@@ -769,9 +799,16 @@ Note: path prefix is bus@0/ on JetPack 6.x (different from JetPack 5.x)
 ### Known issues / gotchas
 - mttcan blacklist is the #1 cause of "CAN doesn't work" — always check first
   (see verification log below: NOT assumed blanket-true, check per-machine)
-- Pinmux resets on reboot when using devmem method — use systemd service for persistence
-- If timing sync issues with external nodes: add sjw 4 parameter:
-  `sudo ip link set can0 type can bitrate 250000 sjw 4`
+- Pinmux resets on reboot when using devmem method — solved by
+  robertun-can0.service (see "CAN BUS — PERSISTENCE" below)
+- **SJW must ALWAYS be set explicitly — use `sjw 16` on this network.**
+  Driver defaults differ: mttcan defaults to 1, gs_usb (CANable) to 8.
+  At 250 kbps on Orion the bit is 200 tq, so sjw 1 gives only 0.5% of a bit
+  time of resync authority ≈ 250 ppm combined oscillator tolerance between any
+  two nodes. Crystal-clocked nodes pass; an STM32F446RE running off the
+  internal HSI RC oscillator (±1% over temperature) will NOT, and it fails as
+  random bit errors under load — a bug that looks like bad firmware.
+  sjw must stay ≤ min(phase-seg1, phase-seg2); 16 is safe (limit is 25).
 - CAN FD at 5 Mbps may need TDCR tuning via sysfs
 
 ### Verification log — Aug 4, 2026 (Orion, pre-wiring)
@@ -811,6 +848,205 @@ Confirmed via direct SSH session, before any physical CAN wiring or soldering
   up real can0 at 250 kbps, confirm with a second physical node (MKS CANable
   V2.0 Pro via daedalus), then make pinmux + module load persistent via a
   systemd service (devmem resets on every reboot).
+  **→ ALL OF THE ABOVE COMPLETED Aug 6, 2026 — see log at end of this section.**
+
+## CAN BUS — MKS CANable V2.0 Pro (daedalus debug node)
+
+### Role
+Development sniffer / second bus node. **Not part of the permanent rover
+architecture** — it is not autonomous, it needs daedalus driving it. But the
+bus cannot tell its frames from a real STM32 node's frames, which makes it an
+**independent witness**: when a node misbehaves in W2–W9, `candump` on daedalus
+shows what is actually on the wire, rather than what Orion's stack thinks is
+on the wire.
+
+### Hardware
+- STM32G431C8T6 @ 170 MHz, USB-C, onboard 120Ω termination selectable by jumper
+- **Ships from the factory with slcan firmware** (`16d0:117e`, appears as
+  /dev/ttyACM0, needs the slcand daemon to reach SocketCAN)
+- **Flashed to candleLight** → `1d50:606f`, native `can0` via the in-kernel
+  `gs_usb` driver. Same tools, same commands, same mental model as Orion's
+  mttcan — one thing to learn instead of two.
+- **Reset quirk:** resetting the board too quickly causes boot problems. Always
+  leave it unpowered ~2 seconds on reset. (Permanent fix requires reprogramming
+  the STM32 option bytes over SWD — not done, not needed.)
+
+### candleLight flashing procedure (performed Aug 6, 2026)
+```bash
+# 1. Identify current firmware BEFORE flashing
+lsusb                          # 16d0:117e = slcan | 1d50:606f = candleLight already
+ls /dev/ttyACM*                # present = slcan
+ip -brief link show type can   # a can0 here = candleLight already
+
+# 2. Get dfu-util and the firmware
+sudo apt install -y dfu-util
+mkdir -p ~/github/canable_fw && cd ~/github/canable_fw
+wget "https://raw.githubusercontent.com/makerbase-mks/CANable-MKS/main/Firmware/CANable%20V2.0/candlelight.zip"
+unzip -o candlelight.zip        # → candlelight/canable2_fw-ba6b1dd.bin
+
+# 3. Unplug, install BOOT jumper, wait 2 s, replug. Verify DFU:
+lsusb | grep -i "0483:df11"     # STM Device in DFU Mode
+sudo dfu-util -l                # confirm alt=0 is "@Internal Flash /0x08000000/64*02Kg"
+
+# 4. Flash
+sudo dfu-util -d 0483:df11 -a 0 -s 0x08000000:leave \
+  -D ~/github/canable_fw/candlelight/canable2_fw-ba6b1dd.bin
+
+# 5. Unplug, REMOVE BOOT JUMPER, wait 2 s, replug
+```
+- Firmware source: `makerbase-mks/CANable-MKS`, `Firmware/CANable V2.0/candlelight.zip`
+  (use the `.bin`; the `.dfu` is Windows DfuSe format). The `.bin` has no
+  embedded address, which is why `-s 0x08000000` is passed explicitly.
+- **Two alarming-but-harmless messages are EXPECTED:**
+  - `Invalid DFU suffix signature` — raw .bin has no DFU suffix
+  - `Error during download get_status` **after** `File downloaded successfully`
+    — `:leave` detached the device, so the final status query hit nothing
+  - The line that matters is `File downloaded successfully`
+- Confirm success: `1d50:606f`, dmesg shows `Product: canable2 gs_usb`,
+  `Manufacturer: canable.io`, `gs_usb` bound, and a `can0` netdev appears.
+- The generic canable2 firmware works fine on the Pro variant (the Pro differs
+  only in its isolated transceiver, not the MCU).
+- Fallback if the official build misbehaves: third-party "CANable 2.5" firmware.
+
+### Bring-up on daedalus
+```bash
+sudo ip link set can0 down
+sudo ip link set can0 type can bitrate 250000 sjw 16 loopback off
+sudo ip link set can0 up
+```
+**Always clear `loopback off` explicitly.** The loopback flag persists across a
+down/up cycle. A node left in loopback mode on a real bus happily shows you its
+own frames while never driving the wire — you will conclude the cable is broken.
+
+## CAN BUS — PERSISTENCE (Orion, robertun-can0.service)
+
+Two things reset on every boot: the devmem pinmux writes, and the can0
+bitrate/sjw configuration. An intermittent CAN setup will masquerade as STM32
+firmware bugs in W2–W9, so this is not optional.
+
+### /usr/local/sbin/robertun-can0-setup.sh
+```bash
+#!/bin/bash
+# RobertUN — Orion CAN0 bring-up (pinmux + interface config)
+set -e
+BB=/usr/bin/busybox
+
+# 1. Pinmux: CAN0_DIN (RX) and CAN0_DOUT (TX) on J17
+$BB devmem 0x0c303018 w 0xc458
+$BB devmem 0x0c303010 w 0xc400
+
+# 2. Verify the writes actually landed
+RX=$($BB devmem 0x0c303018)
+TX=$($BB devmem 0x0c303010)
+[ "$RX" = "0x0000C458" ] || { echo "pinmux RX readback failed: $RX"; exit 1; }
+[ "$TX" = "0x0000C400" ] || { echo "pinmux TX readback failed: $TX"; exit 1; }
+
+# 3. Ensure driver is loaded (no-op if device tree already bound it)
+modprobe mttcan || true
+
+# 4. Wait for the netdev — probe can lag the pinmux write
+for i in $(seq 1 50); do
+    [ -d /sys/class/net/can0 ] && break
+    sleep 0.1
+done
+[ -d /sys/class/net/can0 ] || { echo "can0 never appeared"; exit 1; }
+
+# 5. Configure and bring up: 250 kbps, sjw 16, auto-recover from BUS-OFF
+ip link set can0 down || true
+ip link set can0 type can bitrate 250000 sjw 16 restart-ms 100
+ip link set can0 up
+
+echo "can0 up: 250 kbps, sjw 16, restart-ms 100"
+```
+
+### /etc/systemd/system/robertun-can0.service
+```ini
+[Unit]
+Description=RobertUN CAN0 bring-up (J17 pinmux + can0 config)
+After=multi-user.target
+Wants=network.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/robertun-can0-setup.sh
+ExecStop=/sbin/ip link set can0 down
+
+[Install]
+WantedBy=multi-user.target
+```
+```bash
+sudo chmod +x /usr/local/sbin/robertun-can0-setup.sh
+sudo systemctl daemon-reload
+sudo systemctl enable --now robertun-can0.service
+```
+
+### Design rationale (don't "simplify" these away)
+- **Readback verification (step 2)** turns a silent failure into a loud one. If
+  a future L4T update changes the register layout, you get an explicit error in
+  `journalctl` instead of a CAN bus that mysteriously stopped working.
+- **Wait loop (step 4)** handles the pinmux write completing before mttcan has
+  probed. Confirmed necessary: manual runs used 21 ms CPU, the boot run used
+  25 ms — the loop actually iterated at boot. Without it, an intermittent boot
+  failure that always succeeds when run by hand.
+- **`restart-ms 100`** auto-recovers from BUS-OFF instead of leaving the
+  interface dead until manual intervention. A misbehaving STM32 node can drive
+  Orion to BUS-OFF during W2–W9, and on Dec 10 an unrecoverable bus is a failed
+  demo. Faults remain fully visible in the error counters. Use `restart-ms 0`
+  only if you want a BUS-OFF to stay latched for debugging.
+- **`Type=oneshot` + `RemainAfterExit=yes`** so systemd reports the service
+  *active* rather than dead after the script exits. Required for any future
+  unit (e.g. a ROS 2 launch service) to order itself with `After=robertun-can0.service`.
+- **`/usr/bin/busybox` absolute path** — systemd units run with a minimal PATH.
+
+### Verification log — Aug 6, 2026 (Orion ↔ daedalus, full physical bus)
+
+**Physical setup as built:**
+- J17 header soldered; SN65HVD230 breakout wired CAN_TX→CTX, CAN_RX→CRX, 3V3, GND
+- 3 m flexible Cat-6 UTP. CANH = orange, CANL = white/orange — **same twisted
+  pair** (the twist is what provides common-mode rejection; splitting the two
+  signals across different pairs is the classic mistake). GND = green +
+  white/green doubled.
+- Only CANH, CANL, GND cross between the two devices. **No power is shared** —
+  the CANable is USB-powered from daedalus, the transceiver from Orion.
+- Termination: CANable Pro onboard jumper installed + 120Ω already populated on
+  the SN65HVD230 breakout = exactly two. **Measured 59.4 Ω across CANH–CANL
+  with power off** (two 120Ω in parallel) — this measurement is the check.
+- Propagation over 3 m ≈ 15 ns against a 1.74 µs prop-seg — negligible.
+
+**Bit timing achieved (both nodes land identically from different clocks):**
+| | Orion (mttcan) | daedalus (gs_usb) |
+|---|---|---|
+| Clock | 50 MHz | 170 MHz |
+| tq | 20 ns | 29.41 ns (BRP 5) |
+| Bit time | 1+87+87+25 = 200 tq | 1+59+59+17 = 136 tq |
+| Result | 4.00 µs = 250 kbps exact | 4.00 µs = 250 kbps exact |
+| Sample point | 0.875 | 0.875 |
+| sjw | 16 (set explicitly) | 16 (set explicitly) |
+
+**Results — all passed:**
+- Pinmux readback: `0x0000C458` / `0x0000C400` ✓
+- daedalus internal loopback: RX 3 packets / 12 bytes matching TX, 0 errors
+- **daedalus → Orion:** `cansend can0 100#0102030405060708` → Orion `candump -tz -x`
+  shows `RX - -  100  [8]  01 02 03 04 05 06 07 08`. The `RX` flag (from `-x`)
+  confirms it came off the wire, not local echo.
+- **Orion → daedalus:** confirmed, plus 500-frame load test
+  `cangen can0 -g 2 -I i -L 8 -n 500` — all 500 received, last ID `1F3` (=499,
+  so nothing dropped or reordered), inter-frame ~2.05 ms matching `-g 2`
+- Orion counters after: TX 501 packets / 4004 bytes (500×8 + one 4-byte frame),
+  RX 1 packet / 8 bytes, **berr-counter tx 0 rx 0** — not one retransmission
+- **Post-reboot: `can0` came up ERROR-ACTIVE at 250 kbps / sjw 16 /
+  restart-ms 100 with zero manual steps, and a frame crossed the wire
+  immediately.** W1 acceptance criterion met verbatim.
+
+**What a single acknowledged frame actually proves** (worth remembering — it is
+more than it looks): pinmux correct and signals reaching J17; transceiver
+powered, out of standby, both transmitting and receiving; termination correct
+enough for dominant bits to pull; both nodes' bit timing agreeing closely enough
+to sample the same bits from different clocks; and — because the receiver must
+assert a dominant bit in the ACK slot of the transmitter's frame — **the link is
+bidirectional even if you only sent one direction.** A zero berr-counter on the
+transmitter is the proof the ACK arrived.
 
 ## SYSTEMD SERVICES (DELL HOST)
 - **qemu-aarch64-binfmt-fix.service:**
@@ -938,18 +1174,20 @@ Confirmed via direct SSH session, before any physical CAN wiring or soldering
    - ~/.ros/cyclone_dds.xml (Dell host)
    - ~/ros2_ws/.devcontainer/cyclone_dds.xml (Dev Container)
 
-5. **CAN Bus — first hardware test:**
-   - Order/acquire Canable USB CAN sniffer (AliExpress clone ~$10-15 USD)
-     Flash candlelight firmware on arrival (preferred over slcan)
-   - Solder 4-pin header to J17 on Jetson dev kit
-   - Wire SN65HVD230 breakout to J17 (TX→TXD, RX→RXD, 3.3V, GND)
-   - Run software setup: remove mttcan blacklist, configure pinmux,
-     load modules, bring up can0 at 125000 bps
-   - Loopback self-test first (short TX+RX on J17, no transceiver needed)
-   - Then bench test with STM32 node + Canable sniffer on Dell laptop:
-     configure bxCAN at 125 kbps, wire via SN65HVD230,
-     add 120Ω termination at both ends, use any available Cat-5/6 cable
-   - Verify three-way communication: Jetson ↔ STM32 ↔ Canable sniffer
+5. **CAN Bus — first hardware test:** ✅ COMPLETED (August 6, 2026) — this is
+   roadmap W1, all five sub-items. MKS CANable V2.0 Pro flashed slcan →
+   candleLight; J17 header soldered; SN65HVD230 wired; devmem pinmux applied and
+   verified by readback; two-node physical bus validated bidirectionally at
+   250 kbps over 3 m Cat-6 with a clean 500-frame load test; pinmux + can0
+   config made persistent via robertun-can0.service and confirmed across a full
+   reboot. Full log in the CAN BUS — PERSISTENCE section above.
+   - Corrections to what this task originally assumed:
+     - Bitrate is **250 kbps**, not 125 kbps (decided in the hardware section)
+     - "Remove mttcan blacklist" does not apply — no blacklist on Orion's R36.5
+     - "Loopback self-test by shorting TX+RX on J17" is not a meaningful test;
+       there is no useful pins-only check (see JETSON SOFTWARE SETUP above)
+     - Three-way Jetson ↔ STM32 ↔ CANable verification moves to W2, since no
+       STM32 firmware exists yet
 
 6. **CAN Bus — STM32 firmware:**
    - Configure bxCAN peripheral registers (bit timing for target bitrate)
@@ -1167,12 +1405,21 @@ Confirmed via direct SSH session, before any physical CAN wiring or soldering
 - Interactive chat (rover commands, 32k context):
   `~/github/llama.cpp/build/bin/llama-cli -m /data/models/Qwen2.5-3B-Instruct-Q4_K_M.gguf -ngl 99 -fa 1 -c 32768 -t 4 --temp 0.3 --conversation --chat-template chatml`
 - List available devices: `~/github/llama.cpp/build/bin/llama-cli --list-devices`
-- `sudo busybox devmem 0x0c303018 w 0xc458 && sudo busybox devmem 0x0c303010 w 0xc400` → configure pinmux
-- `sudo modprobe can && sudo modprobe can_raw && sudo modprobe mttcan` → load modules
-- `sudo ip link set can0 type can bitrate 250000 && sudo ip link set can0 up` → bring up interface
-- `candump can0` → monitor all CAN traffic
+- **can0 is now automatic at boot** via `robertun-can0.service` — no manual steps
+- `systemctl status robertun-can0.service` → check CAN bring-up succeeded
+- `sudo systemctl restart robertun-can0.service` → re-run pinmux + bring-up by hand
+- `ip -details -s link show can0` → bitrate, sjw, state, berr-counter, packet counts
+- `sudo busybox devmem 0x0c303018 && sudo busybox devmem 0x0c303010` → read pinmux
+  back (expect `0x0000C458` / `0x0000C400`)
+- `candump -tz -x can0` → monitor traffic with timestamps + RX/TX direction flag
 - `cansend can0 123#DEADBEEF` → send test frame
+- `cangen can0 -g 2 -I i -L 8 -n 500` → 500-frame load test
 - `cat /proc/device-tree/bus@0/mttcan@c310000/status` → verify CAN hardware active
+
+### daedalus — CANable V2.0 Pro (debug sniffer)
+- `sudo ip link set can0 down && sudo ip link set can0 type can bitrate 250000 sjw 16 loopback off && sudo ip link set can0 up`
+- `candump -tz -x can0` → independent witness of what is actually on the wire
+- `lsusb | grep 1d50` → confirm candleLight firmware (`1d50:606f`) is running
 
 ### VS Code (Dell)
 - `Ctrl+Shift+P` → `Dev Containers: Reopen in Container` → open Dev Container

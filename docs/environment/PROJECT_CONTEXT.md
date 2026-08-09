@@ -1,6 +1,13 @@
 # Robotics Development Environment — Project Context Document
-# Last updated: August 6, 2026 (CAN bus W1 COMPLETE — MKS CANable V2.0 Pro flashed
-# to candleLight, SN65HVD230 wired to J17, two-node physical bus validated at
+# Last updated: August 9, 2026 (W2 STM32 toolchain established — STM32CubeIDE
+# replaced by CubeMX + CMake + CubeCLT + VS Code on daedalus, full flash/debug
+# chain verified against a WeAct STM32F446 Core Board; 8 MHz HSE → 180 MHz PLL
+# reconfirmed under the new toolchain via MCO1/MCO2 + TIM3 blinky, which also
+# validates the 45 MHz APB1 clock feeding bxCAN; CAN1 pin assignment and
+# 250 kbps bit-timing values derived and recorded; module identity settled as a
+# 3-bit DIP switch read at boot, making one binary serve all six modules;
+# earlier entry Aug 6: CAN bus W1 COMPLETE — MKS CANable V2.0 Pro flashed to
+# candleLight, SN65HVD230 wired to J17, two-node physical bus validated at
 # 250 kbps with 500-frame load test, pinmux + can0 config made persistent via
 # systemd; ALSO recovered the missing MKS SERVO42C UART protocol + torque
 # characterization from the June 8, 2026 bench session, which had never been
@@ -650,6 +657,43 @@ ros2 topic echo /zed/zed_node/imu/data --once   # Verify real sensor data
     CRC, ACK, fault confinement, acceptance filters — all in silicon
   - bxCAN outputs logic-level CAN_TX / CAN_RX to the SN65HVD230 transceiver
   - No built-in transceiver — external IC always required (same as Jetson)
+- **CAN1 pins on the WeAct board: PB9 (TX) / PB8 (RX).** The alternate CAN1
+  mapping PA11/PA12 is wired to the board's USB-C connector and must not be
+  used. Use CAN1, not CAN2 — on the F446 CAN2 is a slave peripheral that cannot
+  run without CAN1's clock enabled anyway.
+- **bxCAN SJW maxes out at 4 tq** (the register field is 2 bits wide), and must
+  also be <= BS2. Orion's `sjw 16` therefore does *not* transfer literally to
+  the STM32. The rule that carries across is **"set SJW explicitly on every
+  node, at the highest value that node's hardware allows"** — not the number 16.
+
+#### Bit timing @ 250 kbps (derived Aug 9, 2026, from 8 MHz HSE)
+
+| Parameter | Value | Notes |
+|---|---|---|
+| HSE | 8 MHz | crystal on WeAct board, scope-verified |
+| SYSCLK | 180 MHz | PLL M=8, N=360, P=2 |
+| APB1 (bxCAN clock) | 45 MHz | /4 |
+| Prescaler (BRP) | 12 | tq = 266.67 ns |
+| Bit Segment 1 (BS1) | 12 tq | HAL: `CAN_BS1_12TQ` |
+| Bit Segment 2 (BS2) | 2 tq | HAL: `CAN_BS2_2TQ` |
+| SJW | 2 tq | HAL: `CAN_SJW_2TQ` — hardware max here (<= BS2) |
+| Total | 15 tq | 15 x 266.67 ns = 4.0 us = 250 kbps |
+| Sample point | 86.7% | (1+12)/15 — closest achievable to Orion's 87.5% |
+
+**Why 180 MHz and not the conventional 168 MHz:** 45 MHz on APB1 divides into
+250 kbps with a better sample point than 42 MHz does. Consequence: USB's 48 MHz
+must come from PLLSAI rather than PLLQ. Irrelevant unless USB is ever needed.
+
+**Oscillator tolerance check.** df <= SJW/(20 x NBT): STM32 = 2/(20x15) = 0.67%;
+Orion = 16/(20x200) = 0.40%. Orion is the binding node. Two crystals at +/-30 ppm
+(0.003%) sit two orders of magnitude inside that margin. This is the calculation
+that rules out HSI (+/-1%) — see the W1 debrief in the roadmap.
+
+- **bxCAN receives nothing until an acceptance filter is configured AND
+  activated.** Default state is all filters disabled. Presents as "TX works
+  perfectly, RX is dead" and gets misdiagnosed as wiring or termination. For
+  bring-up use filter bank 0, mask mode, ID 0x000 / mask 0x000 (accept
+  everything); narrow it once the CAN ID table is real.
 
 ### Physical bus
 - **Selected bitrate: 250 kbps**
@@ -1052,6 +1096,271 @@ to sample the same bits from different clocks; and — because the receiver must
 assert a dominant bit in the ACK slot of the transmitter's frame — **the link is
 bidirectional even if you only sent one direction.** A zero berr-counter on the
 transmitter is the proof the ACK arrived.
+
+## STM32F446RE — DEVELOPMENT ENVIRONMENT (daedalus)
+
+### Toolchain decision: CubeMX + CMake + CubeCLT + VS Code
+
+**STM32CubeIDE is not used for this project**, despite ~5 years of prior
+familiarity with it. Reasons, in order of weight:
+
+1. **W7 replicates firmware across 6 near-identical nodes.** CubeIDE's
+   `.cproject`/`.project` are Eclipse-managed XML that regenerate on every
+   settings change and produce diffs no human can review. `CMakeLists.txt` is a
+   file you can read.
+2. **Headless build over SSH/tmux** matches how the rest of this project is
+   worked. CMake + Ninja build from the command line; the IDE wants a GUI.
+3. **ST is migrating to VS Code.** As of VS Code extension v2.0.0, CMake project
+   generation moved *into* STM32CubeMX (6.11.0+) and the extension no longer
+   depends on CubeIDE at all.
+
+The `.ioc` file remains the source of truth either way — the CubeMX graphical
+clock tree and pinout are unchanged. Only the generator output target changes.
+**In CubeMX Project Manager, Toolchain/IDE MUST be set to `CMake`.** Any other
+value and the VS Code extension will not work with the project.
+
+Migration was done in W2 deliberately, while firmware was a blinky — the same
+move at W6, with UART/MKS and encoder PID entangled, would cost a week out of
+the Oct 4 gate.
+
+### Installed stack (daedalus, verified Aug 9, 2026)
+
+| Component | Version | Path / source |
+|---|---|---|
+| STM32CubeCLT | 1.22.0 | `/opt/st/stm32cubeclt_1.22.0` |
+| arm-none-eabi-gcc | 14.3.1 (GNU Tools for STM32 14.3.rel1) | bundled |
+| arm-none-eabi-gdb | 15.2.90 | bundled |
+| STM32CubeProgrammer | 2.23.0 | bundled |
+| ST-LINK_gdbserver | 7.14.0 | bundled |
+| CMake | 4.3.1 | bundled (resolves ahead of Ubuntu's) |
+| Ninja | 1.13.2 | bundled |
+| STM32CubeMX | standalone | separate download, ST account required |
+| VS Code extensions | — | STM32 VS Code Extension, **Cortex-Debug**, CMake Tools, stm32-cube-clangd |
+
+Key paths:
+- SVD: `/opt/st/stm32cubeclt_1.22.0/STMicroelectronics_CMSIS_SVD/STM32F446.svd`
+- gdbserver: `/opt/st/stm32cubeclt_1.22.0/STLink-gdb-server/bin/ST-LINK_gdbserver`
+- toolchain bin: `/opt/st/stm32cubeclt_1.22.0/GNU-tools-for-STM32/bin`
+
+**CubeCLT installs a profile script in `/etc/profile.d/` — you must log out and
+back in before any tool resolves.** This is the #1 "I installed it and nothing
+works" cause.
+
+**Do NOT also `apt install gcc-arm-none-eabi`.** Two `arm-none-eabi-gcc` on PATH
+produce linker errors that make no sense.
+
+Verified compiler flags for this target:
+```bash
+-mcpu=cortex-m4 -mthumb -mfpu=fpv4-sp-d16 -mfloat-abi=hard
+```
+A successful link reports the multilib as `lib/thumb/v7e-m+fp/hard/libc.a`.
+**Check this string** — with subtly wrong flags GCC silently falls back to a
+soft-float library, which surfaces later as inexplicably slow PID math.
+
+### Board: WeAct STM32F446 Core Board V1.1
+
+- **8 MHz HSE crystal + 32.768 kHz LSE, both populated on board.** This is a real
+  crystal, not a Nucleo's ST-LINK MCO — no debugger dependency, nothing to cut
+  away when the board goes into the rover. This is what makes the HSE decision
+  (W1 debrief) cheap.
+- CAN1: PB9 (TX) / PB8 (RX)
+- User LED: **PB2 — which is also BOOT1.** Harmless as an output; know it before
+  wiring anything external there.
+- USB-C is on PA11/PA12 (MCU native USB) — blocks the alternate CAN1 mapping
+- BOOT0 key present → dfu-util flashing possible with no probe at all
+- **No onboard debugger.** SWD header exposes only 3V3, GND, SWCLK, SWDIO.
+- **No SWO pin exposed** → ITM/SWO `printf` unavailable unless PB3 is wired out
+  manually. Use a UART for console. For W5 PID telemetry, OpenOCD's RTT support
+  is the better option than burning a second UART.
+
+### Module identity: 3-bit DIP switch (decided Aug 9, 2026)
+
+**One firmware binary for all six modules.** Module identity is a property of
+the hardware, not of the build: a 3-position DIP switch on each board is read
+once at boot and yields a module ID 0–5, from which the firmware derives both
+the CAN node ID and the module role.
+
+| ID | Role | Behavior |
+|---|---|---|
+| 0–3 | Corner | Steering (UART → MKS SERVO42C) + drive (encoder PID) |
+| 4–5 | Center | Drive only (encoder PID); steering block inactive |
+| 6 | *reserved* | Future module / bench-test mode |
+| 7 (`0b111`) | **INVALID** | Halt, blink error pattern, **do not join the bus** |
+
+**Why this matters for W7.** The roadmap originally described W7 as "replicate
+firmware to 3 more corners + write a center variant" — six near-identical builds
+to keep in sync. With identity in a DIP switch and role derived from it, there
+is one binary. The *"which build is on this board?"* failure class disappears
+entirely; it would otherwise have surfaced in W8 disguised as a CAN problem,
+which is the most expensive place to meet it.
+
+**Electrical convention (don't "simplify" these away):**
+- **Internal pull-ups enabled; switches pull to GND.** Closed = 0, open = 1. No
+  external resistors needed.
+- **`0b111` is deliberately the invalid code**, because it is *also* what you
+  read from a board with no DIP switch fitted, a broken connection, or a
+  floating input. An unconfigured board therefore fails loudly instead of
+  silently impersonating module 7.
+- **DIP switches, not solder jumpers or hardwired straps.** Reconfigurable on the
+  bench when swapping a board to isolate a fault, and readable by eye without a
+  meter — at W8 with six nodes live, "which module does this board think it is?"
+  should be answerable by looking, not by attaching a debugger.
+
+**Firmware convention:**
+- Read the pins **once in `main()`**, before any peripheral init that depends on
+  role, and latch into a variable. Identity must never change mid-run.
+- Firmware is identical across all corners in another respect too: the UART link
+  to the SERVO42C is point-to-point, so all four steering drivers stay at
+  address `0xE0` (see MKS SERVO42C section). Module identity lives **only** in
+  the CAN ID and this DIP switch.
+
+**Pins: TBD** — to be fixed in the `.ioc` before the pinout fills. Constraints:
+avoid PB2 (BOOT1 + user LED), PA13/PA14 (SWDIO/SWCLK), PB3/PB4 (JTAG remnants),
+PB8/PB9 (CAN1), PA11/PA12 (USB), and whatever the encoder timer channels and
+MKS UART will claim.
+
+### Debug probes
+
+| Probe | SN | Firmware |
+|---|---|---|
+| #1 | `37FF71064E573436D7331B43` | V2J46S7 |
+
+- These are **ST-Link/V2, not V2-1** — `Board Name` is empty and no VCP appears
+  in `STM32_Programmer_CLI -l`. **Consequence: no virtual COM port comes with the
+  probe — console output requires a separate USB-TTL adapter** (on hand; needed
+  by W3 to watch MKS SERVO42C protocol responses).
+- Label each probe physically with its SN. By W7 there will be six boards, and
+  reconstructing the SN→board mapping later is pure wasted time.
+- The `serialNumber` field in `launch.json` pins a debug config to one probe.
+  Without it the debugger attaches to whichever probe enumerated first — and you
+  will single-step the wrong node while convinced the right one is broken.
+
+### `.vscode/launch.json` (working reference)
+
+The ST extension does **not** generate this when you simply open a folder.
+Without it, the VS Code play button executes the ELF on the host — Ubuntu's
+binfmt_misc hands it to `qemu-arm`, which segfaults on the first Cortex-M
+peripheral access. That is not a flashing failure; it means no launch config
+exists.
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug (ST-Link)",
+      "type": "cortex-debug",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/build/Debug/<PROJECT>.elf",
+      "servertype": "stlink",
+      "device": "STM32F446RETx",
+      "interface": "swd",
+      "v1": false,
+      "serialNumber": "37FF71064E573436D7331B43",
+      "runToEntryPoint": "main",
+      "serverpath": "/opt/st/stm32cubeclt_1.22.0/STLink-gdb-server/bin/ST-LINK_gdbserver",
+      "stm32cubeprogrammer": "/opt/st/stm32cubeclt_1.22.0/STM32CubeProgrammer/bin",
+      "armToolchainPath": "/opt/st/stm32cubeclt_1.22.0/GNU-tools-for-STM32/bin",
+      "gdbPath": "/opt/st/stm32cubeclt_1.22.0/GNU-tools-for-STM32/bin/arm-none-eabi-gdb",
+      "svdFile": "/opt/st/stm32cubeclt_1.22.0/STMicroelectronics_CMSIS_SVD/STM32F446.svd"
+    }
+  ]
+}
+```
+
+- **Cortex-Debug (marus25) must be installed separately** — the ST extension pack
+  does not pull it in as a hard dependency.
+- `svdFile` is what populates the Cortex Peripherals view while halted. This is
+  how `CAN_ESR` (error counters, last error code), `CAN_TSR` and the filter banks
+  get read directly on target — the on-chip equivalent of `berr-counter` on Orion.
+- Launch from the **Run and Debug** panel with this config selected, *not* the
+  CMake Tools play button in the status bar.
+- No `preLaunchTask` yet — build first, then launch.
+
+### clangd vs cpptools
+
+The extension pack ships `stm32-cube-clangd`, which conflicts with Microsoft's
+cpptools IntelliSense and produces a repeating warning popup. **Keep clangd,
+disable cpptools' engine at workspace level** (`.vscode/settings.json`):
+
+```json
+{ "C_Cpp.intelliSenseEngine": "disabled" }
+```
+
+Disable the engine, don't uninstall cpptools. clangd is correct here because it
+reads `compile_commands.json` and therefore sees the real cross-compilation
+flags; cpptools guesses and mis-parses CMSIS headers.
+
+### Gotchas (don't rediscover these)
+
+- **`monitor reset halt` is OpenOCD syntax and fails on ST's gdbserver**
+  (`Unknown reset option` / `Protocol error with Rcmd: 05`). ST's server wants
+  plain **`monitor reset`**, which resets *and halts at the reset handler*.
+- **The ST-Link is exclusive.** `STM32_Programmer_CLI`, `ST-LINK_gdbserver` and a
+  VS Code debug session cannot hold it simultaneously. A stray gdbserver left
+  running in a background terminal produces connection errors that read exactly
+  like a hardware fault.
+- **`--specs=nosys.specs` link warnings are expected and harmless:** `_close`,
+  `_lseek`, `_read`, `_write` "not implemented and will always fail". Correct on
+  bare metal with no filesystem. They disappear individually as you retarget
+  (e.g. overriding `_write` for UART `printf`).
+- **ModemManager** can grab USB serial devices on connect, causing intermittent
+  failures that look like flaky hardware. Fix with a udev rule setting
+  `ENV{ID_MM_DEVICE_IGNORE}="1"`.
+- If clangd reports missing HAL headers, it hasn't found `compile_commands.json`
+  (CMake writes it into the *build* directory). Fix with a `.clangd` file in the
+  project root: `CompileFlags: { CompilationDatabase: build/Debug }`. Not needed
+  as of extension v2.x — it configured this automatically.
+
+### Verification log — Aug 9, 2026 (daedalus + WeAct F446 board)
+
+Each step verified before proceeding to the next (W1 method).
+
+```
+1. PATH after logout/login
+   /opt/st/stm32cubeclt_1.22.0/{STM32CubeProgrammer,STLink-gdb-server,CMake,
+   Make,Ninja,st-arm-clang,GNU-tools-for-STM32}/bin   OK all present
+
+2. Tool versions
+   gcc 14.3.1 · gdb 15.2.90 · CubeProgrammer 2.23.0 · cmake 4.3.1 · ninja 1.13.2  OK
+
+3. Cortex-M4F compile+link (trivial main, nosys.specs)
+   linked against thumb/v7e-m+fp/hard/libc.a   OK hard-float multilib confirmed
+   text 5260 · data 1372 · bss 840
+
+4. SVD present · probe enumerated · SWD connect
+   STM32F446.svd found                                                    OK
+   ST-LINK SN 37FF71064E573436D7331B43, FW V2J46S7, no VCP -> V2 not V2-1  OK
+   Device ID 0x421 · Rev A · STM32F446xx · 512 KB · Cortex-M4 · 3.28 V     OK
+
+5. GDB chain (ST-LINK_gdbserver -p 61234 + arm-none-eabi-gdb)
+   attach halts core                                                      OK
+   sp = 0x20020000  (= 0x20000000 + 128 KB, top of SRAM)                  OK
+   xpsr = 0x01000000 (Thumb bit set)                                      OK
+
+6. monitor reset -> "Successfully completed reset operation (System reset)"
+   pc = 0x08000b48 after reset
+   x/2xw 0x08000000 -> 0x20020000  0x08000b49
+   i.e. vector[0] = initial MSP (matches sp), vector[1] = reset handler with
+   Thumb bit -> handler at 0x08000b48 = pc.   OK reset-and-halt confirmed
+   (Handler sits ~2.8 KB into flash because the vector table reserves ~97
+   interrupt entries first. Normal.)
+
+7. Full VS Code round trip: build -> flash -> halt at main               OK
+
+8. Application-level confirmation under the new toolchain:
+   MCO1 = 8 MHz HSE, MCO2 = 180 MHz PLL (both scope-verified previously
+   under CubeIDE, reproduced identically here), plus TIM3 interrupt-driven
+   blinky on PB2.                                                        OK
+   -> TIM3 firing at the expected rate validates the APB1 timer clock, and
+   **APB1 at 45 MHz is the clock that feeds bxCAN** — so the bit-timing
+   divisor chain above is validated on hardware, not only on paper.
+```
+
+**Conclusion: the toolchain is no longer a suspect.** Any subsequent failure
+belongs to firmware or wiring. Same position W1 left `can0` in, and it is what
+makes W3–W5 debugging tractable.
 
 ## MKS SERVO42C V1.1 — UART PROTOCOL & BENCH VALIDATION
 

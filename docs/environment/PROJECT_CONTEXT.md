@@ -1,5 +1,9 @@
 # Robotics Development Environment — Project Context Document
-# Last updated: August 9, 2026 (W2 firmware written and building — DMA console
+# Last updated: August 10, 2026 (**W2 COMPLETE** — STM32F446RE heartbeat
+# crossing a real 250 kbps bus to Orion, confirmed independently on the CANable,
+# zero error counters on both ends; termination measured 59.79R; a floating
+# CAN_RX pin identified as the cause of three different pre-wiring fault
+# signatures; earlier entry Aug 9: W2 firmware written and building — DMA console
 # on USART1, bxCAN driver at 250 kbps with accept-all filter, and a serial
 # command interpreter for bench work; PLL divider record corrected to M=4/N=180
 # and the MCO2 pin frequency clarified; earlier entry same day: W2 STM32
@@ -760,6 +764,8 @@ that rules out HSI (+/-1%) — see the W1 debrief in the roadmap.
     unless one is lifted. Two in parallel measure ~60R across CANH-CANL with
     power off; three measure ~40R, which is below what the transceivers can
     reliably pull dominant. The measurement is the check — do not infer it.
+  - **Measured Aug 10, 2026 with Orion + CANable + STM32 all connected:
+    59.79R.** Two 120R in parallel, i.e. exactly two terminators on the bus.
 
 ### Message ID design principles
 - Priority is message-centric, not node-centric
@@ -1499,6 +1505,110 @@ covers Send-String-style terminals; the >1 byte guard is what keeps interactive
 typing from executing a character at a time. Set Enter Key Emulation to `CR`
 anyway rather than depending on the fallback.
 
+### Known issue — `cmd_errors` reads CAN_ESR non-atomically
+
+`console.c`'s `errors` command calls `can_bus_esr()`, then `can_bus_tec()`, then
+`can_bus_rec()` — each performing its own read of `CAN1->ESR`. The register can
+change between them, so the printed raw value and the decoded fields may
+disagree. Observed Aug 10, 2026: raw `0x66000055` (REC 102) printed alongside
+`REC : 103`, because REC was moving during bus-off recovery.
+
+Harmless for steady-state inspection, misleading when counters are in motion —
+which is exactly when the command matters. **Fix:** snapshot `CAN1->ESR` once
+and decode every field from that snapshot. Not urgent; recorded so it is not
+rediscovered as a mystery.
+
+### Considered and not adopted — internal pull-up on PB8 (CAN1_RX)
+
+PB8 is currently `GPIO_NOPULL`, as CubeMX generates it. Enabling the internal
+pull-up would hold CAN_RX at recessive whenever nothing is driving it.
+
+**The argument for it:** an undriven CAN_RX is the fault described below, and on
+the rover it is reachable in normal service — an unpowered transceiver, or a
+Bulgin connector working loose at a Rocker-Bogie flex point. With the pull-up,
+that fault presents as a quiet node; without it, as a node cycling in and out of
+BUS-OFF and generating error frames that disturb the whole bus. The transceiver's
+push-pull output overrides a ~40k internal pull-up, so it costs nothing while
+things are connected.
+
+**Decision Aug 10, 2026: not adopted** — the `.ioc` stays as ST generates it.
+Recorded here with the rationale so the option is not re-derived from scratch,
+and so the trade-off is on the table if a loose-connector failure ever shows up
+in W7/W8 with six nodes wired.
+
+### Verification log — Aug 10, 2026 (W2 acceptance criterion)
+
+**Three independent views of the same 17 frames:**
+
+| Source | Frames |
+|---|---|
+| STM32 console | `hb 354` … `hb 370` (17) |
+| Orion `candump -tz can0` | seq `0x161` … `0x171` (17) |
+| daedalus / CANable `candump -tz can0` | seq `0x161` … `0x171` (17) |
+
+No gaps, no duplicates, sequence numbers matching across all three. (The console
+prints `seq` after incrementing, so `hb 354` carries payload `0x161` = 353.)
+
+- STM32: `tec 0 rec 0 lec none` throughout
+- Orion: `can state ERROR-ACTIVE (berr-counter tx 0 rx 0)`, bitrate 250000,
+  sample-point 0.875, `tq 20 prop-seg 87 phase-seg1 87 phase-seg2 25 sjw 16`
+- Not one retransmission across the run. **A zero TEC is the proof the ACK came
+  back** — a receiver must assert a dominant bit in the ACK slot of the
+  transmitter's frame, so the link is bidirectional even though traffic only
+  went one way.
+
+**Two clocks, one bus.** Orion runs 200 tq of 20 ns from 50 MHz; the STM32 runs
+15 tq of 266.67 ns from 45 MHz. Both land on exactly 250 000 bps, sample points
+87.5% and 86.7%.
+
+**Inter-frame timing confirmed the divisor chain a third time.** Predicted TIM3
+period: 90 MHz / (1800+1) / (25000+1) = 1.99881 Hz = 500.298 ms. Orion
+timestamped the frames 500.297 / 500.295 / 500.304 ms apart. After the
+oscilloscope (MCO1/MCO2) and the blinky, APB1 = 45 MHz is now also confirmed by
+a stopwatch on the far side of the bus.
+
+### The floating CAN_RX lesson (Aug 10, 2026) — do not skip this
+
+Before the transceiver was wired, PB8 was left floating. **Three consecutive
+bench runs of identical firmware failed three different ways:**
+
+| Run | TEC | REC | LEC | What it looked like |
+|---|---|---|---|---|
+| 1 | 128 | 0 | `ack` | transmitted fine, nothing acknowledged |
+| 2 | 0 | 255 | `form` | never transmitted, receiver drowning in garbage |
+| 3 | 0 | counting down | `bit-dominant` | cycling in and out of BUS-OFF |
+
+All three are the same root cause: an undriven CMOS input settling differently
+each power-up. Floating high looks like an unacknowledged bus; floating low or
+noisy looks like a corrupted one.
+
+**The non-determinism was the diagnosis.** A driven input cannot behave
+differently run to run — that alone ruled out firmware before any register was
+examined.
+
+Reading notes that generalise:
+
+- **`lec bit-dominant`** = transmitted recessive, monitored dominant. Points at
+  CAN_RX held low, TX shorted, or a transceiver holding the bus dominant.
+- **`lec ack`** = the frame went out correctly and nothing acknowledged it. A
+  transmitter cannot ACK itself, so this means no other node is listening.
+- **LEC is sticky** — it holds the last error until a new one overwrites it or
+  software clears it. Read TEC's *trend* for "erroring right now", not LEC.
+- **TEC parks at 128 and never reaches BUS-OFF when a node is alone on the bus.**
+  The CAN spec exempts an error-passive node from further TEC increment on ACK
+  errors, precisely so a lone node cannot take itself bus-off. `passive` without
+  `BUS-OFF` is the correct signature of "nobody else is out there".
+- **Going BUS-OFF resets TEC to 0**, and bxCAN then reuses REC to count the 128
+  sequences of 11 recessive bits required to rejoin. A falling REC with TEC at 0
+  and `BOFF` set is `AutoBusOff` recovery in progress, not a receive problem.
+- **TEC/REC survive `HAL_CAN_Stop()` + `HAL_CAN_Init()`.** Only a peripheral or
+  system reset clears them, so counters seen after a mode change may predate it.
+
+**Operational rule: do not debug CAN error counters on a node whose transceiver
+is not connected and powered.** The numbers are not merely unhelpful, they are
+actively misleading, and each of the three signatures above is individually
+plausible enough to send you after the wrong fault.
+
 ## MKS SERVO42C V1.1 — UART PROTOCOL & BENCH VALIDATION
 
 **Recovered and added Aug 6, 2026. Source session: June 8, 2026 ("Rover wheel
@@ -1851,16 +1961,17 @@ Claude Code), used in hex mode — sends raw byte sequences and shows raw respon
      - Three-way Jetson ↔ STM32 ↔ CANable verification moves to W2, since no
        STM32 firmware exists yet
 
-6. **CAN Bus — STM32 firmware:** 🔄 firmware complete, bench validation pending
-   - ✅ bxCAN configured at 250 kbps (BRP 12, BS1 12, BS2 2, SJW 2, 86.7%)
-     — CubeMX's own Baud Rate readout confirms 250000
+6. **CAN Bus — STM32 firmware:** ✅ **COMPLETED August 10, 2026** — this is
+   roadmap W2. Full log in the Aug 10 verification section above.
+   - ✅ bxCAN at 250 kbps (BRP 12, BS1 12, BS2 2, SJW 2, 86.7% sample point)
    - ✅ Accept-all mask filter on bank 0, `HAL_CAN_Start()`, heartbeat on 0x500
    - ✅ DMA console + command interpreter for bench work (see FIRMWARE MODULES)
-   - ⬜ `loopback on` + `send` self-test with nothing attached
-   - ⬜ Termination re-measured with the STM32 on the bus (~60R, not ~40R)
-   - ⬜ RS pin on the STM32's breakout confirmed 10k to GND, not floating
-   - ⬜ Frame exchange: Orion `candump` ↔ STM32, confirmed independently on
-     the CANable — this is the W2 acceptance criterion
+   - ✅ `loopback on` + `send 123 DEADBEEF` self-test round-tripped with nothing
+     attached — proves bit timing, filter and FIFO independently of any wiring
+   - ✅ Termination measured 59.79R with all three nodes connected
+   - ✅ Three-way verification: STM32 → Orion `candump`, confirmed independently
+     on the CANable, 17 frames, zero error counters on both ends
+   - Open, non-blocking: `cmd_errors` ESR snapshot (see Known issue above)
 
 7. **CAN Bus — ROS 2 integration (CANopen stack):**
    - STM32 side: CANopenNode + CanOpenSTM32 (HAL-integrated, CubeMX compatible)

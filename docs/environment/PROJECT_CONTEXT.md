@@ -1,5 +1,8 @@
 # Robotics Development Environment — Project Context Document
-# Last updated: August 10, 2026 (**W2 COMPLETE** — STM32F446RE heartbeat
+# Last updated: August 11, 2026 (bus-load ramp to saturation — no FIFO overrun
+# at any rate, main-loop period bounded under 1.6 ms; polled-vs-interrupt CAN RX
+# recorded as an OPEN question, not settled by that result; earlier entry Aug 10:
+# **W2 COMPLETE** — STM32F446RE heartbeat
 # crossing a real 250 kbps bus to Orion, confirmed independently on the CANable,
 # zero error counters on both ends; termination measured 59.79R; a floating
 # CAN_RX pin identified as the cause of three different pre-wiring fault
@@ -1458,9 +1461,14 @@ can_bus_get_timing                       can_bus_stats/clear_stats
   silicon's own view, not what the source asked for. This catches a CubeMX
   regeneration silently resetting a field, which would otherwise surface as
   intermittent bus errors.
-- RX is polled from the main loop. Moving to interrupt-driven means enabling
-  `CAN1_RX0_IRQn` in CubeMX and calling the same `can_bus_receive()` from
-  `HAL_CAN_RxFifo0MsgPendingCallback` — the function body does not change.
+- RX is polled from the main loop **for now — see the OPEN question below.**
+  The API is deliberately context-agnostic: moving to interrupt-driven means
+  enabling `CAN1_RX0_IRQn` in CubeMX and calling the same `can_bus_receive()`
+  from `HAL_CAN_RxFifo0MsgPendingCallback` — the function body does not change.
+- `stats` reports two receive-pressure counters: `rx_fifo_full` (FIFO0 reached
+  its 3-message depth — margin gone, nothing lost) and `rx_overruns` (a frame
+  was lost). The latter counts **events, not frames**: `FOVR0` is sticky rc_w1,
+  so the hardware cannot say how many were lost, only that some were.
 - Heartbeat on **ID 0x500** (the 0x500-0x5FF telemetry/heartbeat group) at the
   TIM3 rate, so the LED blink and the CAN frame share a cadence. Payload is
   self-describing in `candump`: bytes 0-3 big-endian sequence, then TEC, REC,
@@ -1608,6 +1616,98 @@ Reading notes that generalise:
 is not connected and powered.** The numbers are not merely unhelpful, they are
 actively misleading, and each of the three signatures above is individually
 plausible enough to send you after the wrong fault.
+
+### Bus-load ramp — Aug 11, 2026
+
+`cangen can0 -g <gap> -I i -L 8` from daedalus, heartbeat running on the STM32,
+`monitor off`, counters cleared between steps. Run durations were derived from
+the heartbeat count (1.99881 Hz), which makes the STM32 its own stopwatch.
+
+| `-g` | duration | measured rate | bus load | frames RX | FIFO-full | overruns |
+|---|---|---|---|---|---|---|
+| 5 | 87.1 s | 206 f/s | ~11% | 17,959 | 0 | 0 |
+| 2 | 68.5 s | 509 f/s | ~27% | 34,891 | 0 | 0 |
+| 1 | 68.0 s | 970 f/s | ~52% | 65,993 | 0 | 0 |
+| 0.5 | 68.5 s | **1,858 f/s** | **~100%** | 127,343 | 0 | 0 |
+
+`TEC 0 / REC 0 / lec none / error-active` at every step, including saturation.
+
+**The ramp topped out on the wire, not on the MCU.** At `-g 0.5` cangen asked
+for 2,000 f/s and got 1,858 — that is 538 us/frame, about 134 bits, exactly an
+8-byte standard frame plus typical stuffing at 250 kbps. Every derived figure
+agrees with theory independently, which is what makes the measurement
+trustworthy.
+
+**What it bounds.** `FULL0` sets when FIFO0 holds 3 messages. It never
+incremented across 127,343 frames at saturation, so the main loop always drained
+before three frames could accumulate:
+
+```
+worst-case main-loop period < 3 x 538 us = 1.6 ms
+```
+
+Not an average — a bound, held for 68 s with no outlier.
+
+**Arbitration held too:** `can tx 137 frames, 0 dropped` at ~100% load. With
+`-I i` sweeping the whole ID range, roughly five-eighths of cangen's frames
+outrank 0x500, yet the heartbeat never missed a mailbox. At 2 Hz it has 500 ms
+to win one arbitration, which is ample even on a saturated bus.
+
+**What it does NOT prove — read this before citing the table.** The ramp
+measured *throughput*: whether frames are lost. It measured neither **latency**
+(how long a frame waits in the FIFO before being handled) nor **coupling** (that
+the result is a property of a nearly empty main loop). Do not cite it as
+evidence that polling is the right architecture — see below.
+
+### OPEN — polled vs interrupt-driven CAN RX
+
+**Status: undecided as of Aug 11, 2026.** The ramp above does not settle it.
+
+**Leading candidate: the hybrid.** An interrupt-driven FIFO drain that pushes
+frames into a software ring, consumed by the main loop. The ISR does one bounded
+thing — pull from FIFO0, push to ring, return — and all application logic stays
+in main-loop context where it can be single-stepped.
+
+This is **the same pattern `debug_uart` already uses**: hardware and ISR fill a
+ring, the main loop drains it. Making CAN symmetric with UART means one mental
+model for both paths, which matters when six of these are in a rover and one
+misbehaves in the field.
+
+**For interrupts:**
+- **Latency is unmeasured and lands in the control path.** With polling, a
+  frame's worst-case wait is one loop period. That is jitter, not constant lag,
+  so it does not calibrate out. Against a 50 Hz Ackermann command cycle (20 ms),
+  several milliseconds of variable delay is a meaningful fraction of a cycle.
+- **Polling correctness is contingent on the whole program staying fast.** The
+  margin measured today is a property of an almost-empty loop, and every feature
+  added between now and December erodes it silently. The failure mode is a
+  synchronous MKS retry added in W6 causing intermittent frame loss under
+  load — which presents as a wiring or bus problem, exactly the class of
+  disguised fault the W1 debrief warns about.
+- **CANopen may force it anyway.** `CanOpenSTM32`'s driver layer is built around
+  CAN RX callbacks feeding the stack's receive buffers, and CiA 402 cyclic
+  synchronous velocity mode is SYNC-timed, where jitter becomes control jitter.
+  **Verify against the version actually used** — if it holds, the IRQ is required
+  in Phase 2 regardless of what W2 measured.
+
+**For polling:**
+- No shared state between ISR and main loop, no critical sections on the frame
+  path, no interrupt-priority reasoning (TIM3, USART1 and both DMA streams
+  currently all sit at priority 0).
+- Every frame is handled in one context that can be single-stepped.
+- Measured to work with margin at bus saturation.
+
+**Standing preference to weigh in:** interrupt-driven is the preferred style on
+this project where a correct interrupt solution exists — polling is accepted only
+where it is clearly the better engineering answer, not as a default.
+
+### Planned — main-loop period in `stats`
+
+Track min/mean/max main-loop time with the DWT cycle counter and report it in
+`stats`. This turns "polling latency" from an argument into a number, and gives
+an early-warning signal: the margin can be re-checked after every W3-W6
+milestone and watched shrinking **before** it starts dropping frames rather than
+after. Worth adding whichever way the RX question is decided.
 
 ## MKS SERVO42C V1.1 — UART PROTOCOL & BENCH VALIDATION
 
@@ -1972,6 +2072,9 @@ Claude Code), used in hex mode — sends raw byte sequences and shows raw respon
    - ✅ Three-way verification: STM32 → Orion `candump`, confirmed independently
      on the CANable, 17 frames, zero error counters on both ends
    - Open, non-blocking: `cmd_errors` ESR snapshot (see Known issue above)
+   - **Open decision:** polled vs interrupt-driven CAN RX — the Aug 11 load ramp
+     bounds throughput only, not latency. Hybrid ISR-to-ring is the leading
+     candidate. Settle before W6.
 
 7. **CAN Bus — ROS 2 integration (CANopen stack):**
    - STM32 side: CANopenNode + CanOpenSTM32 (HAL-integrated, CubeMX compatible)

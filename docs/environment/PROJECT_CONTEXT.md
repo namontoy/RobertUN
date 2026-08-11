@@ -1,5 +1,9 @@
 # Robotics Development Environment — Project Context Document
-# Last updated: August 9, 2026 (W2 STM32 toolchain established — STM32CubeIDE
+# Last updated: August 9, 2026 (W2 firmware written and building — DMA console
+# on USART1, bxCAN driver at 250 kbps with accept-all filter, and a serial
+# command interpreter for bench work; PLL divider record corrected to M=4/N=180
+# and the MCO2 pin frequency clarified; earlier entry same day: W2 STM32
+# toolchain established — STM32CubeIDE
 # replaced by CubeMX + CMake + CubeCLT + VS Code on daedalus, full flash/debug
 # chain verified against a WeAct STM32F446 Core Board; 8 MHz HSE → 180 MHz PLL
 # reconfirmed under the new toolchain via MCO1/MCO2 + TIM3 blinky, which also
@@ -671,7 +675,7 @@ ros2 topic echo /zed/zed_node/imu/data --once   # Verify real sensor data
 | Parameter | Value | Notes |
 |---|---|---|
 | HSE | 8 MHz | crystal on WeAct board, scope-verified |
-| SYSCLK | 180 MHz | PLL M=8, N=360, P=2 |
+| SYSCLK | 180 MHz | PLL M=4, N=180, P=2 — see divider note below |
 | APB1 (bxCAN clock) | 45 MHz | /4 |
 | Prescaler (BRP) | 12 | tq = 266.67 ns |
 | Bit Segment 1 (BS1) | 12 tq | HAL: `CAN_BS1_12TQ` |
@@ -683,6 +687,14 @@ ros2 topic echo /zed/zed_node/imu/data --once   # Verify real sensor data
 **Why 180 MHz and not the conventional 168 MHz:** 45 MHz on APB1 divides into
 250 kbps with a better sample point than 42 MHz does. Consequence: USB's 48 MHz
 must come from PLLSAI rather than PLLQ. Irrelevant unless USB is ever needed.
+
+**PLL dividers — record corrected Aug 9, 2026.** An earlier revision of this
+table recorded M=8, N=360. Both pairs reach 180 MHz, but they are not
+equivalent: M=8 gives a 1 MHz PLL input, M=4 gives 2 MHz. RM0390 requires the
+PLL input to be 0.95-2.1 MHz and explicitly recommends **2 MHz to limit PLL
+jitter**. The firmware uses **M=4, N=180, P=2**, which is the better of the two
+and the pair to replicate to the other five boards in W7. Verify against
+`SystemClock_Config()` rather than this table if they ever disagree again.
 
 **Oscillator tolerance check.** df <= SJW/(20 x NBT): STM32 = 2/(20x15) = 0.67%;
 Orion = 16/(20x200) = 0.40%. Orion is the binding node. Two crystals at +/-30 ppm
@@ -743,6 +755,11 @@ that rules out HSI (+/-1%) — see the W1 debrief in the roadmap.
   - One at each physical end of backbone (the two extreme wheel nodes)
   - Jetson is a mid-bus node — no termination resistor
   - Never place termination at every node — collapses bus impedance
+  - **Re-measure every time a node joins the bus.** The SN65HVD230 breakouts
+    ship with 120R already populated, so adding a node adds a terminator
+    unless one is lifted. Two in parallel measure ~60R across CANH-CANL with
+    power off; three measure ~40R, which is below what the transceivers can
+    reliably pull dominant. The measurement is the check — do not infer it.
 
 ### Message ID design principles
 - Priority is message-centric, not node-centric
@@ -1350,8 +1367,10 @@ Each step verified before proceeding to the next (W1 method).
 7. Full VS Code round trip: build -> flash -> halt at main               OK
 
 8. Application-level confirmation under the new toolchain:
-   MCO1 = 8 MHz HSE, MCO2 = 180 MHz PLL (both scope-verified previously
-   under CubeIDE, reproduced identically here), plus TIM3 interrupt-driven
+   MCO1 = 8 MHz HSE at the pin; MCO2 sources the 180 MHz PLL but runs
+   through a /5 prescaler, so **PC9 carries 36 MHz** — that reading is
+   correct, not a fault. Both scope-verified previously under CubeIDE and
+   reproduced identically here, plus TIM3 interrupt-driven
    blinky on PB2.                                                        OK
    -> TIM3 firing at the expected rate validates the APB1 timer clock, and
    **APB1 at 45 MHz is the clock that feeds bxCAN** — so the bit-timing
@@ -1361,6 +1380,124 @@ Each step verified before proceeding to the next (W1 method).
 **Conclusion: the toolchain is no longer a suspect.** Any subsequent failure
 belongs to firmware or wiring. Same position W1 left `can0` in, and it is what
 makes W3–W5 debugging tractable.
+
+## STM32F446RE — FIRMWARE MODULES (W2)
+
+Three application modules live alongside the CubeMX output. All are added to the
+**root** `CMakeLists.txt` user-sources block, not `cmake/stm32cubemx/`, so a
+CubeMX regeneration cannot drop them. All integration into `main.c` sits inside
+`USER CODE` blocks for the same reason.
+
+Build state Aug 9, 2026: RAM 3.4%, flash 8.5% of the F446RE. Clean under
+`-Wall -Wextra -Wconversion -Wshadow`.
+
+### `debug_uart` — non-blocking DMA console on USART1 (PA9 TX / PA10 RX)
+
+115200 8N1. TX is a 1 KB ring drained by DMA2_Stream7; callers never block, so
+output is safe from control loops and from interrupt context. RX is a 512 B
+**circular** DMA on DMA2_Stream2 whose write pointer is read from the DMA
+counter (`__HAL_DMA_GET_COUNTER`) rather than from a callback — bytes are
+captured whether or not any ISR got to run.
+
+```
+debug_uart_write/puts/printf/write_hex   debug_uart_available/read/peek
+debug_uart_flush/tx_pending              debug_uart_take_idle_event
+debug_uart_stats/clear_stats             debug_uart_rx_flush
+```
+
+**Three CubeMX settings this depends on — all three are silent failures:**
+- **USART1 global interrupt MUST be enabled in NVIC.** `HAL_UART_TxCpltCallback`
+  is raised from the USART TC interrupt, *not* from the DMA stream interrupt.
+  Without it the TX ring stalls after the first transfer: you see the first line
+  of output and then permanent silence, which reads exactly like a wiring or
+  baud fault. IDLE detection and UART error interrupts are also lost.
+- **RX DMA must be Circular.** In Normal mode the stream halts at the first idle
+  event and must be re-armed from the callback, losing whatever arrives in the
+  gap. `debug_uart_init()` checks this and returns `DEBUG_UART_RX_UNAVAILABLE`
+  rather than pretending to work.
+- **TX DMA stays Normal.** Circular TX would retransmit the buffer forever.
+
+**Idle-line framing is the point, not a side effect.** The UART idle line is a
+hardware frame delimiter, which is how a variable-length reply is known to be
+complete without knowing its length in advance — exactly the W3 problem, where
+`E0 30 10` returns 8 bytes and `E0 F3 01 D4` returns 3.
+`HAL_UARTEx_RxEventCallback` fires on half-transfer and full-transfer as well as
+idle, so the handler filters on `HAL_UARTEx_GetRxEventType() ==
+HAL_UART_RXEVENT_IDLE`; without that filter a reply straddling a buffer boundary
+is reported as two frames, which would show up in W3 as occasional truncated
+responses.
+
+**`%f` needs `-Wl,-u,_printf_float`** — newlib-nano omits float printf by
+default and prints garbage silently. Already added to `CMakeLists.txt`; needed
+for W5 PID telemetry.
+
+### `can_bus` — bxCAN on CAN1 (PB9 TX / PB8 RX) @ 250 kbps
+
+Owns everything CubeMX does not generate: the acceptance filter, starting the
+peripheral, and read access to the error state.
+
+```
+can_bus_init/send/receive                can_bus_tec/rec/esr/last_error[_str]
+can_bus_set_loopback/is_loopback         can_bus_is_error_warning/passive/bus_off
+can_bus_get_timing                       can_bus_stats/clear_stats
+```
+
+- Filter: bank 0, mask mode, 32-bit, ID 0x000 / mask 0x000, FIFO0,
+  `SlaveStartFilterBank = 14`.
+- **CubeMX settings that matter:** `AutoRetransmission = ENABLE` (the default
+  DISABLE is one-shot mode — an unacknowledged frame is dropped after a single
+  attempt, which makes "did it transmit?" much harder to answer during
+  bring-up) and `AutoBusOff = ENABLE`, mirroring `restart-ms 100` on Orion.
+- `can_bus_get_timing()` reads bit timing back out of `CAN1->BTR` — the
+  silicon's own view, not what the source asked for. This catches a CubeMX
+  regeneration silently resetting a field, which would otherwise surface as
+  intermittent bus errors.
+- RX is polled from the main loop. Moving to interrupt-driven means enabling
+  `CAN1_RX0_IRQn` in CubeMX and calling the same `can_bus_receive()` from
+  `HAL_CAN_RxFifo0MsgPendingCallback` — the function body does not change.
+- Heartbeat on **ID 0x500** (the 0x500-0x5FF telemetry/heartbeat group) at the
+  TIM3 rate, so the LED blink and the CAN frame share a cadence. Payload is
+  self-describing in `candump`: bytes 0-3 big-endian sequence, then TEC, REC,
+  LEC, and a status bitfield (bit0 warning, bit1 passive, bit2 bus-off).
+  Becomes `0x500 + module_id` once the DIP switch exists.
+
+**Reading `lec` during bring-up:** `lec ack` means the frame went out correctly
+but nothing acknowledged it. A transmitter cannot ACK itself, so this says "no
+other node is listening", not "this node is broken". A steady `tec 0 rec 0
+lec none` is the proof the ACK came back — the on-chip equivalent of Orion's
+`berr-counter tx 0 rx 0`.
+
+### `console` — line-based command interpreter
+
+Turns the board into a bench instrument: inject frames, read error registers,
+and switch CAN modes with no debugger session and no reflash.
+
+```
+help  info  stats  errors  clear  send <id> [hex]
+heartbeat [on|off]   monitor [on|off]   loopback [on|off]   reset
+```
+
+- `send` accepts the payload however it is easiest to type — `send 123 DEADBEEF`,
+  `send 123 DE AD BE EF` and `send 123 DEAD BEEF` are identical. Odd digit
+  counts and >8 bytes are rejected rather than silently truncated.
+- **`loopback on` is the solo self-test W1 concluded does not exist on the
+  SocketCAN side.** bxCAN loopback stays off the wire and self-ACKs, so
+  `send 123 DEADBEEF` returns through the filter and prints. That proves bit
+  timing, filter bank 0, the FIFO path and both HAL call paths with no
+  transceiver, no cable and no second node. If loopback works and normal mode
+  does not, the fault is downstream of the MCU — which splits the search space
+  before touching wiring.
+- `heartbeat off` / `monitor off` silence async output while typing.
+- `info` prints live clocks and the bit timing read back from `CAN1->BTR`.
+
+**Terminal line endings — cost real debugging time Aug 9, 2026.** The
+interpreter executes on CR or LF. CoolTerm with *Enter Key Emulation* set to
+`None` sends no terminator, so commands echoed back correctly while nothing ever
+ran — a symptom that looks like a parser bug and is not. `console_poll()` now
+also executes on an **idle line** when the burst held more than one byte, which
+covers Send-String-style terminals; the >1 byte guard is what keeps interactive
+typing from executing a character at a time. Set Enter Key Emulation to `CR`
+anyway rather than depending on the fallback.
 
 ## MKS SERVO42C V1.1 — UART PROTOCOL & BENCH VALIDATION
 
@@ -1714,10 +1851,16 @@ Claude Code), used in hex mode — sends raw byte sequences and shows raw respon
      - Three-way Jetson ↔ STM32 ↔ CANable verification moves to W2, since no
        STM32 firmware exists yet
 
-6. **CAN Bus — STM32 firmware:**
-   - Configure bxCAN peripheral registers (bit timing for target bitrate)
-   - Implement acceptance filter with mask-based ID table
-   - Test frame exchange: Jetson candump ↔ STM32 cansend and vice versa
+6. **CAN Bus — STM32 firmware:** 🔄 firmware complete, bench validation pending
+   - ✅ bxCAN configured at 250 kbps (BRP 12, BS1 12, BS2 2, SJW 2, 86.7%)
+     — CubeMX's own Baud Rate readout confirms 250000
+   - ✅ Accept-all mask filter on bank 0, `HAL_CAN_Start()`, heartbeat on 0x500
+   - ✅ DMA console + command interpreter for bench work (see FIRMWARE MODULES)
+   - ⬜ `loopback on` + `send` self-test with nothing attached
+   - ⬜ Termination re-measured with the STM32 on the bus (~60R, not ~40R)
+   - ⬜ RS pin on the STM32's breakout confirmed 10k to GND, not floating
+   - ⬜ Frame exchange: Orion `candump` ↔ STM32, confirmed independently on
+     the CANable — this is the W2 acceptance criterion
 
 7. **CAN Bus — ROS 2 integration (CANopen stack):**
    - STM32 side: CANopenNode + CanOpenSTM32 (HAL-integrated, CubeMX compatible)

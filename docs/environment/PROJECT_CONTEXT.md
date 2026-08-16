@@ -2293,6 +2293,100 @@ all stay at `0xE0`), since only one unit has ever been on the bench.
 Custom serial terminal running on daedalus (built earlier with Claude Design +
 Claude Code), used in hex mode — sends raw byte sequences and shows raw responses.
 
+## DRIVE MOTOR & DRIVER — hardware in hand (recorded Aug 16, 2026)
+
+Steering is the MKS SERVO42C (section above). This is the *other* actuator: the
+wheel drive, present on all six modules — corners run both, centers run drive
+only.
+
+### Motor
+**CQRobot DC geared motor with encoder, 6 V / 12 V, 131.3:1 gearbox.**
+Seven bought and already installed — six wheels plus one spare, matching the
+seven WeAct F446 boards.
+
+### Driver
+**Commercial DRV8833 breakout PCB**, already designed and in hand. The intent is
+to **parallel both H-bridges per motor** for higher current.
+
+TI documents parallel mode explicitly (DRV8833 datasheet, Figure 7): the two
+bridges may be tied together, and the device's internal dead time prevents
+cross-conduction between them, so no external protection is needed. Inputs are
+tied in pairs (IN1=IN3, IN2=IN4) and outputs joined (OUT1+OUT3, OUT2+OUT4). On a
+breakout the outputs are usually separate screw terminals, so joining them is
+external wiring.
+
+### ⚠️ Supply-voltage conflict with the PDB — resolve before HW1 layout
+
+| | Voltage |
+|---|---|
+| DRV8833 operating VM range | **2.7 – 10.8 V** |
+| Planned PDB branch rail | **13.0 – 13.5 V** |
+
+**The DRV8833 cannot be fed from the branch rail.** The PDB was deliberately set
+to 13–13.5 V to pre-compensate branch-wire drop against the SERVO42C's 12 V
+floor — that decision is sound and should not change, because the steering
+driver needs it. But it puts the rail roughly 2.2 – 2.7 V above the DRV8833's
+operating maximum, and above its absolute-maximum rating too.
+
+This is not a derating margin question. It is over the limit.
+
+**Options, in order of preference given the parts are already bought:**
+
+1. **Second buck on the node PCB: 13–13.5 V → ~9 V motor rail.** Keeps every
+   part already purchased. The motor is a 6 V/12 V unit, so ~9 V costs some top
+   speed but nothing else. The node PCB already carries one buck for 3.3 V logic;
+   this adds a second, sized for the motor current. **Recommended.**
+   Keep the two bucks fed independently from the 13 V rail rather than cascading
+   3.3 V off the motor rail — motor noise should not sit upstream of the MCU.
+2. **Swap the driver for a higher-voltage part** (e.g. one rated for the full
+   12–24 V range). Removes a buck, but discards drivers already in hand and
+   restarts the driver-selection work.
+3. **Lower the PDB rail.** Rejected — it breaks the SERVO42C drop budget, which
+   is the reason 13–13.5 V was chosen.
+
+### Current: 3 A RMS paralleled, not 4 A
+
+The commonly quoted "2 A per side" is the **peak** figure. TI's own number for
+sustained output is **1.5 A RMS per H-bridge**, and the datasheet gives ~3 A RMS
+for the paralleled pair.
+
+So the realistic budget is **3 A RMS / 4 A peak**, not 4 A continuous. For a
+131.3:1 geared motor this is still very likely ample — the gearbox means the
+motor sees low torque demand for a given wheel torque — but the PDB branch
+sizing (fuse rating and wire gauge, still open pending W4) should be worked from
+3 A RMS, and any thermal check on the breakout should assume its own copper is
+the limit, not the silicon.
+
+### Encoder — CPR needs confirming before W5
+
+Gear ratio is **131.3:1**. For this class of motor the encoder is a 2-channel
+hall sensor on the motor shaft, typically 11 pulses per motor revolution, which
+would give at the output shaft:
+
+```
+11 × 131.3          = 1444.3  pulses/rev  (single channel, one edge)
+1444.3 × 4          = 5777.2  counts/rev  (quadrature, x4 decoding)
+```
+
+**Confirm the 11 PPR figure against the actual product before W5 PID tuning** —
+the arithmetic above is only as good as that input, and every velocity and
+position figure in W5 depends on it.
+
+Note also that **131.3:1 is itself a rounded number.** Real gear trains give
+awkward exact ratios, so counts-per-revolution will not be a clean integer. That
+matters at W9 (precision calibration), the same way the SERVO42C's own encoder
+resolution question does.
+
+### Firmware implications (W4)
+
+- STM32 timer in **encoder mode** for the quadrature pair. `TIM3` is currently
+  configured as a plain internal-clock time base, not an encoder interface — W4
+  changes that or claims a different timer.
+- Paralleled DRV8833 needs **2 PWM inputs per motor** (the tied pairs), plus
+  `nSLEEP` on a GPIO. Budget ~5 pins per node: 2 PWM + nSLEEP + 2 encoder.
+- `nSLEEP` must be driven high to enable the driver — check whether the breakout
+  already pulls it up, since some do and some expose it bare.
+
 ## SYSTEMD SERVICES (DELL HOST)
 - **qemu-aarch64-binfmt-fix.service:**
   Runs multiarch/qemu-user-static --reset -p yes on every boot

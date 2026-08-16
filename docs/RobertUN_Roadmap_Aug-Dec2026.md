@@ -31,7 +31,7 @@ opened. W4 is the next week to open.**
 | W2 — STM32 CAN bring-up | ✅ **DONE** Aug 10 — STM32 heartbeat crossing a real 250 kbps bus to Orion, confirmed independently on the CANable, zero error counters on both ends |
 | W3 — MKS SERVO42C UART | ✅ **DONE** Aug 13 — STM32 commands the steering motor to a target angle, confirmed against the driver's own encoder; hardware wired and running |
 | W4–W9 | ⬜ not started |
-| HW1–HW4 — node PCB + PDB | ⬜ not started — new parallel track, see *Hardware track* below. **Blocked on one decision:** the drive-motor interface, needed before Aug 24 |
+| HW1–HW4 — node PCB + PDB | ⬜ not started — new parallel track, see *Hardware track* below. **Unblocked Aug 16:** drive motor and driver are settled and in hand. One constraint to solve in HW1 — the DRV8833's 10.8 V ceiling vs the 13–13.5 V branch rail |
 
 **Days banked: 10.** W3 closed Aug 13 against its nominal Aug 23 finish.
 
@@ -119,23 +119,37 @@ This deliberately mirrors the roadmap's own build order — *prove one, then
 replicate.* HW3 produces the reference board; only after it works does HW4
 commit effort to six more.
 
-### The one thing that blocks HW1
+### HW1 is unblocked (Aug 16) — drive hardware is settled
 
-**The drive motor is still undefined.** `PROJECT_CONTEXT.md` says corners do
-"drive (encoder PID)" and centers "drive only", but no motor type, driver, or
-current figure is recorded anywhere. That decides whether the node PCB carries a
-motor driver or merely a connector to an off-board one — which changes the
-board's size, its thermal design, and most of its power routing.
+The drive motor was the one open question. It is answered, and everything is
+already bought:
 
-If the drive motor uses an **off-board driver module**, the way steering uses the
-MKS, then the node PCB stays a carrier and HW1 can start immediately.
-If the driver goes **on the board**, HW1 cannot close until W4 has picked the
-motor — and W4/W5 are the weeks this plan already flags as most likely to
-overrun, so the hardware track would inherit that risk.
+- **7 × CQRobot DC geared motor with encoder, 6 V/12 V, 131.3:1** — six wheels
+  plus a spare, already installed.
+- **Commercial DRV8833 breakout** per motor, both H-bridges paralleled.
 
-**Decide the drive-motor interface before Aug 24**, even if the exact motor is
-not final. Fixing the interface — off-board vs on-board, connector, pin budget —
-is enough to unblock the schematic.
+So the drive driver is **off-board**, exactly like steering's MKS. The node PCB
+stays a carrier, and HW1 does not inherit W4/W5's overrun risk. Full detail in
+`PROJECT_CONTEXT.md` under *DRIVE MOTOR & DRIVER*.
+
+### ⚠️ But it added a constraint the PCB must solve: the DRV8833 tops out at 10.8 V
+
+The PDB branch rail is planned at **13–13.5 V**, chosen to pre-compensate wire
+drop against the SERVO42C's 12 V floor. The DRV8833's operating range is
+**2.7–10.8 V**. The rail is above the driver's absolute maximum, so the branch
+rail cannot reach the DRV8833 directly.
+
+The steering side is fine — the SERVO42C wants that voltage. It is the drive side
+that needs stepping down.
+
+**Recommended fix: a second buck on the node PCB, 13–13.5 V → ~9 V**, feeding the
+DRV8833 only, and fed independently from the 13 V rail rather than cascaded off
+the logic buck. The motors are 6 V/12 V units, so ~9 V costs a little top speed
+and nothing else, and every part already bought stays in use.
+
+**This is HW1's job to resolve** — it changes the schematic, not the plan. Size
+the motor rail from **3 A RMS** (TI's paralleled figure), not the 4 A that the
+"2 A per side" peak rating suggests.
 
 ### PDB sizing waits for W4, and that is fine
 

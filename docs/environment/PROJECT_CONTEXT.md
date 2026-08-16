@@ -1,35 +1,45 @@
 # Robotics Development Environment — Project Context Document
-# Last updated: August 13, 2026 (**W3 acceptance criterion MET** — STM32 commands
-# the SERVO42C to a target angle, confirmed against its own encoder, round-trip
-# repeatability 1/10 of a microstep; three device/HAL traps found and recorded:
-# the driver echoes every request, idle-line framing does not work on this link,
-# and clearing UART error flags steals a byte from the DMA; earlier entry Aug 11:
-# bus-load ramp to saturation — no FIFO overrun
-# at any rate, main-loop period bounded under 1.6 ms; polled-vs-interrupt CAN RX
-# recorded as an OPEN question, not settled by that result; earlier entry Aug 10:
-# **W2 COMPLETE** — STM32F446RE heartbeat
-# crossing a real 250 kbps bus to Orion, confirmed independently on the CANable,
-# zero error counters on both ends; termination measured 59.79R; a floating
-# CAN_RX pin identified as the cause of three different pre-wiring fault
-# signatures; earlier entry Aug 9: W2 firmware written and building — DMA console
-# on USART1, bxCAN driver at 250 kbps with accept-all filter, and a serial
-# command interpreter for bench work; PLL divider record corrected to M=4/N=180
-# and the MCO2 pin frequency clarified; earlier entry same day: W2 STM32
-# toolchain established — STM32CubeIDE
-# replaced by CubeMX + CMake + CubeCLT + VS Code on daedalus, full flash/debug
-# chain verified against a WeAct STM32F446 Core Board; 8 MHz HSE → 180 MHz PLL
-# reconfirmed under the new toolchain via MCO1/MCO2 + TIM3 blinky, which also
-# validates the 45 MHz APB1 clock feeding bxCAN; CAN1 pin assignment and
-# 250 kbps bit-timing values derived and recorded; module identity settled as a
-# 3-bit DIP switch read at boot, making one binary serve all six modules;
-# earlier entry Aug 6: CAN bus W1 COMPLETE — MKS CANable V2.0 Pro flashed to
-# candleLight, SN65HVD230 wired to J17, two-node physical bus validated at
-# 250 kbps with 500-frame load test, pinmux + can0 config made persistent via
-# systemd; ALSO recovered the missing MKS SERVO42C UART protocol + torque
-# characterization from the June 8, 2026 bench session, which had never been
-# documented here; earlier entry Aug 4: forge workstation profile, Orion
-# loopback self-test, mttcan-blacklist assumption corrected)
-# Paste this at the start of a new Claude session to restore full context
+**Last updated:** August 14, 2026
+*Paste this at the start of a new Claude session to restore full context.*
+
+## Progress log (most recent first)
+- **Aug 14** — Power distribution & grounding architecture decided: CAN and
+  power backbones split into two harnesses (CAN stays linear/Bulgin, power
+  goes radial from a new PDB); common-ground strategy clarified at PCB and
+  vehicle scale, not isolated; XT60 chosen for bench-test power connectors;
+  local buck regulator decided for node 3.3V (bypasses onboard LDO); two
+  ground-loop failure modes researched (benign USB noise vs. destructive
+  MCU-killing); new power-down sequencing rule added (disconnect source
+  positive first, always).
+- **Aug 13** — W3 acceptance criterion MET: STM32 commands the SERVO42C to a
+  target angle, confirmed against its own encoder, round-trip repeatability
+  1/10 of a microstep. Three device/HAL traps found: driver echoes every
+  request, idle-line framing doesn't work on this link, clearing UART error
+  flags steals a byte from the DMA.
+- **Aug 11** — Bus-load ramp to saturation: no FIFO overrun at any rate,
+  main-loop period bounded under 1.6 ms. Polled vs. interrupt-driven CAN RX
+  left as an OPEN question, not settled by this result.
+- **Aug 10** — W2 COMPLETE: STM32F446RE heartbeat crossing a real 250 kbps
+  bus to Orion, confirmed independently on the CANable, zero error counters
+  both ends. Termination measured 59.79R. Floating CAN_RX pin identified as
+  the cause of three different pre-wiring fault signatures.
+- **Aug 9** — W2 firmware written and building: DMA console on USART1, bxCAN
+  driver at 250 kbps with accept-all filter, serial command interpreter for
+  bench work. PLL divider record corrected to M=4/N=180; MCO2 pin frequency
+  clarified.
+- **Aug 9 (earlier same day)** — W2 STM32 toolchain established: STM32CubeIDE
+  replaced by CubeMX + CMake + CubeCLT + VS Code on daedalus; full flash/
+  debug chain verified against a WeAct STM32F446 Core Board; 8 MHz HSE →
+  180 MHz PLL reconfirmed; module identity settled as a 3-bit DIP switch
+  read at boot (one binary serves all six modules).
+- **Aug 6** — CAN bus W1 COMPLETE: MKS CANable V2.0 Pro flashed to
+  candleLight, SN65HVD230 wired to J17, two-node physical bus validated at
+  250 kbps with 500-frame load test, pinmux + can0 config made persistent via
+  systemd. Also recovered the missing MKS SERVO42C UART protocol + torque
+  characterization from the June 8, 2026 bench session (previously
+  undocumented here).
+- **Aug 4** — forge workstation profile completed; Orion loopback self-test
+  run; mttcan-blacklist assumption corrected.
 
 ## HARDWARE
 
@@ -798,6 +808,191 @@ that rules out HSI (+/-1%) — see the W1 debrief in the roadmap.
     - See KEY DECISIONS for full rationale
   - Plain CAN message ID hierarchy (designed in session) serves as reference
     for understanding arbitration and filtering — not used in final rover
+
+## POWER DISTRIBUTION & GROUNDING — HARDWARE DESIGN DECISIONS
+### (session Aug 14, 2026 — architecture decided, PDB not yet built)
+
+### Power backbone is now separate from the CAN backbone
+The original plan combined CAN_H/CAN_L/GND/Power on one daisy-chained
+backbone through the Bulgin 400-series pass-through connectors. Split, after
+the analysis below:
+- **CAN backbone: unchanged.** Stays a linear daisy chain, two end
+  terminators, Bulgin 400-series 8-pin, carrying CAN_H/CAN_L/CAN_GND only.
+  This topology is electrically required for CAN — a star topology on the
+  differential pair causes stub reflections and must never be done.
+- **Power backbone: new, radial (star) from a Power Distribution Board (PDB)
+  near Jetson.** Each of the 6 wheel modules gets its own branch straight
+  from the PDB, not a pass-through hop through neighboring nodes.
+
+### Why radial power, not daisy-chain (the math that forced this)
+- **Daisy-chain saves no real cable length here.** Jetson/PDB sits physically
+  in the middle of the chain (wheel1-wheel2-wheel3-Jetson-wheel4-wheel5-
+  wheel6) — a radial branch to any wheel covers roughly the same distance as
+  the chain path to reach it.
+- **Wire gauge / voltage drop rules out sending power through the CAN cable.**
+  The CAN backbone is flexible Cat-5/6, ~24 AWG (≈0.084 Ω/m one-way).
+  Worked example: 10 m one-way / 20 m round-trip loop ≈ 1.68 Ω; at 2 A that's
+  ≈3.4 V dropped in copper alone — over a quarter of the 12 V rail gone
+  before reaching the driver, eating directly into the SERVO42C's stated
+  12–24 V input floor.
+- **Cumulative current rules out pass-through power on the same connector.**
+  Segments closest to the PDB would carry the SUM of all downstream nodes'
+  current in a daisy-chain scheme, forcing tapered gauge and risking the
+  Bulgin connector's ~5 A/pin (8-pole) rating during coordinated multi-motor
+  moves (W8 all-nodes-live test).
+- **Connector count is actually better with radial, not worse.** End wheels
+  need 1 power connector either way; middle wheels need 2 (in+out) under
+  daisy-chain vs. just 1 under radial — radial saves 4 connectors total.
+
+### PDB (Power Distribution Board) — new component, not previously planned
+- Lives near Jetson; is the vehicle-level "star point" — battery negative,
+  all 6 branch returns, and Jetson's logic ground reference meet here.
+- 6 individually **fused** branch outputs (blade fuse or resettable PTC per
+  branch). A shorted driver on one corner blows one fuse, not the whole
+  rover's power.
+- Recommend running PDB output slightly hot — **13–13.5 V nominal** instead
+  of 12.0 V — to pre-compensate for branch-wire voltage drop, since the
+  SERVO42C's 12 V floor leaves little margin once real wire resistance is
+  accounted for.
+- Branch wire gauge: **16–18 AWG** as a starting point (single node's own
+  current only — no cumulative-current tapering needed since radial). Final
+  sizing still needs real current draw once the W4 drive motor is on the
+  bench (see NEXT TASKS).
+- Corner branches (steering + drive current once W4 lands) may need heavier
+  gauge/higher fuse rating than center branches (drive only) — revisit once
+  W4 drive-motor current spec is known.
+
+### Grounding — common ground required, at two distinct scales
+**Do not conflate these two:**
+1. **PCB-level (each node):** 12V motor return and 3.3V logic return must
+   physically meet at ONE point on that board (a local "star point"). Motor
+   return traces short/wide, routed away from UART/CAN signal traces and MCU
+   decoupling caps.
+2. **Vehicle-level:** a single reference point (the PDB) is required, but
+   this does NOT mean every node needs an individual home-run wire for every
+   signal — CAN stays a bus; only power went radial, and only because of the
+   wire-gauge/current math above, not a grounding-topology requirement on CAN.
+
+**Common ground (logic + motor power) is required, not merely permitted:**
+- MKS's own reference wiring for the STM32/SERVO42C UART link ties STM32
+  GND directly to the 12V supply's negative terminal — the UART link is
+  single-ended and has no valid signal reference without a shared ground.
+- CAN transceivers (SN65HVD230) have a wide common-mode range specifically
+  to tolerate a shared, imperfect ground running the length of a distributed
+  bus — standard practice in CANopen/J1939 networks, not a workaround.
+- Pulling power onto its own harness means the CAN_GND pin/wire in the
+  Bulgin connector now only ever carries CAN's small bias/reference current,
+  not amps of motor return current.
+
+### Node-level 3.3V regulation (decided Aug 14, 2026)
+- WeAct STM32F446 Core Board's onboard **ME6231A33PG LDO** (SOT-89 package,
+  500mA max, 125mV dropout @ 100mA) is rated by the chip itself for up to
+  18V input — WeAct's own "6V max" recommendation is a **thermal** limit for
+  that small package on that board, not a breakdown-voltage limit.
+  P = (Vin − 3.3V) × Iload; at 12V input this would push the small SOT-89
+  package well past a safe continuous dissipation margin.
+  (Part reference: https://www.lcsc.com/product-detail/C2681684.html)
+- **Decision: add a small local buck (switching) regulator on each custom
+  node PCB, stepping the 12–13.5V rail DIRECTLY down to a clean 3.3V, fed
+  into the WeAct board's 3V3 pin** — bypassing the onboard ME6231A33PG LDO
+  entirely rather than running it near its thermal edge.
+- Rejected alternative: sending a second dedicated ~5.5–6V line from the PDB
+  to each node. Would double branch wiring/connector count (undoing the
+  radial-power simplification above) for no efficiency gain over a local
+  buck, which also tolerates the full 12–13.5V range without careful
+  drop-budgeting against a tight 6V ceiling.
+- The buck regulator's ground pin is the natural PCB-level star point
+  described above.
+- **Open interaction to watch:** debug USB (ST-Link / USB-serial for
+  `debug_uart`) must NOT be configured to back-power the target once the
+  board is powered from the local buck — two active regulators on the same
+  3.3V rail is bad practice regardless of ground isolation. Disable
+  "power target from probe" on ST-Link; leave VBUS/5V unconnected on any
+  USB-serial adapter used for console access.
+
+### Power connectors — evaluated and decided (Aug 14, 2026)
+All evaluated against the branch's ~3–4A budget and rover-scale wire gauge.
+All sealed options priced out higher than expected on AliExpress vs. Mouser/
+Digikey for small quantities — see NEXT TASKS for the pre-demo revisit.
+
+| Option | Current | Panel-mount? | Notes |
+|---|---|---|---|
+| Deutsch DT04-2P/DT06-2S | 13A/pin | Flange variant exists | IP67, automotive-proven, bulky (wedge-lock + backshell) |
+| TE/AMP Superseal 1.5 | 14A | No — inline only | Exceeds IP67, compact, wrong mechanical form for a case wall |
+| GX16 waterproof aviation, panel socket | 5–7A (varies by listing) | Yes | Cheap, common, current rating inconsistent across clones |
+| M12 T-coded (power) | 12A | Yes | Must specify T-coded/power — generic M8/M12 "sensor" variants cap ~3–4A |
+| Bulgin 400-series, 2-pole (PX0413/PX0410) | 8A/250V | Yes | Same family/IP68 as CAN connectors already on hand (17 units) |
+
+- **Decision: XT60 for the current bench-test / near-term phase.** Not
+  sealed, not locking (friction-fit only) — an explicit near-term choice to
+  unblock W3/W4 progress, not the final field connector. Cheapest, most
+  available, current rating far exceeds what's needed.
+- **Mitigation: 3D-printed cover per connector**, designed once real
+  enclosure geometry exists. Must include a zip-tie channel or snap-over lip
+  holding the two XT60 halves compressed — addresses dust/weather ingress
+  AND connector retention under rocker-bogie articulation (see GROUND LOOPS
+  below for why retention matters as much as sealing here).
+- **Operational rule while using XT60:** never hot-plug/unplug under load.
+- Revisit sealed/locking connector (Bulgin 2-pole vs. GX16 vs. M12 T-coded)
+  once budget allows or ahead of outdoor field testing.
+
+### Ground loops — two distinct mechanisms, researched Aug 14, 2026
+**1. Benign/noisy (signal integrity, not usually destructive).** Two ground
+paths between interconnected devices (e.g. laptop grounded via AC adapter
+mains earth, ALSO connected via USB to something grounded through a
+different path). Symptoms: USB data errors, audio hum, CAN reference offset.
+Fixed by a USB isolator — consistent with the isolator already purchased for
+daedalus. **Each USB-connected device needs its own isolator** — one
+isolator upstream of a hub does not protect multiple individually-grounded
+downstream devices (ODrive's own grounding docs are explicit about this).
+
+**2. Destructive — plausible explanation for the 4 burned MCUs from last
+semester.** When a motor system has two ground paths back to the same power
+source — the primary power-return path, and a secondary "signal ground" path
+via a connected MCU — and the primary path is interrupted (loose/vibrating
+connector, wrong disconnect order), the MCU's signal ground becomes the ONLY
+remaining return path. Motor return current (amps) then flows through
+traces/pins rated for tens of milliamps (typical GPIO absolute max),
+destroying the MCU essentially instantly (Basicmicro's RoboClaw grounding
+app note; corroborated by Phidgets' USB-side case study and ODrive's official
+grounding docs — see REFERENCE READING below).
+- **Directly relevant here:** rocker-bogie articulation = continuous
+  vibration = elevated risk of exactly this "intermittent power-ground
+  contact" condition, especially on a friction-fit, non-locking connector
+  like the XT60 chosen above.
+- **New operating procedure — power-down/power-up sequencing rule:** always
+  remove the main power supply's POSITIVE/source connection FIRST when
+  disconnecting anything; ensure all ground connections are solid BEFORE
+  applying power when connecting. Never hot-plug XT60 while a branch is live.
+- Worth checking, if any notes/photos survive from last semester's 4 MCU
+  failures: was any of them powered down in the wrong order, hot-plugged, or
+  on a connector that could have lost contact under vibration?
+
+### Reference reading (grounding / motor-driver layout / connector specs)
+- TI SLVA959B — Best Practices for Board Layout of Motor Drivers:
+  https://www.ti.com/lit/an/slva959b/slva959b.pdf
+- ST AN4694 — EMC Design Guides for Motor Control Applications:
+  https://www.st.com/resource/en/application_note/an4694-emc-design-guides-for-motor-control-applications-stmicroelectronics.pdf
+- ST AN5765 — STSPIN32F0x Layout Guidelines (worked ground-connection
+  diagram):
+  https://www.st.com/resource/en/application_note/an5765-stspin32f0x-low-voltage-brushless-motor-controller-layout-guidelines-stmicroelectronics.pdf
+- Infineon — PCB Layout Guidelines for MOSFET Gate Driver:
+  https://www.infineon.com/assets/row/public/documents/24/42/infineon-applicationnote-gatedriver-mosfet-pcb-layout-guidelines-for-mosfet-gatedriver-applicationnotes-en.pdf
+- Basicmicro — Ground Path Issues (RoboClaw/MCP grounding app note, the
+  destructive-ground-loop mechanism above):
+  https://resources.basicmicro.com/roboclaw-and-mcp-grounding-issues/
+- ODrive Robotics — official Ground Loops documentation (star grounding,
+  per-device USB isolation):
+  https://docs.odriverobotics.com/v/latest/articles/ground-loops.html
+- Phidgets — "How to Destroy a Motor Controller" (real-world USB + motor
+  controller ground-loop destruction case study):
+  https://phidgets.wordpress.com/2014/06/03/how-to-destroy-a-motor-controller-2/
+- ME6231A33PG datasheet/part reference (WeAct board onboard LDO):
+  https://www.lcsc.com/product-detail/C2681684.html
+- Connector specs (Deutsch DT, Superseal 1.5, GX16, M12 T-code, Bulgin
+  2-pole) — sourced via AliExpress/Mouser/RS search, no single canonical
+  datasheet link retained; search terms logged in the chat session where
+  this decision was made (Aug 14, 2026).
 
 ## CAN BUS — JETSON SOFTWARE SETUP (JetPack 6.x / L4T R36.x)
 
@@ -2312,6 +2507,24 @@ Claude Code), used in hex mode — sends raw byte sequences and shows raw respon
     Server-side DisplayGeometry/PhysicalDisplays parameters ineffective
     Dell laptop works correctly without any special configuration
 
+16. **Power distribution & grounding — architecture decided Aug 14, 2026,
+    hardware not yet built:**
+    - Design PDB: 6 individually fused branch outputs, single star point,
+      13–13.5V nominal output to pre-compensate branch-wire voltage drop
+    - Size PDB branch wire gauge precisely once W4 drive-motor current draw
+      is measured (currently placeholder: ~5m one-way, ~3A/motor assumed)
+    - Design local buck regulator (12–13.5V → 3.3V direct into WeAct 3V3
+      pin, bypassing the onboard ME6231A33PG LDO) for each node PCB
+    - Design 3D-printed XT60 retention/weather cover (zip-tie channel or
+      snap lip) once corner-module enclosure geometry exists
+    - Revisit sealed/locking power connector (Bulgin 400 2-pole vs. GX16
+      panel-mount vs. M12 T-coded) ahead of outdoor field testing / the
+      December demo
+    - Check whatever notes/photos survive from last semester's 4 burned
+      MCUs against the destructive-ground-loop mechanism now documented
+      (wrong disconnect order, hot-plugged connector, lost ground contact
+      under vibration) — see POWER DISTRIBUTION & GROUNDING section
+
 ## KEY DECISIONS AND RATIONALE
 - **X11 over Wayland (Dell):** Wayland has incomplete NVIDIA PRIME support
   for multi-monitor on Dell laptops
@@ -2409,6 +2622,29 @@ Claude Code), used in hex mode — sends raw byte sequences and shows raw respon
     would require reimplementing half of CANopen without the debugging tooling
   - OpenCyphal rejected: more elegant architecture but steeper learning curve,
     no ROS 2 integration, register-level STM32 driver (no HAL), thinner community
+- **Radial (star) power backbone, separate from the CAN backbone:**
+  Daisy-chaining 12V through the thin Cat-5/6 CAN cable fails on wire-gauge/
+  voltage-drop grounds over rover-scale distances (~3.4V drop worked example);
+  radial branches from a new PDB avoid this and use fewer connectors than
+  pass-through power would have needed
+- **Common ground (logic + motor power), not isolated:** Required by the
+  SERVO42C's single-ended UART and standard practice for CAN's common-mode-
+  tolerant transceivers; the real risk is an uncontrolled ground topology,
+  not the shared ground itself — mitigated with PCB-level and vehicle-level
+  star points (see POWER DISTRIBUTION & GROUNDING section)
+- **XT60 for bench-test phase, sealed connector deferred:** Deutsch DT,
+  Superseal 1.5, GX16, M12 T-code, and Bulgin 400 2-pole all evaluated and
+  priced higher than expected on AliExpress in small quantities; XT60
+  unblocks W3/W4 now, with a 3D-printed retention/weather cover as an
+  interim mitigation
+- **Local buck regulator to 3.3V, bypassing the WeAct board's onboard LDO:**
+  The board's ME6231A33PG is thermally (not electrically) limited to 6V
+  input; a local buck handles the full 12–13.5V PDB range far more
+  efficiently and avoids a redundant second regulation stage
+- **Power-down sequencing rule — disconnect source positive first, always:**
+  Prevents the documented failure mode where an interrupted primary ground
+  path forces motor return current through an MCU's signal ground,
+  destroying it — plausible explanation for last semester's 4 burned MCUs
 
 ## USEFUL COMMANDS REFERENCE
 

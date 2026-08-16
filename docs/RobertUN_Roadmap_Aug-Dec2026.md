@@ -31,6 +31,7 @@ opened. W4 is the next week to open.**
 | W2 — STM32 CAN bring-up | ✅ **DONE** Aug 10 — STM32 heartbeat crossing a real 250 kbps bus to Orion, confirmed independently on the CANable, zero error counters on both ends |
 | W3 — MKS SERVO42C UART | ✅ **DONE** Aug 13 — STM32 commands the steering motor to a target angle, confirmed against the driver's own encoder; hardware wired and running |
 | W4–W9 | ⬜ not started |
+| HW1–HW4 — node PCB + PDB | ⬜ not started — new parallel track, see *Hardware track* below. **Blocked on one decision:** the drive-motor interface, needed before Aug 24 |
 
 **Days banked: 10.** W3 closed Aug 13 against its nominal Aug 23 finish.
 
@@ -78,6 +79,80 @@ Build order: **one reference corner module fully working end-to-end, then replic
 | W7 | Sep 14–20 | Fit + set the module-ID DIP switches on all 6 boards, flash **the same binary** to each, wire all 6 nodes. **Carried from W3:** confirm the other three SERVO42C units are set to CR_UART / 38400 / Mstep 8 | All 6 physical nodes wired, each responds to its own CAN ID; swapping a board's DIP setting changes its identity with no reflash |
 | W8 | Sep 21–27 | All 6 nodes live on one bus simultaneously; Ackermann node on Orion issues coordinated commands | Full 6-wheel rover responds correctly to a turn command |
 | W9 | Sep 28–Oct 4 | Precision calibration + repeatability across the 4 steering corners; buffer | Angle error is measured, consistent, and within tolerance |
+
+---
+
+## Hardware track (HW1–HW4) — runs in parallel with W4–W7
+
+Added Aug 16, 2026. Until now the roadmap described only firmware and bring-up,
+while the node PCB and the PDB existed solely as item 16 of `PROJECT_CONTEXT.md`'s
+NEXT TASKS. W7 assumes six populated boards with DIP switches exist; nothing in
+the plan produced them. This track closes that.
+
+**Boards are milled in-house on the ANT CNC**, so there is no fab queue and no
+shipping wait — the usual reason a PCB track dominates a schedule does not apply
+here. What replaces it is **replication effort**: seven node boards plus a PDB to
+mill, populate and test by hand.
+
+### What is already in hand (not on the critical path)
+
+- **7 × WeAct STM32F446 boards** — 6 wheels + 1 spare.
+- **4 × MKS SERVO42C**, already fitted to the 19:1 cycloidal drives, ready to
+  mount. Steering hardware is done.
+- Most passives and SMD parts, from stock or already bought.
+
+**The node PCB is a carrier board, not an MCU board.** The STM32 stays on the
+WeAct module, so nothing fine-pitch has to be milled — the hardest footprints
+are the SN65HVD230 (SOIC-8) and the buck regulator. That is what makes
+single-sided isolation milling realistic here.
+
+### Track
+
+| Step | Runs with | Work | Done when... |
+|---|---|---|---|
+| **HW1** | W4 · Aug 24–30 | Node PCB **schematic**: WeAct headers, local buck (12–13.5 V → 3.3 V into the 3V3 pin), SN65HVD230 + RS resistor + selectable 120 Ω termination, 3-bit DIP, XT60 in, Bulgin 8-pin CAN, UART4 header to the MKS, encoder header. BOM checked against parts actually on the shelf | Schematic reviewed against the grounding rules in `PROJECT_CONTEXT.md`; every part either in stock or ordered |
+| **HW2** | W5 · Aug 31–Sep 6 | **Layout for isolation milling** — single-sided if it fits, jumpers where it does not. Local star point at the buck's ground pin. Motor return kept away from UART/CAN and MCU decoupling. Generate and dry-run the toolpaths | Toolpaths verified against the ANT CNC's real trace/space limit; via count known and acceptable |
+| **HW3** | W6 · Sep 7–13 | **Mill, populate and bring up ONE board.** This is the board W6's integration test runs on — CAN in, steering and drive out | One node PCB passes the same bench tests the breadboard passes today |
+| **HW4** | W7 · Sep 14–20 | **Batch: remaining 6 boards + the PDB.** PDB gets 6 fused branches, single star point, 13–13.5 V nominal | Six boards populated and individually smoke-tested; PDB delivers fused power to all six |
+
+This deliberately mirrors the roadmap's own build order — *prove one, then
+replicate.* HW3 produces the reference board; only after it works does HW4
+commit effort to six more.
+
+### The one thing that blocks HW1
+
+**The drive motor is still undefined.** `PROJECT_CONTEXT.md` says corners do
+"drive (encoder PID)" and centers "drive only", but no motor type, driver, or
+current figure is recorded anywhere. That decides whether the node PCB carries a
+motor driver or merely a connector to an off-board one — which changes the
+board's size, its thermal design, and most of its power routing.
+
+If the drive motor uses an **off-board driver module**, the way steering uses the
+MKS, then the node PCB stays a carrier and HW1 can start immediately.
+If the driver goes **on the board**, HW1 cannot close until W4 has picked the
+motor — and W4/W5 are the weeks this plan already flags as most likely to
+overrun, so the hardware track would inherit that risk.
+
+**Decide the drive-motor interface before Aug 24**, even if the exact motor is
+not final. Fixing the interface — off-board vs on-board, connector, pin budget —
+is enough to unblock the schematic.
+
+### PDB sizing waits for W4, and that is fine
+
+Branch wire gauge and fuse rating depend on real drive-motor current, which W4
+measures. The PDB is therefore scheduled last (HW4) on purpose. Its *design* can
+proceed earlier; only the final gauge and fuse values wait.
+
+### Risk: the ANT CNC parameters are not written down
+
+The milling parameters for this machine were worked out in earlier sessions and
+live only in those chat logs — they are in neither `PROJECT_CONTEXT.md` nor this
+file. Feed rate, spindle speed, V-bit angle, cut depth and the achievable
+trace/space minimum all directly constrain HW2's layout.
+
+**Capture them in `PROJECT_CONTEXT.md` before HW2 starts.** Re-deriving them by
+trial and error costs copper-clad stock and days, and HW2's layout rules cannot
+be written without the trace/space figure.
 
 ### W2 record (Aug 7-10) — closed, acceptance criterion met
 

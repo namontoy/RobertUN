@@ -172,14 +172,29 @@ same reason.
 **Wiring is arranged to avoid ground loops.** The STM32 and the SERVO42C each
 have their own supply — the driver runs from 12 V for the motor — and only the
 UART signal pair plus a single ground reference cross between them. No power
-rail is shared, and there is one ground path rather than several, so motor
-return current cannot flow through the signal ground. This mirrors the W1 CAN
-decision, where only CANH, CANL and GND cross between nodes and the transceiver
-and CANable are powered separately.
+*rail* is shared, but ground deliberately is: the UART link is single-ended and
+has no valid signal reference without it, and MKS's own reference wiring ties
+STM32 GND straight to the 12 V supply's negative terminal. The point is one
+ground path rather than several, so motor return current has no reason to flow
+through the signal ground. This mirrors the W1 CAN decision, where only CANH,
+CANL and GND cross between nodes and the transceiver and CANable are powered
+separately.
 
-*(Fill in the specific measure taken if it was more than single-point grounding
-— this records the intent, which is what matters when board number four is
-wired in W7.)*
+**The full grounding architecture was worked out on Aug 14** and lives in
+`PROJECT_CONTEXT.md` under *POWER DISTRIBUTION & GROUNDING*. It is design work
+for the custom node PCB rather than the breadboard, but two of its findings
+change how the bench is operated **starting now**:
+
+- **Power sequencing rule.** Disconnect the supply's POSITIVE side first;
+  make sure grounds are solid *before* applying power. Never hot-plug an XT60
+  on a live branch. This is not fussiness — if the primary power return opens
+  while the MCU is still connected, the MCU's signal ground becomes the only
+  return path, and motor current flows through pins rated for milliamps. That
+  is now the leading explanation for **last semester's four burned MCUs.**
+- **No back-powering.** Once a node runs from its own regulator, the ST-Link
+  must not power the target and any USB-serial adapter must have VBUS left
+  unconnected — two active regulators on one 3.3 V rail is bad practice
+  regardless of grounding.
 
 **Three traps found and documented**, all in `PROJECT_CONTEXT.md`:
 1. The driver **echoes every request** before replying — silently corrupts

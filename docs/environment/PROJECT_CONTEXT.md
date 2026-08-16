@@ -1,5 +1,10 @@
 # Robotics Development Environment — Project Context Document
-# Last updated: August 11, 2026 (bus-load ramp to saturation — no FIFO overrun
+# Last updated: August 13, 2026 (**W3 acceptance criterion MET** — STM32 commands
+# the SERVO42C to a target angle, confirmed against its own encoder, round-trip
+# repeatability 1/10 of a microstep; three device/HAL traps found and recorded:
+# the driver echoes every request, idle-line framing does not work on this link,
+# and clearing UART error flags steals a byte from the DMA; earlier entry Aug 11:
+# bus-load ramp to saturation — no FIFO overrun
 # at any rate, main-loop period bounded under 1.6 ms; polled-vs-interrupt CAN RX
 # recorded as an OPEN question, not settled by that result; earlier entry Aug 10:
 # **W2 COMPLETE** — STM32F446RE heartbeat
@@ -1827,6 +1832,45 @@ For steering, use low speed values (1–4) with `FD`, not `F6`.
 Set MaxT to maximum: `E0 A5 04 B0 39` → 224+165+4+176 = 569 → 569−512 = 57 = 0x39
 Set Kp to default:   `E0 A1 06 50 D7` → 224+161+6+80 = 471 → 471−256 = 215 = 0xD7
 
+### ⚠️ The driver ECHOES every request before replying
+
+**Discovered Aug 13, 2026, on the STM32.** The SERVO42C retransmits the bytes it
+just received, then sends its answer. What actually arrives is:
+
+```
+E0 30 10 | E0 00 00 00 00 00 2A 0A
+└─ echo ┘ └──── the actual reply ────┘
+```
+
+**This was never noticed in the June 8 bench session** because that used a hex
+terminal, where a human eye reads past the repeated bytes without registering
+them. It only surfaced once software had to validate a frame: the checksum gets
+computed across echo *and* reply together and a perfectly good response is
+rejected as corrupt.
+
+**Confirmed device behaviour, not a wiring loop.** Verified across two different
+SERVO42C boards and two motors, with connectors swapped and MCU-side wiring
+re-checked — TX and RX are not bridged anywhere.
+
+**Handling it (`strip_echo()` in `mks_servo.c`):** discard a leading run that
+exactly matches the bytes just transmitted, then validate what remains. Two
+properties make this safe rather than a heuristic:
+
+- The echo **cannot arrive split**. Its bytes stream back continuously while we
+  transmit, so an idle gap can only open after the last of them — the echo is
+  either wholly present or not started, and an exact prefix match is sound.
+- Echo and reply may arrive as **one burst or two** separated by an idle gap.
+  Both occur; an echo-only burst must be treated as "keep waiting", not as a
+  malformed reply.
+
+The strip is a no-op on a link that does not echo, so it costs nothing if a
+future firmware revision drops the behaviour. Each one is counted in
+`mks_stats.echoes` and reported by the console as "echoes stripped (normal)" —
+**a non-zero count is expected, not a fault.**
+
+> Anyone writing a new command for this protocol, or debugging one that returns
+> "bad checksum", should read this first. The reply is very likely fine.
+
 ### Response format
 | Response | Meaning | Checksum |
 |---|---|---|
@@ -1854,6 +1898,129 @@ Negative = shaft pushed back from its target by the external load.
 > mixed-unit convenience number, not a true output stiffness. Divide by 19 for
 > output-referred deflection (−0.566° motor ≈ −0.0298° output). Resolve this
 > convention explicitly before quoting stiffness anywhere it matters.
+
+### Reply lengths by function code (measured Aug 13, 2026)
+
+Every command answers with a fixed number of bytes. This is what makes framing
+deterministic — see the next section for why timing cannot be used instead.
+
+| Function | Command | Reply | Layout |
+|---|---|---|---|
+| `30` | read encoder | **8** | `E0` + int32 carry + uint16 value + ck |
+| `33` | pulses received | **6** | `E0` + int32 + ck |
+| `39` | shaft angle error | **4** | `E0` + int16 + ck |
+| `3A` | EN pin status | **3** | `E0` + status + ck |
+| `3E` | protection state | **3** | `E0` + status + ck |
+| `3F` | restore defaults | **3** | ack |
+| `F3` | enable / disable | **3** | ack |
+| `F6` | constant speed | **3** | ack, then a second 3-byte completion |
+| `F7` | stop | **3** | ack |
+| `FD` | relative move | **3** | ack, then a second 3-byte completion |
+| `81`–`8B` | config writes | **3** | ack |
+| `A1`–`A5` | Kp/Ki/Kd/ACC/MaxT | **3** | ack |
+
+**Beware the 3-byte collision.** `E0 01 E1` and `E0 02 E2` are simultaneously
+the generic accepted/complete acknowledgements *and* valid status values for
+`3A` (01 = enabled, 02 = disabled) and `3E` (01 = protected, 02 = clean). The
+bytes alone cannot distinguish them — **decode by the function code you sent**,
+never by reply length or content. Verified Aug 13 by toggling `F3` and watching
+`3A` follow it, which rules out the possibility that `3A` was merely being
+acknowledged rather than answered.
+
+### ⚠️ Idle-line framing does NOT work on this link
+
+The obvious way to delimit a variable-length reply is the UART's IDLE flag, and
+it is what `debug_uart` uses successfully for the console. **It is wrong here.**
+
+The SERVO42C echoes in *software* — one byte at a time as it processes them —
+and pauses for longer than one character time *within* a single message. IDLE
+fires after one character time (~260 us at 38400), so it triggers mid-message
+and is not a boundary at all.
+
+**How this presented:** a move command returned
+
+```
+00 00 10 EF E0 01 E1
+```
+
+which is the **tail of our own request** (`E0 FD 02 00 00 00 10 EF`, bytes 4-7)
+followed by a valid accepted-ack. An IDLE fired during transmission, the
+handler flushed the receive buffer, and the first four echo bytes were
+destroyed — leaving a fragment that failed address validation. Cost a bring-up
+session to diagnose, and the symptom pointed at everything except the real
+cause.
+
+**The rule:** accumulate received bytes unconditionally, never resetting on a
+timing boundary, and decide a message is complete by its **expected length**
+(table above) or — for an undocumented function code — by a quiet period long
+enough to clear this device's inter-byte gaps (8 ms is used).
+
+### ⚠️ Clearing UART error flags steals a byte from the DMA
+
+Generic STM32 trap, not MKS-specific, and worth knowing anywhere HAL UART DMA
+reception is used.
+
+`__HAL_UART_CLEAR_OREFLAG()` and its siblings all expand to the same thing on
+F4: a read of `SR` followed by a read of `DR`. **Reading DR while DMA reception
+is running consumes a byte the DMA was entitled to**, and it is gone. Calling
+these from `HAL_UART_ErrorCallback()` — the natural place — does exactly that
+whenever HAL treated the error as non-blocking and left the transfer running.
+
+It surfaces as occasional inexplicable checksum failures under load, and gets
+blamed on wiring.
+
+**Related: re-arming unconditionally causes an error cascade.** Calling
+`HAL_UARTEx_ReceiveToIdle_DMA()` on every error means one seed event can flag
+another error during the re-arm, which re-arms again. **180 error callbacks
+across 7 transactions** were observed this way on Aug 13, then zero on the next
+boot — dormant, not fixed.
+
+**The rule for both:** ask the hardware whether reception actually stopped —
+
+```c
+still_running = (huart->Instance->CR3 & USART_CR3_DMAR) &&
+                (hdma_rx.Instance->CR & DMA_SxCR_EN);
+```
+
+— and only clear flags or re-arm when it has. HAL clears both bits when it
+treats an error as blocking (overrun, DMA fault) and leaves them alone
+otherwise, so this observes the real state rather than assuming a policy.
+
+### Verification log — Aug 13, 2026 (W3 first motion)
+
+Encoder position is `carry x 65536 + value`; the SERVO42C encoder is 16-bit per
+**motor** revolution.
+
+| Step | `pulses` (`33`) | encoder raw | position | predicted |
+|---|---|---|---|---|
+| start | — | carry 0, 42 | +42 | — |
+| 3 x `move 16` CW (48 pulses) | −48 | carry −1, 63614 | −1,922 | −1,924 |
+| `deg 5` (+422 pulses) | −470 | carry −1, 46329 | −19,207 | −19,209 |
+| `deg −5` (−422 pulses) | — | carry −1, 63610 | −1,926 | −1,922 |
+
+**Mstep = 8 confirmed by measurement, not by menu.** Predictions use
+`pulses / 1600 x 65536`. Both forward steps land within **2 counts**, and the
+offset is constant rather than growing — an artifact, not a scale error. At
+Mstep 16 the first row would have read −941, so the result is decisive. This is
+the reliable way to check Mstep: it measures what the mechanism did.
+
+**Round-trip repeatability: 4 counts.** Out 5 deg and back landed −1,926
+against −1,922. One microstep at Mstep 8 is 65536/1600 = **41 counts**, so the
+error is about **one tenth of a single microstep** — 0.022 deg at the motor,
+**0.0012 deg at the output**. No measurable backlash contribution at this
+amplitude. Useful baseline for W9 precision calibration.
+
+**Angle conversion is exact to quantisation.** `deg 5` issued 422 pulses =
+4.9974 deg at the output; the 0.0026 deg residual is one-pulse quantisation
+(0.0118 deg), i.e. the mechanism's floor.
+
+**`33` counts UART-commanded pulses**, not just hardware STEP input: −470 is
+exactly 48 + 422. That makes it usable as the feedback path for absolute
+positioning, which `FD` alone cannot provide since it is a relative move.
+
+**Direction convention:** positive degrees / `ccw = false` **decrements** both
+the encoder position and the `33` pulse counter. Pin this down before Ackermann
+sign conventions are written.
 
 ### Torque characterization — June 8, 2026
 
@@ -1909,7 +2076,18 @@ indicator of the true torque limit — watch current, not force.
 ### What this means for W3 (STM32 UART firmware)
 **Already proven, do not re-derive:** packet format, checksum, command bytes,
 response decoding, motor behaviour under load.
-**Still unproven, this is the actual W3 work:** STM32 HAL UART configuration;
+**Discovered in W3, was not in the June 8 notes:** the driver echoes every
+request before replying (see the section above). Cost a bring-up session to
+diagnose because it presents as a checksum failure on a reply that is
+actually correct.
+
+**Resolved Aug 13, 2026 — the acceptance criterion is met.** HAL UART config,
+asynchronous response timing including the two-stage `FD` reply, and response
+parsing in C all work against real hardware; see the Aug 13 verification log
+above. Still outstanding from the list below: confirming the other three
+drivers are set to CR_UART / 38400 / Mstep 8.
+
+**Originally listed as unproven:** STM32 HAL UART configuration;
 asynchronous response timing (the driver replies in two stages for `FD` — start
 then complete — and `39` reads inside a control loop have latency implications);
 parsing responses in C rather than reading hex by eye; and confirming the other

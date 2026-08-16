@@ -1,0 +1,11 @@
+# CMake/Ninja output
+build/
+
+# CubeMX scratch
+mx.scratch
+
+# STM32CubeCLT machine-local bundle store (regenerated on open)
+.settings/
+
+# Local agent config
+.claude/

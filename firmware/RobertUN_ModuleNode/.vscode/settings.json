@@ -1,0 +1,24 @@
+{
+    // Keep editor buffers from going stale while an external tool edits these
+    // files. VS Code auto-reloads a file changed on disk ONLY while the buffer
+    // is clean; once it has unsaved changes it stops reloading, and the stale
+    // buffer can later be saved over the newer file. A short auto-save keeps
+    // buffers clean, so reloading keeps working.
+    "files.autoSave": "afterDelay",
+    "files.autoSaveDelay": 1000,
+
+    "C_Cpp.intelliSenseEngine": "disabled",
+    "cmake.cmakePath": "cube-cmake",
+    "cmake.configureArgs": [
+        "-DCMAKE_COMMAND=cube-cmake"
+    ],
+    "cmake.preferredGenerators": [
+        "Ninja"
+    ],
+    "stm32cube-ide-clangd.path": "cube",
+    "stm32cube-ide-clangd.arguments": [
+        "starm-clangd",
+        "--query-driver=${env:CUBE_BUNDLE_PATH}/gnu-tools-for-stm32/14.3.1+st.2/bin/arm-none-eabi-gcc*",
+        "--query-driver=${env:CUBE_BUNDLE_PATH}/gnu-tools-for-stm32/14.3.1+st.2/bin/arm-none-eabi-g++*"
+    ]
+}

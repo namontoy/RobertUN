@@ -2670,11 +2670,25 @@ Bench-measured, superseding the datasheet-derived 2.18 Ω previously recorded:
 | No-load current @ 9.5 V | 154 mA | 155 mA |
 | Stall: 4.1 A at 7.8 V (supply sagged from 9.5 V) | ⇒ **1.90 Ω** | same |
 
-**Design figure: R ≈ 1.90 Ω.** Provisional — the supply was current-limiting,
-so strictly this is R ≤ 1.90 Ω. To pin it down properly, set the supply's
-current limit to 1 A, stall the shaft, and read the terminal voltage: R = V/1.
-Deliberately in CC, no ambiguity, and ~2 W of heating instead of 32 W (copper
-climbs 0.4 %/°C, which is why the 4 A reading was hard to read).
+**Design figure: R ≈ 1.90 Ω — CONFIRMED Aug 25** by a clean low-current stall
+(supply set to CC at 1 A, terminal voltage read, ~2 W of heating instead of
+32 W): **2.042 V / 1.020 A = 2.00 Ω**, and **2.3 V / 1.00 A = 2.30 Ω** with the
+leads reversed. The direction difference is not polarity — copper does not care
+— it is rotor position: reversing torques the rotor the other way, so a
+different set of armature coils lands on the brushes.
+
+Combining the low- and high-current points separates winding from brush drop:
+
+```
+2.042 V = 1.020·R_w + V_brush        R_w     = 1.87 Ω
+7.800 V = 4.100·R_w + V_brush   →    V_brush = 0.14 V
+
+Stall at 9.5 V = (9.5 − 0.14) / 1.87 = 5.0 A
+```
+
+The small fixed brush drop is why the high-current test appeared to show lower
+resistance — 0.14 V is a smaller fraction of 7.8 V than of 2.0 V. All methods
+converge on **5.0 A at 9.5 V**, inside the DRV8874's 6 A peak.
 
 **Do NOT use the LCR meter's Rs for DC calculations.** At 1 kHz, Rs includes
 core loss — eddy currents and hysteresis in the rotor iron — plus skin and

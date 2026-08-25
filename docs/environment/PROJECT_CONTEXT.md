@@ -1,8 +1,18 @@
 # Robotics Development Environment — Project Context Document
-**Last updated:** August 25, 2026 (W4 pin allocation fixed — TIM2 32-bit encoder on PA15/PB3, TIM4 PWM on PB6/PB7; heartbeat moved TIM3→TIM7; DRV8833 carrier characterised and its current budget corrected downward)
+**Last updated:** August 25, 2026 (W4 pin allocation fixed — TIM2 32-bit encoder on PA15/PB3, TIM4 PWM on PB6/PB7; heartbeat moved TIM3→TIM7. **Drive driver changed to DRV8874**, parts bought, arriving ~Sep 15; encoder resolution corrected to 8403.2 counts/rev)
 *Paste this at the start of a new Claude session to restore full context.*
 
 ## Progress log (most recent first)
+- **Aug 25 (later)** — Motor spec obtained and it moved two things. Encoder is
+  **64 CPR at the motor shaft**, not the estimated 11 PPR → **8403.2 counts/rev**
+  at the output, 45% higher than the 5777.2 on record. And the winding is
+  2.18 Ω (cross-checked on both stall points), so stall is 4.1 A at 9 V or
+  6.2 A at the 13.5 V branch rail — the motor comfortably out-muscles the
+  DRV8833. **Driver changed to DRV8874** (4.5–37 V, 6 A peak, 200 mΩ,
+  VREF-programmable current regulation, IPROPI current feedback). Bought 8
+  carriers + 10 bare ICs, arriving ~Sep 15. DRV8876 kept as the pin-identical
+  second source; DRV8871 and DRV8833 ruled out. Full four-way comparison in
+  `docs/research/drive-motor/Motor_Driver_Selection.md`.
 - **Aug 24–25** — W4 opened. Node pin map settled and built clean: heartbeat
   moved off TIM3 to TIM7 (basic timer, no pins, identical 0.5 s tick) to free
   TIM3's encoder interface — then the encoder was moved again to **TIM2**, the
@@ -2581,22 +2591,24 @@ unpopulated it stops the input floating and inventing faults.
 is unpowered, its open-drain output is off, and the pull-up reads 3.3 V anyway.
 A clear nFAULT means "nothing is pulling this low", not "the motor rail is good".
 
-### ⚠️ No current sensing and no current limit
+### ⚠️ No current sensing and no current limit (DRV8833 only)
 
 **AISEN/BISEN are tied directly to GND on this carrier**, which disables the
-DRV8833's current-limiting feature entirely. Two consequences that shape W5:
+DRV8833's current-limiting feature entirely. Two consequences:
 
 1. **Nothing limits stall current except the chip's own OCP.** A jammed wheel
    pulls whatever the motor pulls until OCP trips and asserts nFAULT. Firmware
    must monitor nFAULT, implement a stall timeout, and latch off rather than
-   retrying into a stuck wheel.
-2. **There is no current feedback available at all**, so **W5's PID is
-   velocity-only** — a torque/current inner loop is not reachable with this
-   board. Getting one would mean putting the DRV8833 on the node PCB with real
-   sense resistors instead of using the carrier, which is an HW1 decision, not
-   a firmware one.
+   retrying into a stuck wheel. **This rule survives the driver change** — it is
+   good practice on the DRV8874 too, which simply regulates instead of tripping.
+2. **There is no current feedback available at all** on this carrier.
+   ~~W5's PID is therefore velocity-only~~ — **superseded Aug 25, 2026.** The
+   DRV8874's IPROPI output restores current feedback, so a torque/current inner
+   loop is reachable again. Until the parts arrive (~Sep 15) the bench remains
+   velocity-only, which is fine: W4 and W5 both run at loads far below the
+   DRV8833's limits.
 
-### Current: ~2 A RMS paralleled — corrected down Aug 25, 2026
+### Current: ~2 A RMS paralleled — DRV8833 interim figure only
 
 An earlier revision of this section recorded **3 A RMS / 4 A peak**, taken from
 TI's 1.5 A RMS per-bridge silicon figure. That is too optimistic for this
@@ -2608,29 +2620,127 @@ scales by √2, not 2: about **1.7 A continuous**, perhaps up to ~2.4 A if the
 carrier's copper is generous. **Design the PDB branch around ~2 A RMS / 4 A
 peak**, and treat the real number as something W4 measures.
 
-This makes the **motor's stall current at ~9 V the number to find**. If stall
-exceeds ~2 A the system will live on OCP trips during any wheel jam, and the
-branch fuse has to be chosen with that in mind.
+**Answered Aug 25:** stall is **4.1 A at 9 V**, well past the ~2 A figure — the
+reason the driver changed. **For PDB branch sizing use the DRV8874's numbers,
+not these**: ~3 A continuous with regulation set below that, 6 A peak.
 
-### Encoder — CPR needs confirming before W5
+### Encoder — RESOLVED Aug 25, 2026: 8403.2 counts/rev
 
-Gear ratio is **131.3:1**. For this class of motor the encoder is a 2-channel
-hall sensor on the motor shaft, typically 11 pulses per motor revolution, which
-would give at the output shaft:
+The vendor spec gives **64 CPR at the MOTOR shaft**, x4 quadrature (both edges
+of both channels) — 16 pulses per channel per motor revolution. At the output
+shaft, with the 131.3:1 gearbox:
 
 ```
-11 × 131.3          = 1444.3  pulses/rev  (single channel, one edge)
-1444.3 × 4          = 5777.2  counts/rev  (quadrature, x4 decoding)
+64 × 131.3          = 8403.2  counts/rev   (x4 quadrature — what TIM2 counts)
+16 × 131.3          = 2100.8  pulses/rev   (single channel)
+2100.8 × 2          = 4201.6  edges/rev    (single channel, both edges)
 ```
 
-**Confirm the 11 PPR figure against the actual product before W5 PID tuning** —
-the arithmetic above is only as good as that input, and every velocity and
-position figure in W5 depends on it.
+**This supersedes the earlier 11 PPR estimate**, which gave 5777.2 counts/rev.
+The real figure is 45% higher. Every W5 velocity and position figure uses
+**8403.2**.
 
-Note also that **131.3:1 is itself a rounded number.** Real gear trains give
-awkward exact ratios, so counts-per-revolution will not be a clean integer. That
-matters at W9 (precision calibration), the same way the SERVO42C's own encoder
-resolution question does.
+**This makes the W4 hand-rotation test diagnostic, not merely confirmatory.**
+Turn the output shaft exactly one revolution and the count identifies the
+decoding: ~8403 = x4 working; ~4202 = x2, one channel's edges only; ~2101 = x1.
+
+**131.3:1 is itself a rounded number.** Real gear trains give awkward exact
+ratios, so 8403.2 is not an integer and never will be. That matters at W9
+(precision calibration), the same way the SERVO42C's own encoder resolution does.
+
+Full derivation, speeds, count rates and the filter margin check are in
+`docs/research/drive-motor/CQR37D12V64EN-M_Drive_Motor.md`.
+
+### ⚠️ Motor electricals — the motor out-muscles the DRV8833
+
+Winding resistance from the two stall points, which cross-check cleanly and so
+confirm the linear model:
+
+```
+R = 12 V / 5.5 A = 2.18 Ω
+R =  6 V / 2.8 A = 2.14 Ω
+```
+
+| Rail | Stall current | No-load speed |
+|---|---|---|
+| 9 V (needs a second buck) | 4.1 A | 57 rpm |
+| 13.5 V (branch rail direct) | 6.2 A | 85.5 rpm |
+
+**Starting from rest draws stall current momentarily**, because back-EMF is
+zero at t = 0 — so a step from 0 to full duty is a 4 A event in normal
+operation, not only during a fault. This, plus the 10.8 V ceiling, is what
+forced the driver change below.
+
+### ⚠️ Connector hazard — replace the motor's DuPont crimps
+
+The motor ships with 2.54 mm DuPont *female* crimps on its 22 AWG power leads.
+Those contacts are rated 1–3 A against a 4.1 A stall, and they are friction-fit
+and non-locking — precisely the "intermittent power-ground contact under
+vibration" mechanism documented in **POWER DISTRIBUTION & GROUNDING → Ground
+loops**, and the leading explanation for last semester's four destroyed MCUs.
+Rocker-bogie articulation means continuous vibration at every corner.
+
+**Replace the crimps on the red/black power pair** with something retained —
+JST VH, screw terminal, or soldered and heat-shrunk. The four encoder leads
+carry milliamps and can stay DuPont.
+
+Note also the leads are only **20 cm**, so the driver must sit within 20 cm of
+the motor.
+
+### DRIVER CHANGED — DRV8874 selected Aug 25, 2026
+
+**This supersedes the Aug 16 decision to keep the DRV8833 carrier.** Full
+four-way comparison against DRV8876, DRV8871 and DRV8833 in
+`docs/research/drive-motor/Motor_Driver_Selection.md`.
+
+| | DRV8874 |
+|---|---|
+| VM | 4.5–37 V — **takes the 13–13.5 V branch rail directly** |
+| Peak / realistic continuous | 6 A / ~3 A |
+| R<sub>DS(on)</sub> HS+LS | 200 mΩ |
+| Current regulation | **Yes, VREF-programmable** |
+| Current feedback | **Yes — IPROPI, 450 µA/A** |
+| nFAULT / nSLEEP | Both present; nSLEEP has a 100 kΩ internal pulldown |
+| Package | HTSSOP-16 (PWP) |
+
+**Bought Aug 25: 8 × carrier board + 10 × bare IC. Arrival ~Sep 15, 2026.**
+
+**What it changes:**
+- **The second buck disappears.** 4.5–37 V covers the branch rail. 13.5 V is
+  above the motor's 12 V rating, but a duty cap of 12/13.5 = **89 %** gives
+  exactly 12 V average at no cost.
+- **W5 can have a current inner loop after all** — previously ruled out.
+- **IPROPI measures real drive current**, closing the open W4 task that HW4's
+  PDB branch sizing waits on.
+- **Firmware carries over unchanged** if PMODE is strapped for PWM mode: IN1/IN2
+  have the same truth table as the DRV8833, and t<sub>WAKE</sub> is 1 ms on both.
+- **One new MCU pin: PA2 (`ADC1_IN2`) for IPROPI.** `R_IPROPI = 2.2 kΩ` gives
+  0.99 V/A → 2.97 V at 3 A, near-perfect full scale for a 3.3 V ADC.
+  Optionally **PA4 (`DAC1_OUT`) drives VREF** for a software-programmable
+  current limit; PA5/DAC2 stays reserved for SPI1_SCK.
+
+**DRV8876 is the second source** — pin-identical in PWP, and stocked ~8× deeper.
+**But A<sub>IPROPI</sub> differs: 450 µA/A on the DRV8874, 1000 µA/A on the
+DRV8876.** Electrically drop-in, but the sense resistor and the firmware
+calibration constant both change by 2.22×. The swap is not transparent.
+
+### ⚠️ HW1: fit the CARRIER, not the bare IC, on the milled board
+
+The DRV8874's 36 °C/W assumes its exposed thermal pad is soldered to copper
+with a via array — a JEDEC multi-layer board. The node PCB is **single-sided
+isolation milling on the ANT CNC**: no plane under the part, no vias. Realistic
+R<sub>θJA</sub> is then 60–90 °C/W, which at 3 A means a ~144 °C rise and erodes
+most of the advantage over the DRV8833. A 16-pin HTSSOP with an exposed pad is
+also far harder to mill and hand-solder than the SN65HVD230's SOIC-8, currently
+the board's worst case.
+
+**So HW1 designs the DRV8874 in as a carrier on a header.** The carrier is a
+properly fabricated multi-layer board that handles the thermal pad correctly.
+The 10 bare ICs are for the generation after, when the node board is fabricated
+externally (JLCPCB) rather than milled.
+
+**On arrival, check whether the carrier already populates an IPROPI resistor
+and at what value** — the 2.2 kΩ figure only holds if the value is ours to pick.
 
 ### Firmware implications (W4) — pins done Aug 25, control loop still open
 
@@ -2877,8 +2987,22 @@ gearbox is the difference between a note and a broken bench setup.
       - nSLEEP rises only on a non-zero command and falls again at zero
       Only after all of that passes does a motor get connected.
     - ⬜ `DIP_SW_1`/`DIP_SW_2` on PB14/PB15, then the latch-once ID read
-    - ⬜ Measure real drive current — this is the input HW4's PDB branch
-      sizing has been waiting on
+    - ⬜ Measure real drive current — the input HW4's PDB branch sizing has
+      been waiting on. **Two ways in, and neither waits for the DRV8874:**
+      (a) measure the motor's winding resistance with a multimeter, rotating
+      the shaft between readings to average brush position — if it lands near
+      2.18 Ω the whole current analysis is validated; (b) stall the motor from
+      a current-limited bench supply with no driver in the loop and read the
+      current directly (spec says 2.8 A at 6 V). Do both before Sep 15.
+    - ⬜ On DRV8874 arrival (~Sep 15): IPROPI on PA2 (`ADC1_IN2`), optional
+      VREF on PA4 (`DAC1_OUT`), confirm the PMODE strap selects PWM mode
+
+**Nothing in W4 or W5 is blocked by the DRV8874's ~Sep 15 arrival.** W4's
+acceptance needs no motor power at all, and W5's PID tuning runs at bench loads
+far below the DRV8833's ~1.7 A. The only real collision is HW3 (Sep 7–13),
+which mills and populates one reference board — populate everything except the
+driver and fit it on arrival. Boards are milled in-house, so this costs a
+rework session, not a week.
 
 7. **CAN Bus — ROS 2 integration (CANopen stack):**
    - STM32 side: CANopenNode + CanOpenSTM32 (HAL-integrated, CubeMX compatible)
@@ -2942,16 +3066,17 @@ gearbox is the difference between a note and a broken bench setup.
     hardware not yet built:**
     - Design PDB: 6 individually fused branch outputs, single star point,
       13–13.5V nominal output to pre-compensate branch-wire voltage drop
-    - Size PDB branch wire gauge precisely once W4 drive-motor current draw
-      is measured (currently placeholder: ~5m one-way, **~2A/motor** — revised
-      down from 3A Aug 25, see the DRV8833 carrier section)
+    - Size PDB branch wire gauge precisely once real drive current is measured
+      (placeholder: ~5m one-way, **~3A/motor continuous, 6A peak** per the
+      DRV8874; stall is 6.2A at 13.5V but current regulation holds it below
+      the set limit)
     - Design local buck regulator (12–13.5V → 3.3V direct into WeAct 3V3
       pin, bypassing the onboard ME6231A33PG LDO) for each node PCB
-    - **Second buck per node PCB: 13–13.5V → ~9V motor rail** for the DRV8833
-      (10.8V ceiling). Fed independently from the 13V rail, not cascaded off
-      the motor rail — motor noise must not sit upstream of the MCU
-    - Add a **10 kΩ pull-up on nFAULT** to the node PCB schematic — the
-      DRV8833 carrier has none
+    - ~~Second buck to ~9V for the DRV8833~~ **CANCELLED Aug 25** — the
+      DRV8874 takes 4.5–37V, so it feeds from the branch rail directly. Cap
+      PWM duty at 89% to hold the motor at its rated 12V average
+    - Add a **10 kΩ pull-up on nFAULT** to the node PCB schematic — neither the
+      DRV8833 nor the DRV8874 carrier can be assumed to have one
     - Design 3D-printed XT60 retention/weather cover (zip-tie channel or
       snap lip) once corner-module enclosure geometry exists
     - Revisit sealed/locking power connector (Bulgin 400 2-pole vs. GX16

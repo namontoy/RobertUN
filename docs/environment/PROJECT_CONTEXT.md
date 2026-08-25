@@ -1,9 +1,15 @@
 # Robotics Development Environment — Project Context Document
-**Last updated:** August 25, 2026 (W4 pin allocation fixed — TIM2 32-bit encoder on PA15/PB3, TIM4 PWM on PB6/PB7; heartbeat moved TIM3→TIM7. **Drive driver changed to DRV8874**, parts bought, arriving ~Sep 15; encoder resolution corrected to 8403.2 counts/rev)
+**Last updated:** August 25, 2026 (W4 pin allocation fixed — TIM2 32-bit encoder on PA15/PB3, TIM4 PWM on PB6/PB7. **Drive driver changed to DRV8874**, parts bought, arriving ~Sep 15; encoder corrected to 8403.2 counts/rev; motor measured at 1.90 Ω / 1.70 mH and the motor rail set at 9.5 V)
 *Paste this at the start of a new Claude session to restore full context.*
 
 ## Progress log (most recent first)
-- **Aug 25 (later)** — Motor spec obtained and it moved two things. Encoder is
+- **Aug 25 (later)** — Motor bench-measured on two units: R ≈ 1.90 Ω (stall,
+  supply-sag corrected), L ≈ 1.70 mH, no-load 154/155 mA at 9.5 V, and the two
+  motors match to under 2% on every parameter that matters — so one PID gain set
+  should fit all six wheels. **Motor rail set at 9.5 V**, which puts stall at
+  5.0 A inside the DRV8874's 6 A peak; the second buck therefore stays in HW1.
+  L/R = 0.90 ms confirms 20 kHz PWM gives ~99 mA ripple.
+- **Aug 25 (earlier)** — Motor spec obtained and it moved two things. Encoder is
   **64 CPR at the motor shaft**, not the estimated 11 PPR → **8403.2 counts/rev**
   at the output, 45% higher than the 5777.2 on record. And the winding is
   2.18 Ω (cross-checked on both stall points), so stall is 4.1 A at 9 V or
@@ -2651,25 +2657,72 @@ ratios, so 8403.2 is not an integer and never will be. That matters at W9
 Full derivation, speeds, count rates and the filter margin check are in
 `docs/research/drive-motor/CQR37D12V64EN-M_Drive_Motor.md`.
 
-### ⚠️ Motor electricals — the motor out-muscles the DRV8833
+### Motor electricals — MEASURED Aug 25, 2026 (two units)
 
-Winding resistance from the two stall points, which cross-check cleanly and so
-confirm the linear model:
+Bench-measured, superseding the datasheet-derived 2.18 Ω previously recorded:
 
-```
-R = 12 V / 5.5 A = 2.18 Ω
-R =  6 V / 2.8 A = 2.14 Ω
-```
-
-| Rail | Stall current | No-load speed |
+| | Motor #1 | Motor #2 |
 |---|---|---|
-| 9 V (needs a second buck) | 4.1 A | 57 rpm |
-| 13.5 V (branch rail direct) | 6.2 A | 85.5 rpm |
+| DC resistance (multimeter, **includes leads**) | 2.6 Ω | 2.8 Ω |
+| Inductance @ 1 kHz (ZOYI ZT-MD1) | 1.702 mH | 1.690 mH |
+| Rs @ 1 kHz | 3.947 Ω | 3.998 Ω |
+| Q @ 1 kHz | 2.713 | 2.654 |
+| No-load current @ 9.5 V | 154 mA | 155 mA |
+| Stall: 4.1 A at 7.8 V (supply sagged from 9.5 V) | ⇒ **1.90 Ω** | same |
+
+**Design figure: R ≈ 1.90 Ω.** Provisional — the supply was current-limiting,
+so strictly this is R ≤ 1.90 Ω. To pin it down properly, set the supply's
+current limit to 1 A, stall the shaft, and read the terminal voltage: R = V/1.
+Deliberately in CC, no ambiguity, and ~2 W of heating instead of 32 W (copper
+climbs 0.4 %/°C, which is why the 4 A reading was hard to read).
+
+**Do NOT use the LCR meter's Rs for DC calculations.** At 1 kHz, Rs includes
+core loss — eddy currents and hysteresis in the rotor iron — plus skin and
+proximity effects, so it reads ~58 % above R<sub>DC</sub>. Both meters are
+internally consistent (Q = ωL/Rs checks out on both motors).
+
+**Rail decision: 9.5 V**, via the second buck. Stall is then **5.0 A**, inside
+the DRV8874's 6 A peak — simpler than feeding 13.5 V direct and relying on
+current regulation to hold back a 7.1 A stall.
+
+| Rail | Stall @ 1.90 Ω | No-load speed |
+|---|---|---|
+| **9.5 V (chosen)** | **5.0 A** | **60 rpm** |
+| 12 V | 6.3 A | 76 rpm |
+| 13.5 V | 7.1 A | 85.5 rpm |
 
 **Starting from rest draws stall current momentarily**, because back-EMF is
-zero at t = 0 — so a step from 0 to full duty is a 4 A event in normal
-operation, not only during a fault. This, plus the 10.8 V ceiling, is what
-forced the driver change below.
+zero at t = 0 — so a step from 0 to full duty is a 5 A event in normal
+operation, not only during a fault.
+
+### The inductance validates the 20 kHz PWM choice
+
+With L = 1.70 mH and R = 1.90 Ω:
+
+```
+Electrical time constant  τ = L/R = 0.90 ms
+PWM period at 20 kHz          T = 0.05 ms      → τ/T = 17.9
+Ripple at 50 % duty   Δi = V·D·(1−D)·T/L ≈ 99 mA p-p
+```
+
+~100 mA of ripple against amp-level working currents is negligible. At 1 kHz it
+would have been ~2 A p-p. It also means the DRV8874's fixed 25 µs
+current-regulation off-time will hold a smooth setpoint rather than chattering.
+
+**Loop-rate consequence:** τ<sub>elec</sub> = 0.90 ms is *faster* than a 1 kHz
+control tick. A velocity loop at 1 kHz on TIM6 is fine — the mechanical time
+constant through a 131.3:1 gearbox is far slower. But **a current inner loop at
+1 kHz would be sampling slower than the dynamics it controls**; run it at
+5–10 kHz or synchronised to the PWM. Cascade the two at different rates.
+
+### Motor-to-motor matching — one gain set should fit all six
+
+Inductance agrees to 0.7 %, Rs to 1.3 %, no-load current to 0.6 %, stall to
+1.3 %. That is tight for inexpensive gearmotors and means **one set of PID gains
+should transfer across all six wheels** — which is what the one-binary /
+DIP-switch architecture already assumes. The DC-resistance spread (7.7 %) is
+the outlier, and is the reading most sensitive to brush/commutator position and
+lead resistance. Worth confirming against a third motor before relying on it.
 
 ### ⚠️ Connector hazard — replace the motor's DuPont crimps
 
@@ -3072,9 +3125,13 @@ rework session, not a week.
       the set limit)
     - Design local buck regulator (12–13.5V → 3.3V direct into WeAct 3V3
       pin, bypassing the onboard ME6231A33PG LDO) for each node PCB
-    - ~~Second buck to ~9V for the DRV8833~~ **CANCELLED Aug 25** — the
-      DRV8874 takes 4.5–37V, so it feeds from the branch rail directly. Cap
-      PWM duty at 89% to hold the motor at its rated 12V average
+    - **Second buck per node PCB: 13–13.5V → 9.5V motor rail.** Fed
+      independently from the 13V rail, not cascaded off the motor rail —
+      motor noise must not sit upstream of the MCU. (Briefly cancelled
+      Aug 25 when the DRV8874's 37V range made a direct feed possible;
+      reinstated the same day — 9.5V keeps stall at 5.0A, inside the
+      DRV8874's 6A peak, which is simpler than relying on current
+      regulation to hold back a 7.1A stall at 13.5V)
     - Add a **10 kΩ pull-up on nFAULT** to the node PCB schematic — neither the
       DRV8833 nor the DRV8874 carrier can be assumed to have one
     - Design 3D-printed XT60 retention/weather cover (zip-tie channel or

@@ -59,9 +59,21 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define LED_BLINKY_Pin GPIO_PIN_2
 #define LED_BLINKY_GPIO_Port GPIOB
+#define DRV_nFAULT_Pin GPIO_PIN_12
+#define DRV_nFAULT_GPIO_Port GPIOB
+#define DIP_SW_0_Pin GPIO_PIN_13
+#define DIP_SW_0_GPIO_Port GPIOB
+#define DRV_nSLEEP_Pin GPIO_PIN_5
+#define DRV_nSLEEP_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
-
+/* PB6/PB7 are TIM4_CH1/CH2 (DRV8833 IN1+IN3 / IN2+IN4). CubeMX emits no
+   defines for alternate-function pins, so they are named here — the pins have
+   to be addressable as plain GPIO during startup, before TIM4 owns them. */
+#define DRV_PWM_A_Pin        GPIO_PIN_6
+#define DRV_PWM_A_GPIO_Port  GPIOB
+#define DRV_PWM_B_Pin        GPIO_PIN_7
+#define DRV_PWM_B_GPIO_Port  GPIOB
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

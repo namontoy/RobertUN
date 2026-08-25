@@ -1,8 +1,20 @@
 # Robotics Development Environment — Project Context Document
-**Last updated:** August 17, 2026 (lycus commissioned: SD boot + SATA /data, ZED SDK 5.2.3, libusb/jammy-updates fix, MAXN_SUPER)
+**Last updated:** August 25, 2026 (W4 pin allocation fixed — TIM2 32-bit encoder on PA15/PB3, TIM4 PWM on PB6/PB7; heartbeat moved TIM3→TIM7; DRV8833 carrier characterised and its current budget corrected downward)
 *Paste this at the start of a new Claude session to restore full context.*
 
 ## Progress log (most recent first)
+- **Aug 24–25** — W4 opened. Node pin map settled and built clean: heartbeat
+  moved off TIM3 to TIM7 (basic timer, no pins, identical 0.5 s tick) to free
+  TIM3's encoder interface — then the encoder was moved again to **TIM2**, the
+  only 32-bit counter available, on PA15/PB3. Rollover horizon goes from 11.3
+  to ~743,000 output revolutions. Discovered along the way that encoder mode is
+  CH1+CH2 only, in silicon, so TIM2_CH3/CH4 (PA2/PA3) could not be used.
+  DRV8833 carrier characterised from its vendor page and confirmed on the
+  bench: J1 cut so nSLEEP is MCU-driven, external pull-up on nFAULT, all four
+  DRV pins verified at their off levels. Current sense pins are grounded on
+  this carrier, so **there is no current feedback and no hardware current
+  limit** — W5's PID is velocity-only. Paralleled current budget corrected
+  down from 3 A RMS to ~2 A.
 - **Aug 17** — Second Jetson Orin Nano (lycus) fully commissioned: SD-card
   boot + 120GB Patriot SATA SSD via M.2-to-SATA adapter mounted at /data
   (confirmed the SATA-via-PCIe adapter CANNOT be a boot target — SDK Manager
@@ -1555,10 +1567,12 @@ which is the most expensive place to meet it.
   address `0xE0` (see MKS SERVO42C section). Module identity lives **only** in
   the CAN ID and this DIP switch.
 
-**Pins: TBD** — to be fixed in the `.ioc` before the pinout fills. Constraints:
-avoid PB2 (BOOT1 + user LED), PA13/PA14 (SWDIO/SWCLK), PB3/PB4 (JTAG remnants),
-PB8/PB9 (CAN1), PA11/PA12 (USB), and whatever the encoder timer channels and
-MKS UART will claim.
+**Pins (Aug 25, 2026): `DIP_SW_0` = PB13, fitted and in the `.ioc`.
+`DIP_SW_1` = PB14 and `DIP_SW_2` = PB15 planned but not yet added** — they keep
+the switch block contiguous on the header and are both still free. Until all
+three exist the ID cannot be read at all, so the latch-once-in `main()` step is
+still unwritten. Note that PB3 is now the encoder's TIM2_CH2 and is no longer
+available, which is why the block sits at PB13–PB15.
 
 ### Debug probes
 
@@ -1704,6 +1718,81 @@ Each step verified before proceeding to the next (W1 method).
 **Conclusion: the toolchain is no longer a suspect.** Any subsequent failure
 belongs to firmware or wiring. Same position W1 left `can0` in, and it is what
 makes W3–W5 debugging tractable.
+
+## STM32F446RE — PIN ALLOCATION (settled Aug 25, 2026)
+
+Complete map for the module node. Everything below is in the `.ioc` and builds
+clean; the DRV8833 and encoder lines are wired and verified at rest, not yet
+exercised under power.
+
+| Pin | Signal | Peripheral | AF | Task |
+|---|---|---|---|---|
+| PA0 | UART4_TX | UART4 @ 38400 8N1 | AF8 | MKS SERVO42C steering link |
+| PA1 | UART4_RX | UART4 | AF8 | SERVO42C replies |
+| PA8 | MCO1 | RCC, HSE ÷1 | AF0 | 8 MHz clock-out, scope check |
+| PA9 | USART1_TX | USART1 @ 115200 | AF7 | `debug_uart` console |
+| PA10 | USART1_RX | USART1 | AF7 | console command interpreter |
+| PA15 | ENC_A | **TIM2_CH1**, encoder | AF1 | drive-motor quadrature A |
+| PB2 | LED_BLINKY | GPIO out | — | heartbeat LED (also BOOT1) |
+| PB3 | ENC_B | **TIM2_CH2**, encoder | AF1 | drive-motor quadrature B |
+| PB5 | DRV_nSLEEP | GPIO out | — | DRV8833 EEP; **low = disabled** |
+| PB6 | DRV_PWM_A | TIM4_CH1, PWM 20 kHz | AF2 | DRV8833 IN1+IN3 (paralleled) |
+| PB7 | DRV_PWM_B | TIM4_CH2, PWM 20 kHz | AF2 | DRV8833 IN2+IN4 (paralleled) |
+| PB8 | CAN1_RX | bxCAN1 @ 250 kbps | AF9 | rover CAN bus |
+| PB9 | CAN1_TX | bxCAN1 | AF9 | rover CAN bus |
+| PB12 | DRV_nFAULT | GPIO in, pull-up | — | DRV8833 ULT, open-drain, active low |
+| PB13 | DIP_SW_0 | GPIO in, pull-up | — | module ID bit 0 |
+| PH0/PH1 | HSE | 8 MHz crystal | — | → 180 MHz PLL (M=4, N=180, P=2) |
+| PC14/PC15 | LSE | 32.768 kHz | — | in the `.ioc`, **not enabled** in code |
+
+**Off-limits, and why:** PA13/PA14 are SWDIO/SWCLK and the board has no other
+debug access. PA11/PA12 are the USB-C connector (this is why CAN1 lives on
+PB8/PB9). PB4 is NJTRST — avoided deliberately; PA15/PB3 are the other two
+JTAG remnants and *are* used, which is fine under 2-wire SWD but means full
+JTAG is gone for good on this design.
+
+**Deliberately kept free:** PA5/PA6/PA7 for SPI1 (software NSS) and PB10/PB11
+for I2C2 — the two obvious buses if a per-module IMU ever appears. This is the
+reason the encoder did not take PA6/PA7, and the reason TIM2_CH1 is on PA15
+rather than PA5: both PA5 and PB3 are SPI1_SCK candidates, and taking both
+would have killed SPI1 outright.
+
+### Timers
+
+| Timer | Role | Pins | Notes |
+|---|---|---|---|
+| TIM2 | Encoder interface, `TIM_ENCODERMODE_TI12` (x4) | PA15, PB3 | **32-bit.** Period `0xFFFFFFFF`, IC filters 15 |
+| TIM4 | PWM, PSC 0 / ARR 4499 → 20.0 kHz | PB6, PB7 | Both channels start at 0%; `__HAL_DBGMCU_FREEZE_TIM4()` set |
+| TIM7 | 0.5 s heartbeat tick (LED + CAN frame) | none | Basic timer; PSC 1800 / ARR 25000 at 90 MHz APB1 |
+| TIM6 | *reserved* — control-loop tick | none | Not yet configured |
+| TIM1 | **unusable** | — | All four channels land on PA8/PA9/PA10/PA11, every one taken |
+
+**Encoder mode is CH1+CH2 only — this is silicon, not a HAL limitation.** The
+interface decodes TI1FP1/TI2FP2; `HAL_TIM_Encoder_Init()` writes only `CCMR1`
+and the CC1/CC2 bits of `CCER`, never `CCMR2`. Channels 3 and 4 cannot do
+quadrature on any STM32 timer. This is what ruled out PA2/PA3 (TIM2_CH3/CH4)
+when 32-bit counting was the goal.
+
+**Only TIM2 and TIM5 have 32-bit counters**, and TIM5's CH1/CH2 are PA0/PA1 —
+already the SERVO42C UART. TIM2 was therefore the only route to a 32-bit
+encoder, which is what justified spending two JTAG-remnant pins on it.
+
+**The 16-bit counter would have wrapped every 11.3 output revolutions**
+(65536 / 5777 counts per rev), or ~6.8 s at 100 rpm. The delta-accumulate code
+is identical either way and is required regardless, but the 32-bit counter
+moves the horizon to ~743,000 revolutions — roughly five days of continuous
+running — which takes rollover off the table entirely during W5 PID tuning.
+
+**Encoder input filter set to 15 on both channels:** fDTS/32 with N=8 rejects
+glitches shorter than ~2.8 µs. Fastest real edge spacing per channel at 100 rpm
+output is ~200 µs, so there is ~70× margin. Drop it toward 0 if counts are ever
+missed at high speed.
+
+**`__HAL_DBGMCU_FREEZE_TIM4()` is set, TIM2 is deliberately left running.**
+Halting at a breakpoint with PWM still active leaves the wheel turning while
+the control loop is frozen, and the delta accumulated on resume is meaningless.
+Freezing TIM4 stops the motor with the core. TIM2 stays live on purpose, so
+counts still accrue if the wheel is back-driven by hand while halted.
 
 ## STM32F446RE — FIRMWARE MODULES (W2)
 
@@ -2459,18 +2548,69 @@ This is not a derating margin question. It is over the limit.
 3. **Lower the PDB rail.** Rejected — it breaks the SERVO42C drop budget, which
    is the reason 13–13.5 V was chosen.
 
-### Current: 3 A RMS paralleled, not 4 A
+### The carrier in hand — characterised Aug 25, 2026
 
-The commonly quoted "2 A per side" is the **peak** figure. TI's own number for
-sustained output is **1.5 A RMS per H-bridge**, and the datasheet gives ~3 A RMS
-for the paralleled pair.
+Vendor documentation: https://lastminuteengineers.com/drv8833-arduino-tutorial/
 
-So the realistic budget is **3 A RMS / 4 A peak**, not 4 A continuous. For a
-131.3:1 geared motor this is still very likely ample — the gearbox means the
-motor sees low torque demand for a given wheel torque — but the PDB branch
-sizing (fuse rating and wire gauge, still open pending W4) should be worked from
-3 A RMS, and any thermal check on the breakout should assume its own copper is
-the limit, not the silicon.
+Terminals are `IN1 IN2 IN3 IN4` / `OUT1 OUT2 OUT3 OUT4`, `VCC`, `GND`, plus two
+control pins whose **silkscreen labels are truncated and confusing**: `EEP` is
+nSLEEP, `ULT` is nFAULT. Do not read them as anything else.
+
+No onboard regulator — the DRV8833 runs its logic off VM, so the carrier takes a
+single supply. Logic inputs are 3 V/5 V compatible, so 3.3 V PWM drives it
+directly.
+
+**Paralleling is external wiring on this board.** All four outputs are separate
+terminals, so tie IN1+IN3 to one MCU pin, IN2+IN4 to the other, and join
+OUT1+OUT3 / OUT2+OUT4. Costs no extra MCU pins — one STM32 pin drives two
+carrier inputs.
+
+**J1 ships CLOSED, which pulls nSLEEP up and leaves the driver ENABLED with no
+MCU involved.** Cut it. With J1 open the chip's on-chip pull-down holds nSLEEP
+low and "MCU not running ⇒ bridge disabled" becomes a property of the hardware
+rather than a firmware promise. **Done on the bench board Aug 25; must be
+repeated on all seven carriers.** Also: with J1 closed the EEP pin may sit at
+VM, so measure it before connecting to a 5 V-tolerant STM32 pin.
+
+**nFAULT floats by default — there is no pull-up on the carrier.** An external
+10 kΩ is fitted on the bench build and belongs on the HW1 schematic. Keep the
+STM32 internal pull-up enabled as well: on a production board with the resistor
+unpopulated it stops the input floating and inventing faults.
+
+**nFAULT high does NOT prove the driver is alive.** With VM absent the DRV8833
+is unpowered, its open-drain output is off, and the pull-up reads 3.3 V anyway.
+A clear nFAULT means "nothing is pulling this low", not "the motor rail is good".
+
+### ⚠️ No current sensing and no current limit
+
+**AISEN/BISEN are tied directly to GND on this carrier**, which disables the
+DRV8833's current-limiting feature entirely. Two consequences that shape W5:
+
+1. **Nothing limits stall current except the chip's own OCP.** A jammed wheel
+   pulls whatever the motor pulls until OCP trips and asserts nFAULT. Firmware
+   must monitor nFAULT, implement a stall timeout, and latch off rather than
+   retrying into a stuck wheel.
+2. **There is no current feedback available at all**, so **W5's PID is
+   velocity-only** — a torque/current inner loop is not reachable with this
+   board. Getting one would mean putting the DRV8833 on the node PCB with real
+   sense resistors instead of using the carrier, which is an HW1 decision, not
+   a firmware one.
+
+### Current: ~2 A RMS paralleled — corrected down Aug 25, 2026
+
+An earlier revision of this section recorded **3 A RMS / 4 A peak**, taken from
+TI's 1.5 A RMS per-bridge silicon figure. That is too optimistic for this
+carrier. The vendor rates the board at **1.2 A continuous / 2 A peak per
+channel** — a board-level thermal rating below the silicon's.
+
+Paralleling halves R<sub>DS(on)</sub>, so for the same dissipation the current
+scales by √2, not 2: about **1.7 A continuous**, perhaps up to ~2.4 A if the
+carrier's copper is generous. **Design the PDB branch around ~2 A RMS / 4 A
+peak**, and treat the real number as something W4 measures.
+
+This makes the **motor's stall current at ~9 V the number to find**. If stall
+exceeds ~2 A the system will live on OCP trips during any wheel jam, and the
+branch fuse has to be chosen with that in mind.
 
 ### Encoder — CPR needs confirming before W5
 
@@ -2492,15 +2632,47 @@ awkward exact ratios, so counts-per-revolution will not be a clean integer. That
 matters at W9 (precision calibration), the same way the SERVO42C's own encoder
 resolution question does.
 
-### Firmware implications (W4)
+### Firmware implications (W4) — pins done Aug 25, control loop still open
 
-- STM32 timer in **encoder mode** for the quadrature pair. `TIM3` is currently
-  configured as a plain internal-clock time base, not an encoder interface — W4
-  changes that or claims a different timer.
-- Paralleled DRV8833 needs **2 PWM inputs per motor** (the tied pairs), plus
-  `nSLEEP` on a GPIO. Budget ~5 pins per node: 2 PWM + nSLEEP + 2 encoder.
-- `nSLEEP` must be driven high to enable the driver — check whether the breakout
-  already pulls it up, since some do and some expose it bare.
+Pin allocation is settled and building clean; see **STM32F446RE — PIN
+ALLOCATION** above for the full map and the reasoning. Six pins, not the five
+originally budgeted — nFAULT was added once the carrier turned out to expose it.
+
+**Done:**
+- TIM2 encoder on PA15/PB3, TIM4 PWM on PB6/PB7, nSLEEP on PB5, nFAULT on PB12.
+- All four DRV pins initialised to the driver-off state and bench-verified:
+  PB5/PB6/PB7 at 0 V, PB12 at 3.3 V (open-drain released = no fault).
+- `drv8833_disable()` asserts *both* off conditions — nSLEEP low **and** both
+  inputs low — rather than relying on either alone.
+- PB6/PB7 are parked as GPIO outputs driven low inside `MX_GPIO_Init`, because
+  TIM4 does not claim them until several init functions later and they would
+  otherwise float on the DRV8833's inputs for that whole window. ODR is written
+  before MODER; the AF handover happens low-to-low with CCR already 0, so no
+  pulse reaches the motor.
+- Boot line on the console reports the state instead of leaving it assumed:
+  `DRV8833: disabled (nSLEEP low, PWM 0%), nFAULT=clear`.
+
+**Still open:**
+- **TIM6 as the control-loop tick** (1 kHz, no pins). Do not hang the control
+  loop off TIM7 — that is the 2 Hz heartbeat.
+- **Encoder read + accumulate.** `TIM2->CNT` must never be read as an absolute
+  position: take an `int32_t` delta each tick into a wider software counter.
+  The code is the same whether the counter is 16- or 32-bit; 32-bit only means
+  a stalled loop cannot silently lose revolutions.
+- **Drive scheme not yet chosen.** Two independent PWM channels keep all three
+  reachable without rewiring: sign-magnitude (fast decay), drive-brake (slow
+  decay), locked antiphase. Drive-brake generally gives better low-speed
+  duty-to-speed linearity, which is what PID cares about. The vendor page lists
+  both `LL` and `HH` as "motor off" — they are not the same: **`LL` is coast
+  (outputs Hi-Z), `HH` is brake (both outputs low)**, and it is the `HH` state
+  that makes drive-brake possible.
+- **Raise `nSLEEP` only when a non-zero command is issued**, and drop it again
+  on fault or stall.
+
+**Bench checks worth doing once:** scope PB5/PB6/PB7 from power-on to confirm
+they come up low and stay low across the AF handover; and short the nFAULT node
+to GND to confirm the boot line reports `ASSERTED` — a pin that has only ever
+read high proves nothing about whether it is connected.
 
 ## SYSTEMD SERVICES (DELL HOST)
 - **qemu-aarch64-binfmt-fix.service:**
@@ -2658,6 +2830,23 @@ resolution question does.
      bounds throughput only, not latency. Hybrid ISR-to-ring is the leading
      candidate. Settle before W6.
 
+6b. **W4 — drive motor + encoder closed loop (IN PROGRESS, opened Aug 24):**
+    Acceptance criterion: encoder counts are read correctly and match physical
+    rotation. Note this needs **no motor power at all** — turning the wheel by
+    hand is enough, and it also settles the 11 PPR question W5 depends on.
+    - ✅ Pin allocation settled, `.ioc` and generated code building clean
+    - ✅ Heartbeat moved TIM3 → TIM7; TIM2 chosen for the 32-bit encoder
+    - ✅ DRV8833 carrier characterised; J1 cut, nFAULT pull-up fitted, all
+      four DRV pins verified at their off levels on the bench
+    - ⬜ TIM6 control-loop tick at 1 kHz
+    - ⬜ Encoder read + `int32_t` delta accumulate, plus a console command to
+      print raw counts so hand-rotation can be checked for direction and
+      counts/rev against the 5777 estimate
+    - ⬜ PWM helpers and the drive-scheme choice (drive-brake preferred)
+    - ⬜ `DIP_SW_1`/`DIP_SW_2` on PB14/PB15, then the latch-once ID read
+    - ⬜ Measure real drive current — this is the input HW4's PDB branch
+      sizing has been waiting on
+
 7. **CAN Bus — ROS 2 integration (CANopen stack):**
    - STM32 side: CANopenNode + CanOpenSTM32 (HAL-integrated, CubeMX compatible)
      - Implement CiA 402 motor profile (state machine, controlword/statusword,
@@ -2721,9 +2910,15 @@ resolution question does.
     - Design PDB: 6 individually fused branch outputs, single star point,
       13–13.5V nominal output to pre-compensate branch-wire voltage drop
     - Size PDB branch wire gauge precisely once W4 drive-motor current draw
-      is measured (currently placeholder: ~5m one-way, ~3A/motor assumed)
+      is measured (currently placeholder: ~5m one-way, **~2A/motor** — revised
+      down from 3A Aug 25, see the DRV8833 carrier section)
     - Design local buck regulator (12–13.5V → 3.3V direct into WeAct 3V3
       pin, bypassing the onboard ME6231A33PG LDO) for each node PCB
+    - **Second buck per node PCB: 13–13.5V → ~9V motor rail** for the DRV8833
+      (10.8V ceiling). Fed independently from the 13V rail, not cascaded off
+      the motor rail — motor noise must not sit upstream of the MCU
+    - Add a **10 kΩ pull-up on nFAULT** to the node PCB schematic — the
+      DRV8833 carrier has none
     - Design 3D-printed XT60 retention/weather cover (zip-tie channel or
       snap lip) once corner-module enclosure geometry exists
     - Revisit sealed/locking power connector (Bulgin 400 2-pole vs. GX16

@@ -2674,6 +2674,17 @@ they come up low and stay low across the AF handover; and short the nFAULT node
 to GND to confirm the boot line reports `ASSERTED` — a pin that has only ever
 read high proves nothing about whether it is connected.
 
+**Bring-up order — the motor is the LAST thing connected.** The PWM must be
+driven from the `drv` console commands and verified on a scope with the motor
+disconnected before any actuator is wired: frequency, duty linearity, channel
+alignment, the waveform pair for the chosen drive scheme, direction reversal,
+and that disable returns both pins to 0 V. Full checklist in NEXT TASKS item
+6b. The console exists precisely so this can be done by hand without a
+debugger or a reflash — same role it already plays for `send` and `mks`.
+Doing it this way means a firmware mistake shows up as a wrong trace on a
+screen rather than as an unexpected motion, which on a rover with a 131.3:1
+gearbox is the difference between a note and a broken bench setup.
+
 ## SYSTEMD SERVICES (DELL HOST)
 - **qemu-aarch64-binfmt-fix.service:**
   Runs multiarch/qemu-user-static --reset -p yes on every boot
@@ -2843,6 +2854,28 @@ read high proves nothing about whether it is connected.
       print raw counts so hand-rotation can be checked for direction and
       counts/rev against the 5777 estimate
     - ⬜ PWM helpers and the drive-scheme choice (drive-brake preferred)
+    - ⬜ **`drv` console commands**, mirroring the existing `mks <sub>` pattern
+      in `console.c`'s command table: `drv duty <±pct>`, `drv enable|disable`,
+      `drv coast|brake`, `drv status` (duty, nSLEEP level, nFAULT state).
+      These exist so the driver can be exercised by hand from the bench
+      without a debugger or a reflash, the same way `send` and `mks` do.
+    - ⬜ **Scope the PWM with the MOTOR DISCONNECTED — before any motor is
+      ever wired.** This is the gate between "the code compiles" and "power
+      touches an actuator", and it costs one bench session. Drive the duty
+      from the console commands above and confirm on PB6/PB7:
+      - 20.0 kHz on both channels, and the measured frequency actually matches
+        (this is the check that catches a wrong APB1 timer-clock assumption —
+        a ×2 error here would show as 10 or 40 kHz)
+      - duty tracks the commanded value across 0 / 25 / 50 / 75 / 100 %
+      - the two channels are edge-aligned (same timer, same ARR)
+      - the commanded drive scheme produces the expected waveform *pair* —
+        for drive-brake, one pin sits high while the other is PWM'd; for
+        sign-magnitude, one pin is PWM'd while the other sits low
+      - direction reversal swaps which pin carries what, with no shoot-through
+        window where both go high unintentionally
+      - `drv disable` returns both pins to 0 V and drops nSLEEP
+      - nSLEEP rises only on a non-zero command and falls again at zero
+      Only after all of that passes does a motor get connected.
     - ⬜ `DIP_SW_1`/`DIP_SW_2` on PB14/PB15, then the latch-once ID read
     - ⬜ Measure real drive current — this is the input HW4's PDB branch
       sizing has been waiting on

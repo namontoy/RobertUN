@@ -1,8 +1,22 @@
 # Robotics Development Environment — Project Context Document
-**Last updated:** August 14, 2026
+**Last updated:** August 17, 2026 (lycus commissioned: SD boot + SATA /data, ZED SDK 5.2.3, libusb/jammy-updates fix, MAXN_SUPER)
 *Paste this at the start of a new Claude session to restore full context.*
 
 ## Progress log (most recent first)
+- **Aug 17** — Second Jetson Orin Nano (lycus) fully commissioned: SD-card
+  boot + 120GB Patriot SATA SSD via M.2-to-SATA adapter mounted at /data
+  (confirmed the SATA-via-PCIe adapter CANNOT be a boot target — SDK Manager
+  flash fails "nvme unavailable" at ~18%; same adapter works fine as
+  post-boot storage, mirroring Xavier). CUDA, ROS 2 Humble + Cyclone DDS
+  (cross-machine talker/listener verified against Dell), ZED SDK 5.2.3 with
+  all NEURAL models optimized, zed-ros2-wrapper built and validated against
+  real camera hardware (~10Hz NEURAL LIGHT depth, full topic set live). Found
+  and fixed a libusb-1.0-0 version conflict that segfaulted ZED_Diagnostic's
+  USB enumeration — root cause was jammy-updates pocket missing from apt
+  sources by default on this board's image (worth checking orion/xavier
+  too). Git/GitHub identity configured, RobertUN cloned to /data/github.
+  Confirmed MAXN_SUPER is a third, higher power mode on this board beyond
+  the usual 15W/25W pair — nvpmodel -m 0 is NOT max on this hardware.
 - **Aug 14** — Power distribution & grounding architecture decided: CAN and
   power backbones split into two harnesses (CAN stays linear/Bulgin, power
   goes radial from a new PDB); common-ground strategy clarified at PCB and
@@ -70,6 +84,17 @@
 - **Hostname:** xavier, username: talos
 - **Role:** Experimental LLM inference node — natural language rover command interface
 
+### Jetson Orin Nano — lycus (second robot compute node)
+- **Machine:** NVIDIA Jetson Orin Nano Developer Kit (Super variant), 8GB RAM
+- **Storage:** boots from microSD card; 120GB Patriot Burst Elite SATA SSD via
+  M.2-to-SATA (ASM1166) adapter mounted at /data (ext4)
+- **Hostname:** lycus, username: talos
+- **Note:** the SATA-via-PCIe adapter CANNOT serve as the boot device on this
+  board — SDK Manager's M.2 flash path assumes true NVMe protocol; the ASM1166
+  presents AHCI/SATA instead, and the flash fails its "nvme unavailable"
+  availability check partway through. Works perfectly as post-boot /data
+  storage, same as Xavier.
+
 ### forge (home LLM inference workstation)
 - **Machine:** Home workstation, Universidad Nacional / RobertUN project
 - **CPU:** Xeon E5-2680 v4 (28 threads)
@@ -126,6 +151,10 @@
 - **Ethernet (primary):** 192.168.1.210 (static, interface eth0)
 - **WiFi:** not used (wpa_supplicant disabled)
 
+#### Jetson Orin Nano (lycus)
+- **Ethernet (primary):** 192.168.1.214 (static, interface enP8p1s0)
+- **WiFi:** reserved 192.168.1.14 per convention, not currently configured
+
 #### forge
 - **Ethernet (primary):** 192.168.1.213 (static, interface enp7s0)
 - **IPv6:** disabled on enp7s0
@@ -151,11 +180,13 @@
 - **Dell:** username=talos, hostname=deadelus
 - **Jetson Orin Nano:** username=talos, hostname=orion
 - **Jetson Xavier NX:** username=talos, hostname=xavier
+- **Jetson Orin Nano (lycus):** username=talos, hostname=lycus
 - **IsaacUN:** username=talos, hostname=IsaacUN
 - **forge:** username=talos, hostname=forge
 - **SSH config on Dell:** ~/.ssh/config has:
   - 'Host orion' → 192.168.1.211:44252 (Ethernet)
   - 'Host xavier' → 192.168.1.210:44252 (Ethernet)
+  - 'Host lycus' → 192.168.1.214:44252 (Ethernet)
 - **IsaacUN SSH:** systemd socket activation override at
   /etc/systemd/system/ssh.socket.d/override.conf (port 44252)
 - **forge SSH:** systemd socket activation override at
@@ -163,6 +194,7 @@
 - **Aliases on Dell:**
   - `orion` → ssh to Jetson Orin Nano (previously named `jetson`)
   - `xavier` → ssh to Jetson Xavier NX
+  - `lycus` → ssh to second Jetson Orin Nano (lycus)
   - `jsync` → rsync ~/ros2_ws/ to Orion with correct port
   - `jscp` → scp with correct port (-P 44252)
 - **SSH auto-starts on Jetson boot:** confirmed (both orion and xavier)
@@ -448,6 +480,89 @@ Python environment required. Isaac Sim acts like a real robot on the network.
   - Authentication verified: ssh -T git@github.com ✅
 - **Performance mode:** sudo nvpmodel -m 0 (MAXN) + sudo jetson_clocks
   - Not persistent across reboots — run after each reboot before launching ZED
+
+## JETSON ORIN NANO — LYCUS — JetPack 6.2.2 / L4T R36.5.0, aarch64
+- **OS:** Ubuntu 22.04.5 LTS (Orin Nano Developer Kit, Super variant)
+- **Board note:** this board exposes THREE nvpmodel power modes, not the
+  usual two — 0=15W, 1=25W, 2=MAXN_SUPER. Confirmed via
+  `grep 'POWER_MODEL ID' /etc/nvpmodel.conf`. Do NOT assume -m 0 is max
+  performance on a new/unfamiliar Jetson board — always check the table first.
+- **Storage architecture:**
+  - Boot: microSD card (fully cold-boot verified, not just live-mounted)
+  - /data: 120GB Patriot Burst Elite SATA SSD via M.2-to-SATA (ASM1166),
+    ext4, fstab-persistent (UUID=6ce863a9-799a-426c-8214-78232fc9b4d2)
+  - ROS 2 workspace and cloned repos deliberately placed on /data, not the
+    SD card, to avoid random-I/O and write-endurance issues under
+    TensorRT/colcon/Docker-style workloads
+  - CONFIRMED LIMITATION: the SATA-via-PCIe adapter cannot be a boot
+    target. SDK Manager's M.2 flash path assumes true NVMe protocol; the
+    ASM1166 bridge presents AHCI/SATA instead. The flash write itself
+    proceeds (uses a temporary Linux environment with full driver
+    support), but fails its own "nvme unavailable" availability check
+    partway through (~18%). This is a hard protocol mismatch, not a
+    config/jumper timing issue — confirmed by direct test.
+- **CUDA:** 12.6 (via apt, nvidia-jetpack + nvidia-jetpack-dev,
+  same minimal-install approach as orion)
+- **Python:** 3.10
+- **ROS 2:** Humble Base (/opt/ros/humble/), workspace at /data/ros2_ws
+- **rosdep:** initialized (sudo rosdep init + rosdep update — easy to
+  forget after ros-dev-tools install; watch for this on future machines)
+- **DDS:** Cyclone DDS (rmw_cyclonedds_cpp)
+  - Config: ~/.ros/cyclone_dds.xml, interface enP8p1s0
+  - Peers: 127.0.0.1 (loopback, first) + 192.168.1.212 (Dell) +
+    192.168.1.211 (orion) — full three-way mutual peer awareness;
+    daedalus and orion's configs were both updated to add lycus as a peer
+  - Cross-machine communication verified live: demo talker (lycus) →
+    listener (daedalus), clean delivery, no drops
+- **ZED SDK:** 5.2.3 installed at /usr/local/zed/
+  - Python API: pyzed 5.2.3 confirmed working
+    (sl.Camera().get_sdk_version() → "5.2.3")
+  - TensorRT models optimized: Neural Light/Neural/Neural Plus Depth,
+    Object Detection (3 tiers), Person ReID, Skeleton Body18/38, Person
+    Head (fast/accurate) — full ZED_Diagnostic -c pass, USB 3.0 confirmed
+    (USBMode 3, bcdUSB 3.0)
+  - Camera: ✅ FULLY OPERATIONAL — same physical ZED 2i as orion
+    (S/N 32047842), moved between machines for testing
+  - **libusb trap found + fixed:** the SDK installer's dependency check
+    wants libusb-1.0-0-dev, but this board's default apt sources only had
+    jammy + jammy-security enabled — jammy-updates (a standard pocket)
+    was missing entirely. Apt could only satisfy the -dev package by
+    downgrading the runtime libusb-1.0-0 from the JetPack-shipped
+    1.0.25-1ubuntu2 to 1.0.25-1ubuntu1. That downgrade broke the ZED
+    SDK's own USB enumeration — ZED_Diagnostic -c segfaulted inside
+    libusb_get_device_list during the USB Camera Diagnostic step (lsusb
+    itself still worked fine, since it uses separate libusb linkage).
+    FIX: add jammy-updates to /etc/apt/sources.list
+    (`deb http://ports.ubuntu.com/ubuntu-ports/ jammy-updates main
+    restricted universe multiverse`), then
+    `sudo apt install libusb-1.0-0 libusb-1.0-0-dev -y` to bring both
+    back to matched 1ubuntu2. Segfault fully resolved.
+    **Worth checking orion and xavier's sources.list for the same gap.**
+- **ZED ROS 2 Wrapper:** ✅ FULLY OPERATIONAL
+  - Repository: /data/ros2_ws/src/zed-ros2-wrapper (master branch)
+  - Built with: colcon build --symlink-install --packages-skip zed_debug
+    --cmake-args -DCMAKE_BUILD_TYPE=Release --parallel-workers $(nproc)
+  - Dependencies via apt: ros-humble-zed-msgs,
+    ros-humble-point-cloud-transport, ros-humble-point-cloud-transport-plugins;
+    ros-humble-image-transport-plugins pulled in via rosdep
+  - Depth mode: NEURAL LIGHT (default) — camera opened in ~3 seconds
+    including first-time calibration download, no hang, since all NEURAL
+    models were pre-optimized during SDK install
+  - Verified live: ros2 topic hz on rgb/color/rect/image → ~10Hz average
+    (neural-inference-bound, consistent with SegFormer B2's ~9.4 FPS on
+    the same Orin Nano GPU)
+  - Full topic set confirmed: rgb (raw/compressed/theora), depth,
+    point_cloud (+ draco/zlib/zstd compressed variants), imu/data, odom,
+    pose(+status), status/health, status/heartbeat, joint_states,
+    zed_description
+- **Git:** ✅ CONFIGURED
+  - GitHub SSH key: ED25519 at ~/.ssh/id_ed25519_github, registered on
+    GitHub as "Jetson Orin Nano - lycus"
+  - Repo location: /data/github/RobertUN, reachable via ~/github/RobertUN
+    (symlink ~/github → /data/github, same SSD-storage convention as Xavier)
+- **Performance mode:** sudo nvpmodel -m 2 (MAXN_SUPER) + sudo jetson_clocks
+  - Not persistent across reboots — run after each reboot before launching ZED
+  - Remember: -m 0 on THIS board is 15W, not max (see board note above)
 
 ## JETSON XAVIER NX — JetPack 5.1.6 / L4T R35.6.x, aarch64
 - **OS:** Ubuntu 20.04 LTS

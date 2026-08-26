@@ -56,3 +56,10 @@ dkms.conf
 
 # Otros elementos a ignorar
 git_ignored/
+
+# KiCad per-user project preferences — window positions, last-opened view.
+# Local state, not design data; it churns every time the project is opened.
+*.kicad_prl
+
+# Project-context export archive
+project-context.zip

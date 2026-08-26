@@ -1,8 +1,21 @@
 # Robotics Development Environment — Project Context Document
-**Last updated:** August 25, 2026 (W4 pin allocation fixed — TIM2 32-bit encoder on PA15/PB3, TIM4 PWM on PB6/PB7. **Drive driver changed to DRV8874**, parts bought, arriving ~Sep 15; encoder corrected to 8403.2 counts/rev; motor measured at 1.90 Ω / 1.70 mH and the motor rail set at 9.5 V)
+**Last updated:** August 26, 2026 (**W4 acceptance criterion MET** — encoder measured at 8394.9 counts/rev over ten hand turns, 0.1% from the predicted 8403.2. Earlier: W4 pin allocation fixed — TIM2 32-bit encoder on PA15/PB3, TIM4 PWM on PB6/PB7. **Drive driver changed to DRV8874**, parts bought, arriving ~Sep 15; encoder corrected to 8403.2 counts/rev; motor measured at 1.90 Ω / 1.70 mH and the motor rail set at 9.5 V)
 *Paste this at the start of a new Claude session to restore full context.*
 
 ## Progress log (most recent first)
+- **Aug 26** — **W4 ACCEPTANCE CRITERION MET.** Encoder firmware written (TIM2
+  delta accumulation, TIM6 1 kHz tick, `enc`/`drv` console commands) and
+  verified on the bench: ten hand turns of the output shaft gave 83 949 counts
+  = **8394.9 per revolution against the predicted 8403.2, 0.1% low**. Both the
+  64 CPR and 131.3:1 figures are confirmed; no constant changes. `enc probe`
+  independently confirmed x4 decoding (393 + 393 edges vs 778 net counts), and
+  the accumulator matched the raw counter difference exactly across 84 000
+  counts — the delta arithmetic loses nothing.
+- **Aug 25–26** — **Encoder dead on two motors, root-caused to a broken VCC
+  conductor** in cable extensions a student had soldered. Both lines sat at a
+  constant 1.8 V (a ~10 kΩ resistive divider against the 10 kΩ pull-ups, ratio
+  unchanged at 5 V) — the signature of an unpowered IC, not a switching output.
+  Highly likely the other five motors share it. See KEY LEARNINGS.
 - **Aug 25 (later)** — Motor bench-measured on two units: R ≈ 1.90 Ω (stall,
   supply-sag corrected), L ≈ 1.70 mH, no-load 154/155 mA at 9.5 V, and the two
   motors match to under 2% on every parameter that matters — so one PID gain set
@@ -3026,10 +3039,12 @@ gearbox is the difference between a note and a broken bench setup.
     - ✅ Heartbeat moved TIM3 → TIM7; TIM2 chosen for the 32-bit encoder
     - ✅ DRV8833 carrier characterised; J1 cut, nFAULT pull-up fitted, all
       four DRV pins verified at their off levels on the bench
-    - ⬜ TIM6 control-loop tick at 1 kHz
-    - ⬜ Encoder read + `int32_t` delta accumulate, plus a console command to
-      print raw counts so hand-rotation can be checked for direction and
-      counts/rev against the 5777 estimate
+    - ✅ TIM6 control-loop tick at 1 kHz (PSC 89 / ARR 999, own ISR)
+    - ✅ Encoder read + `int32_t` delta accumulate, `enc` console commands
+      including `enc probe`, which watches the raw A/B pins and TIM2 together
+      and localises a fault to either side of the MCU pin
+    - ✅ **ACCEPTANCE MET Aug 26** — 8394.9 counts/rev measured over ten hand
+      turns, 0.1% from predicted. Sign convention recorded on the bench
     - ⬜ PWM helpers and the drive-scheme choice (drive-brake preferred)
     - ⬜ **`drv` console commands**, mirroring the existing `mks <sub>` pattern
       in `console.c`'s command table: `drv duty <±pct>`, `drv enable|disable`,
@@ -3053,6 +3068,12 @@ gearbox is the difference between a note and a broken bench setup.
       - `drv disable` returns both pins to 0 V and drops nSLEEP
       - nSLEEP rises only on a non-zero command and falls again at zero
       Only after all of that passes does a motor get connected.
+    - ⬜ **Check the encoder VCC conductor on the remaining five motors**
+      before assuming they work — two of two were broken (see KEY LEARNINGS).
+      `enc probe` finds it in 2 seconds per motor.
+    - ⬜ Re-terminate the extended motor leads with crimped joints; consider a
+      latching connector (JST-SM) instead of a permanent splice, so a motor
+      can be swapped without rework
     - ⬜ `DIP_SW_1`/`DIP_SW_2` on PB14/PB15, then the latch-once ID read
     - ⬜ Measure real drive current — the input HW4's PDB branch sizing has
       been waiting on. **Two ways in, and neither waits for the DRV8874:**
@@ -3157,6 +3178,50 @@ rework session, not a week.
       MCUs against the destructive-ground-loop mechanism now documented
       (wrong disconnect order, hot-plugged connector, lost ground contact
       under vibration) — see POWER DISTRIBUTION & GROUNDING section
+
+## KEY LEARNINGS & GOTCHAS
+
+Short, generalised rules. Machine-specific detail belongs in that machine's
+section; this is for things that will bite again somewhere else.
+
+- **Crimp harness joints, never solder them.** Solder wicks up the strands and
+  creates a hard-to-soft transition; all subsequent bending concentrates there
+  until the copper work-hardens and cracks — inside insulation that still looks
+  perfect. This is what killed the encoder VCC conductor on **two** motors
+  (Aug 25, 2026) after cable extensions were soldered, and it is the same
+  failure family as the four MCUs lost last semester. A rocker-bogie vibrates
+  continuously, so this is not a marginal concern here.
+  - Use a **ratcheting** crimper whose die matches the terminal *family* —
+    insulated-barrel nests and open-barrel F-crimp dies are not
+    interchangeable, and 22 AWG at the bottom of a "22–10 AWG" tool is where
+    under-compression happens.
+  - **Test destructively before committing to a batch:** crimp a scrap joint
+    and pull it apart. The wire must break before the crimp releases.
+  - **Stagger** splices along a bundle and strain-relieve both sides, so
+    flexing happens in free wire rather than at a joint.
+  - Avoid solder-ring heatshrink connectors: they combine an uninspectable
+    joint with exactly the brittle transition above.
+  - Adhesive-lined heatshrink does not bond well to **silicone** insulation.
+    Self-amalgamating silicone tape does, and stays flexible.
+  - Reference: NASA-STD-8739.4A, and the illustrated accept/reject criteria at
+    https://workmanship.nasa.gov/lib/insp/2%20books/links/sections/407%20Splices.html
+- **A pulled-up signal line sitting at a constant mid-rail voltage means an
+  unpowered IC, not a stuck output.** A working open-drain output has only two
+  states: pulled down hard (<0.4 V) or released (full rail). Anything in
+  between is a resistive divider. Confirm by changing the supply voltage — if
+  the *ratio* holds, it is passive silicon (ESD structures, bias resistors)
+  and the chip has no power. This diagnosed the dead encoders in minutes after
+  a scope had shown only "no pulses".
+- **When a signal is missing, first prove which side of the MCU pin the fault
+  is on.** Reading a GPIO's input register works even while the pin is in
+  alternate-function mode, so the raw wire can be observed without disturbing
+  the peripheral. `enc probe` does this for the encoder and splits "nothing
+  reaches the MCU" from "the timer is not decoding what arrives" — two faults
+  with identical symptoms and completely different fixes.
+- **Verify wire colours against resistance, not against the datasheet.** On the
+  drive motor the two leads reading ~2.5 Ω are unambiguously the winding;
+  everything else follows from there. Colour codes vary by batch, and a
+  swapped supply pair produces exactly the passive-divider signature above.
 
 ## KEY DECISIONS AND RATIONALE
 - **X11 over Wayland (Dell):** Wayland has incomplete NVIDIA PRIME support

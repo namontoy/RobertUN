@@ -25,6 +25,8 @@
 #include "debug_uart.h"
 #include "main.h"
 #include "mks_servo.h"
+#include "encoder.h"
+#include "drive.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -38,8 +40,14 @@ static size_t line_len;
 static size_t burst_len;            /* bytes since the last idle boundary */
 static bool   skip_lf;              /* CRLF terminals send both; act on one */
 
-static bool heartbeat_on = true;
+/* Off at boot. The heartbeat prints a line every 0.5 s, which drowns out the
+   drive-motor bench output — `enc watch` runs at 5 Hz and W5's PID telemetry
+   will be denser still. Turn it on with `heartbeat on` when the bus is what
+   is actually being tested. */
+static bool heartbeat_on = false;
 static bool monitor_on   = true;
+static bool enc_watch_on = false;
+static uint32_t enc_watch_last;
 
 /** @brief Command handler. @p argv[0] is the command name, so a bare
   *        invocation arrives with @p argc == 1. Tokens point into the mutable
@@ -573,6 +581,230 @@ static void cmd_mks(int argc, char **argv)
   }
 }
 
+
+/* -------------------------------------------------------------------------- */
+/* Drive motor — encoder and H-bridge                                          */
+/* -------------------------------------------------------------------------- */
+
+/** @brief Print the accumulated position, derived revolutions and speed.
+  *
+  * Counts are shown as a 32-bit value even though the accumulator is 64-bit:
+  * newlib-nano's printf omits long-long support, and 2^31 counts is about
+  * 255 000 output revolutions, which no bench session will reach. The
+  * accumulator itself is unaffected. */
+static void print_encoder_line(void)
+{
+  int64_t pos = encoder_position();
+
+  if (pos >  2147483647LL) { pos =  2147483647LL; }
+  if (pos < -2147483648LL) { pos = -2147483648LL; }
+
+  debug_uart_printf("count %ld  rev %.4f  rpm %.2f  raw %lu  d %ld  %s\r\n",
+                    (long)pos,
+                    (double)encoder_revolutions(),
+                    (double)encoder_rpm(),
+                    (unsigned long)encoder_raw_count(),
+                    (long)encoder_last_delta(),
+                    encoder_counting_up() ? "up" : "down");
+}
+
+static void cmd_enc(int argc, char **argv)
+{
+  if (argc < 2)
+  {
+    print_encoder_line();
+    debug_uart_printf("  %.1f counts per output revolution, window %u ticks\r\n",
+                      (double)ENCODER_COUNTS_PER_OUTPUT_REV,
+                      (unsigned)encoder_velocity_window());
+    debug_uart_printf("  ticks since zero: %lu%s\r\n",
+                      (unsigned long)encoder_tick_count(),
+                      (encoder_tick_count() == 0u) ? "  <-- TIM6 TICK NOT RUNNING" : "");
+    debug_uart_puts("  sub: zero | watch on|off | window <ticks> | probe [ms]\r\n");
+    return;
+  }
+
+  if (strcmp(argv[1], "zero") == 0)
+  {
+    encoder_zero();
+    debug_uart_puts("encoder zeroed\r\n");
+  }
+  else if (strcmp(argv[1], "watch") == 0)
+  {
+    bool on;
+
+    if ((argc < 3) || !parse_on_off(argv[2], &on))
+    {
+      debug_uart_printf("watch is %s\r\n", enc_watch_on ? "on" : "off");
+      return;
+    }
+
+    enc_watch_on   = on;
+    enc_watch_last = HAL_GetTick();
+    debug_uart_printf("watch %s\r\n", on ? "on — turn the shaft" : "off");
+  }
+  else if (strcmp(argv[1], "window") == 0)
+  {
+    if (argc >= 3)
+    {
+      long ticks = strtol(argv[2], NULL, 10);
+      encoder_set_velocity_window((uint16_t)((ticks < 1) ? 1 : ticks));
+    }
+
+    /* One count of difference over the window, expressed in rpm — the real
+       resolution limit of the velocity reading. */
+    double res = (1000.0 / (double)encoder_velocity_window())
+                 * 60.0 / (double)ENCODER_COUNTS_PER_OUTPUT_REV;
+
+    debug_uart_printf("window %u ticks — %.0f Hz update, %.2f rpm per count\r\n",
+                      (unsigned)encoder_velocity_window(),
+                      1000.0 / (double)encoder_velocity_window(),
+                      res);
+  }
+  else if (strcmp(argv[1], "probe") == 0)
+  {
+    uint32_t ms = 2000u;
+
+    if (argc >= 3)
+    {
+      long requested = strtol(argv[2], NULL, 10);
+      if (requested > 0) { ms = (uint32_t)requested; }
+      if (ms > 10000u)   { ms = 10000u; }
+    }
+
+    encoder_probe_t p;
+
+    debug_uart_printf("watching A/B for %lu ms — TURN THE SHAFT NOW\r\n",
+                      (unsigned long)ms);
+    (void)debug_uart_flush(100u);   /* get the prompt out before we block */
+
+    encoder_probe(ms, &p);
+
+    debug_uart_printf("  A: %lu edges, now %s     B: %lu edges, now %s\r\n",
+                      (unsigned long)p.edges_a, p.level_a ? "HIGH" : "low",
+                      (unsigned long)p.edges_b, p.level_b ? "HIGH" : "low");
+    debug_uart_printf("  TIM2 moved %ld counts over %lu samples\r\n",
+                      (long)p.count_delta, (unsigned long)p.samples);
+
+    if ((p.edges_a == 0u) && (p.edges_b == 0u))
+    {
+      debug_uart_puts(
+        "  -> NOTHING reaches the MCU. Both lines idle "
+        );
+      debug_uart_printf("%s.\r\n", (p.level_a && p.level_b) ? "HIGH (pull-ups fine, encoder silent)"
+                                                             : "LOW (suspect power, ground or a short)");
+      debug_uart_puts(
+        "     Check: 3.3 V on blue, gray tied to board GND, and that the\r\n"
+        "     shaft is really turning. Not a timer problem.\r\n");
+    }
+    else if ((p.edges_a == 0u) || (p.edges_b == 0u))
+    {
+      debug_uart_printf("  -> Only channel %s is moving. Quadrature needs both;\r\n",
+                        (p.edges_a != 0u) ? "A" : "B");
+      debug_uart_puts("     TIM2 will count erratically or not at all.\r\n");
+    }
+    else if (p.count_delta == 0)
+    {
+      debug_uart_puts(
+        "  -> Both channels are pulsing but TIM2 is NOT counting.\r\n"
+        "     The signal is fine; the timer is not seeing it. Suspect the\r\n"
+        "     AF setting on PA15/PB3, or a debugger holding the JTAG pins.\r\n");
+    }
+    else
+    {
+      debug_uart_puts("  -> Encoder and TIM2 are both working.\r\n");
+    }
+  }
+  else
+  {
+    debug_uart_printf("unknown subcommand '%s' — try 'enc'\r\n", argv[1]);
+  }
+}
+
+static void cmd_drv(int argc, char **argv)
+{
+  if (argc < 2)
+  {
+    debug_uart_printf("nSLEEP %s  duty %+d%%  decay %s  limit %u%%  nFAULT %s\r\n",
+                      drive_is_enabled() ? "high (enabled)" : "low (disabled)",
+                      drive_duty() / 10,
+                      (drive_decay() == DRIVE_DECAY_SLOW) ? "slow (drive-brake)"
+                                                          : "fast (sign-magnitude)",
+                      (unsigned)(drive_limit() / 10u),
+                      drive_faulted() ? "ASSERTED" : "clear");
+    debug_uart_puts(
+      "  sub: enable | disable | duty <+/-pct> | brake | coast\r\n"
+      "       decay slow|fast | limit <pct>\r\n");
+    return;
+  }
+
+  if (strcmp(argv[1], "enable") == 0)
+  {
+    drive_enable();
+    debug_uart_puts("nSLEEP high — driver awake (waited 2 ms)\r\n");
+  }
+  else if (strcmp(argv[1], "disable") == 0)
+  {
+    drive_disable();
+    debug_uart_puts("duty 0, nSLEEP low — driver disabled\r\n");
+  }
+  else if (strcmp(argv[1], "duty") == 0)
+  {
+    if (argc < 3)
+    {
+      debug_uart_puts("usage: drv duty <+/-pct>\r\n");
+      return;
+    }
+
+    long pct = strtol(argv[2], NULL, 10);
+    drive_set_duty((int16_t)(pct * 10));
+
+    debug_uart_printf("duty %+d%%%s\r\n",
+                      drive_duty() / 10,
+                      drive_is_enabled() ? ""
+                                         : "  (driver still disabled — pins only,"
+                                           " which is what you want for a scope check)");
+  }
+  else if (strcmp(argv[1], "brake") == 0)
+  {
+    drive_brake();
+    debug_uart_puts("both inputs high — brake\r\n");
+  }
+  else if (strcmp(argv[1], "coast") == 0)
+  {
+    drive_coast();
+    debug_uart_puts("both inputs low — coast\r\n");
+  }
+  else if (strcmp(argv[1], "decay") == 0)
+  {
+    if (argc >= 3)
+    {
+      if      (strcmp(argv[2], "slow") == 0) { drive_set_decay(DRIVE_DECAY_SLOW); }
+      else if (strcmp(argv[2], "fast") == 0) { drive_set_decay(DRIVE_DECAY_FAST); }
+      else { debug_uart_puts("usage: drv decay slow|fast\r\n"); return; }
+    }
+
+    debug_uart_printf("decay %s\r\n",
+                      (drive_decay() == DRIVE_DECAY_SLOW)
+                        ? "slow — IN1 high, IN2 PWM inverted (drive/brake)"
+                        : "fast — IN1 PWM, IN2 low (drive/coast)");
+  }
+  else if (strcmp(argv[1], "limit") == 0)
+  {
+    if (argc >= 3)
+    {
+      long pct = strtol(argv[2], NULL, 10);
+      if (pct < 0) { pct = 0; }
+      drive_set_limit((uint16_t)(pct * 10));
+    }
+
+    debug_uart_printf("limit %u%%\r\n", (unsigned)(drive_limit() / 10u));
+  }
+  else
+  {
+    debug_uart_printf("unknown subcommand '%s' — try 'drv'\r\n", argv[1]);
+  }
+}
+
 static void cmd_reset(int argc, char **argv)
 {
   (void)argc;
@@ -595,6 +827,8 @@ static const command_t commands[] =
   { "monitor",   "[on|off]",     "print received CAN frames as they arrive",  cmd_monitor   },
   { "loopback",  "[on|off]",     "CAN loopback — test with no bus attached",  cmd_loopback  },
   { "mks",       "<sub> [args]", "MKS SERVO42C on UART4 — 'mks' for subcommands", cmd_mks   },
+  { "enc",       "[sub]",        "drive encoder — 'enc' for position and speed", cmd_enc   },
+  { "drv",       "[sub]",        "drive H-bridge — 'drv' for state",          cmd_drv       },
   { "reset",     "",             "reboot the MCU",                            cmd_reset     },
 };
 
@@ -862,6 +1096,26 @@ void console_report_mks(void)
 bool console_heartbeat_enabled(void)
 {
   return heartbeat_on;
+}
+
+void console_report_encoder(void)
+{
+  if (!enc_watch_on)
+  {
+    return;
+  }
+
+  /* 5 Hz. Fast enough to follow a shaft turned by hand, slow enough that the
+     output does not swamp the console or the 115200 wire. */
+  uint32_t now = HAL_GetTick();
+
+  if ((now - enc_watch_last) < 200u)
+  {
+    return;
+  }
+
+  enc_watch_last = now;
+  print_encoder_line();
 }
 
 bool console_monitor_enabled(void)

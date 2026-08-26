@@ -83,6 +83,12 @@ void console_poll(void);
 void console_report_mks(void);
 
 /**
+  * @brief  Print one encoder line if `enc watch on` is active and 200 ms have
+  *         passed. Call every main-loop pass. Silent otherwise.
+  */
+void console_report_encoder(void);
+
+/**
   * @brief  Whether the periodic CAN heartbeat should be sent.
   *
   * Toggled by the `heartbeat` command. Lets the node be silenced while

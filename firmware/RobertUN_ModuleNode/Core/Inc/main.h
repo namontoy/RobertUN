@@ -74,6 +74,13 @@ void Error_Handler(void);
 #define DRV_PWM_A_GPIO_Port  GPIOB
 #define DRV_PWM_B_Pin        GPIO_PIN_7
 #define DRV_PWM_B_GPIO_Port  GPIOB
+/* PA15/PB3 are TIM2_CH1/CH2 (encoder A/B). IDR reflects the real pin level
+   even while the pin is in alternate-function mode, so these let the raw
+   signal be read back without disturbing the timer. */
+#define ENC_A_Pin            GPIO_PIN_15
+#define ENC_A_GPIO_Port      GPIOA
+#define ENC_B_Pin            GPIO_PIN_3
+#define ENC_B_GPIO_Port      GPIOB
 /* USER CODE END Private defines */
 
 #ifdef __cplusplus

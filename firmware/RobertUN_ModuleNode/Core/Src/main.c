@@ -26,6 +26,8 @@
 #include "can_bus.h"
 #include "console.h"
 #include "mks_servo.h"
+#include "encoder.h"
+#include "drive.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -48,6 +50,7 @@ CAN_HandleTypeDef hcan1;
 
 TIM_HandleTypeDef htim2;
 TIM_HandleTypeDef htim4;
+TIM_HandleTypeDef htim6;
 TIM_HandleTypeDef htim7;
 
 UART_HandleTypeDef huart4;
@@ -68,59 +71,17 @@ static void MX_DMA_Init(void);
 static void MX_CAN1_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_TIM4_Init(void);
+static void MX_TIM6_Init(void);
 static void MX_TIM7_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_UART4_Init(void);
 void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
 /* USER CODE BEGIN PFP */
-static void drv8833_disable(void);
-static bool drv8833_faulted(void);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-/**
-  * @brief  Put the DRV8833 into its off state: bridge disabled, both inputs low.
-  *
-  * Two independent things have to be true for the motor to be still, and this
-  * asserts both rather than relying on either alone:
-  *   - nSLEEP low          -> the whole H-bridge is disabled at the chip
-  *   - IN1..IN4 all low    -> coast (outputs Hi-Z) even if nSLEEP were high
-  *
-  * Order matters. nSLEEP goes low last, so the inputs are already at a defined
-  * level before the bridge is torn down; and it is raised first when enabling,
-  * for the same reason in reverse.
-  *
-  * WHAT THIS CANNOT COVER: the window from reset until MX_GPIO_Init() runs.
-  * PB5 is a floating input for those few hundred microseconds, and the carrier
-  * ships with solder jumper J1 CLOSED, which pulls nSLEEP up and leaves the
-  * driver ENABLED with no firmware involved. The DRV8833's internal pull-downs
-  * on IN1..IN4 mean the outputs coast rather than drive, so nothing moves — but
-  * that is the chip's default saving us, not a designed-in guarantee.
-  * Cut J1 so the on-chip pull-down wins and "MCU not running" means "bridge
-  * disabled" as a property of the hardware.
-  */
-static void drv8833_disable(void)
-{
-  __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_1, 0);
-  __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, 0);
-  HAL_GPIO_WritePin(DRV_nSLEEP_GPIO_Port, DRV_nSLEEP_Pin, GPIO_PIN_RESET);
-}
-
-/**
-  * @brief  True while the driver is reporting a fault (overcurrent or thermal).
-  *
-  * nFAULT is open-drain and active low, and this carrier leaves it floating —
-  * there is no pull-up on the board, so the pin's internal pull-up is the only
-  * thing holding it high. That works on the bench; the node PCB should carry a
-  * 10k external pull-up, because ~40k over a flying lead next to a switching
-  * motor is not a signal to trust.
-  */
-static bool drv8833_faulted(void)
-{
-  return HAL_GPIO_ReadPin(DRV_nFAULT_GPIO_Port, DRV_nFAULT_Pin) == GPIO_PIN_RESET;
-}
 
 /* USER CODE END 0 */
 
@@ -157,16 +118,15 @@ int main(void)
   MX_CAN1_Init();
   MX_TIM2_Init();
   MX_TIM4_Init();
+  MX_TIM6_Init();
   MX_TIM7_Init();
   MX_USART1_UART_Init();
   MX_UART4_Init();
   /* USER CODE BEGIN 2 */
-  /* Restate the off condition now that TIM4 owns PB6/PB7. MX_TIM4_Init() has
-     already started both channels at 0% and MX_GPIO_Init() has already pulled
-     nSLEEP low, so this changes nothing today — it is here so that the safe
-     state is asserted by name at the top of the application, and does not
-     depend on a reader noticing that Pulse = 0 in generated code. */
-  drv8833_disable();
+  /* Assert the off state by name, rather than depending on a reader noticing
+     that Pulse = 0 in generated code. */
+  drive_init();
+  encoder_init();
 
   debug_uart_status_t uart_status = debug_uart_init();
 
@@ -187,8 +147,11 @@ int main(void)
     debug_uart_puts("ERROR: MKS link not running — check UART4_RX DMA is Circular\r\n");
   }
 
-  debug_uart_printf("DRV8833: disabled (nSLEEP low, PWM 0%%), nFAULT=%s\r\n",
-                    drv8833_faulted() ? "ASSERTED" : "clear");
+  debug_uart_printf("drive: disabled (nSLEEP low, PWM 0%%, %u kHz), nFAULT=%s\r\n",
+                    (unsigned)(DRIVE_PWM_HZ / 1000u),
+                    drive_faulted() ? "ASSERTED" : "clear");
+  debug_uart_printf("encoder: TIM2 32-bit, %.1f counts/output-rev, tick 1 kHz\r\n",
+                    (double)ENCODER_COUNTS_PER_OUTPUT_REV);
 
   console_init();
   /* USER CODE END 2 */
@@ -204,6 +167,7 @@ int main(void)
 
     mks_poll();            /* advance the SERVO42C transaction state machine */
     console_report_mks();  /* print its outcome once it lands */
+    console_report_encoder();  /* live counts while `enc watch on` */
 
     /* Heartbeat: one frame per TIM7 tick (~0.5 s), same cadence as the LED so
        the blink doubles as a visual "this node is transmitting". */
@@ -482,6 +446,47 @@ static void MX_TIM4_Init(void)
 }
 
 /**
+  * @brief TIM6 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM6_Init(void)
+{
+
+  /* USER CODE BEGIN TIM6_Init 0 */
+
+  /* USER CODE END TIM6_Init 0 */
+
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM6_Init 1 */
+
+  /* USER CODE END TIM6_Init 1 */
+  htim6.Instance = TIM6;
+  htim6.Init.Prescaler = 89;
+  htim6.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim6.Init.Period = 999;
+  htim6.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim6) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim6, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM6_Init 2 */
+  /* 90 MHz APB1 timer clock / (89+1) / (999+1) = 1.000 kHz exactly.
+     This is the control-loop tick. Deliberately NOT TIM7, which is the 2 Hz
+     heartbeat — a control loop must not share a timer with a status blink. */
+  HAL_TIM_Base_Start_IT(&htim6);
+  /* USER CODE END TIM6_Init 2 */
+
+}
+
+/**
   * @brief TIM7 Initialization Function
   * @param None
   * @retval None
@@ -679,6 +684,13 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
   if(htim->Instance == TIM7){
       HAL_GPIO_TogglePin(LED_BLINKY_GPIO_Port, LED_BLINKY_Pin);
       heartbeat_due = true;   /* the frame itself is sent from the main loop */
+  }
+  else if(htim->Instance == TIM6){
+      /* Sampled here rather than in the main loop on purpose: velocity is a
+         difference divided by an interval, so jitter in WHEN the counter is
+         read shows up directly as noise in the reading. The call reads one
+         register and does integer arithmetic. */
+      encoder_on_tick();
   }
 }
 /* USER CODE END 4 */

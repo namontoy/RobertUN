@@ -3,6 +3,14 @@
 *Paste this at the start of a new Claude session to restore full context.*
 
 ## Progress log (most recent first)
+- **Aug 26 (late)** — Motor terminal voltage measured: **9.45 V supply → 9.35 V
+  at the motor**, so the rail was never near the DRV8833's 10.8 V ceiling and
+  the motor is simply ~11% faster than its datasheet. Gives **Ke ≈ 0.138 V/rpm**.
+  **Stop policy decided: coast by default, brake only below ~40 rpm** — braking
+  from full speed draws 4.7 A, above the carrier's peak. Brake current
+  circulates locally through the driver rather than through the branch return,
+  so it is *less* exposed to the documented ground-loop mechanism than driving
+  is, but it puts high current across the local star point.
 - **Aug 26 (evening)** — **First powered motion**, free shaft, console-driven.
   Plant is strikingly linear: **rpm = 0.672 × duty% − 1.8**, per-step
   increments varying only ±1.5% across 20–100%, so W5 needs no gain
@@ -2772,6 +2780,69 @@ designed quantum: 1000 Hz / 20 ticks = 50 windows/s, and 50 × 60 / 8403.2 =
 0.3570 rpm per count. 11.78 = 33 counts, 65.51 = 183. The encoder velocity path
 behaves exactly as `encoder.h` predicts.
 
+### Stopping: coast or brake — decided Aug 26, 2026
+
+**Default stop is COAST** (`duty 0`, both inputs low). Brake (both inputs high)
+is reachable only by calling `drive_brake()` deliberately.
+
+The two are electrically very different:
+
+- **Coast** — outputs go Hi-Z, the motor freewheels. The remaining inductive
+  energy is 1/2·L·I² = **19 µJ** at 155 mA, which decays through the body
+  diodes. A zero-current event at any speed.
+- **Brake** — both low-side FETs on, winding shorted through them. Back-EMF
+  then drives `I = E / R_winding`.
+
+From the measured terminal voltage and no-load current,
+`E = 9.35 − 0.155 × 1.9 = 9.06 V` at 65.5 rpm, so **Ke ≈ 0.138 V/rpm** at the
+output shaft:
+
+| Speed | Back-EMF | Brake current |
+|---|---|---|
+| 65 rpm | 8.98 V | **4.73 A** |
+| 50 rpm | 6.91 V | **3.64 A** |
+| 40 rpm | 5.53 V | 2.91 A |
+| 20 rpm | 2.76 V | 1.45 A |
+| 10 rpm | 1.38 V | 0.73 A |
+
+**Braking from full speed draws essentially stall current**, above the DRV8833
+carrier's 4 A paralleled peak, and dissipates it in the low-side FETs.
+**On the interim carrier, brake only below ~40 rpm.**
+
+**The ground-loop exposure differs, and not in the intuitive direction.** The
+two cases use different current loops:
+
+```
+DRIVING:  PDB(+) -> driver -> motor -> driver -> PDB(-)
+          the branch return wire is INSIDE this loop
+BRAKING:  motor -> OUT1 -> LS FET -> PGND -> LS FET -> OUT2 -> motor
+          entirely LOCAL to the driver board
+```
+
+Brake current never traverses the branch return, so interrupting that wire
+mid-brake does not produce the destructive mechanism documented under *Ground
+loops* — there is no path through the MCU for it to divert into. Driving
+current is the exposed case.
+
+The risk **relocates** rather than disappearing: the brake loop runs through
+the driver's PGND and the local star point, so 4.7 A sits next to the MCU's
+ground reference. This is a direct argument for being fussy about that one
+joint on the node PCB.
+
+**Emergency stop should be COAST, not brake.** Counter-intuitive, but braking
+creates a 4.7 A event at exactly the wrong moment — and if the emergency is a
+wiring fault, that is the worst current to have looking for a path. The
+131.3:1 spur reduction is stiff enough that coasting holds the rover on any
+slope it can climb.
+
+**W5 policy, not driver code:** the control layer should ramp duty down before
+braking, keeping the brake current inside the driver. `drive.c` deliberately
+implements no policy.
+
+**Revisit once the DRV8874 arrives** — its current regulation caps brake
+current at the VREF setting, so braking from speed stops being a high-current
+event and the 40 rpm threshold can be lifted.
+
 ### The inductance validates the 20 kHz PWM choice
 
 With L = 1.70 mH and R = 1.90 Ω:
@@ -3133,10 +3204,10 @@ gearbox is the difference between a note and a broken bench setup.
     - ⬜ `DIP_SW_1`/`DIP_SW_2` on PB14/PB15, then the latch-once ID read
     - ✅ **First powered motion Aug 26** — free shaft, both directions, full
       duty range, coast and brake all correct. See the plant model below.
-    - ⬜ Confirm the actual motor-terminal voltage at 100% duty. Extrapolated
-      no-load speed is 65.5 rpm where 9.5 V predicts 60.2 — either the vendor's
-      76 rpm @ 12 V is conservative, or the rail is nearer 10.3 V, which would
-      sit uncomfortably close to the DRV8833's 10.8 V ceiling
+    - ✅ **Motor-terminal voltage confirmed Aug 26: 9.45 V supply → 9.35 V at
+      the motor**, ~1% drop. The rail is not near the DRV8833's 10.8 V ceiling;
+      the motor is simply ~11% faster than its datasheet (7.01 rpm/V measured
+      against the spec's 6.33). Ordinary spec conservatism
     - ⬜ Measure real drive current — the input HW4's PDB branch sizing has
       been waiting on. **Two ways in, and neither waits for the DRV8874:**
       (a) measure the motor's winding resistance with a multimeter, rotating

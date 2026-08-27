@@ -55,12 +55,39 @@
   * measures which behaves better.
   *
   *
-  * ZERO DUTY IS COAST, IN BOTH MODES
-  * ---------------------------------
+  * ZERO DUTY IS COAST, IN BOTH MODES — AND THAT IS THE SAFE STOP
+  * -------------------------------------------------------------
   * Setting duty 0 in slow-decay mode would, taken literally, mean 100% brake —
-  * IN1 and IN2 both high, motor actively held. That is a surprising thing for
-  * "stop" to do on a vehicle, so duty 0 always produces coast (00) regardless
-  * of decay mode. Call drive_brake() to actually brake.
+  * IN1 and IN2 both high, motor actively held. Duty 0 therefore always
+  * produces coast (00) regardless of decay mode. Call drive_brake() to
+  * actually brake.
+  *
+  * That default is not merely tidier, it is the safe one. Measured Aug 26,
+  * 2026: Ke = 0.138 V/rpm at the output shaft, so a brake at speed drives
+  * I = E / R_winding through the low-side FETs:
+  *
+  *     65 rpm -> 4.73 A        40 rpm -> 2.91 A
+  *     50 rpm -> 3.64 A        20 rpm -> 1.45 A
+  *
+  * Braking from full speed draws essentially STALL current — above the DRV8833
+  * carrier's 4 A paralleled peak — and dissipates it in the driver. Coasting
+  * is a zero-current event at any speed; the residual inductive energy is
+  * 1/2·L·I² = 19 uJ at 155 mA.
+  *
+  * **On the interim carrier, brake only below ~40 rpm.** Emergency stop should
+  * be COAST, not brake: the 131.3:1 spur reduction holds the rover on any
+  * slope it can climb, and if the emergency is a wiring fault then 4.7 A is
+  * the worst possible current to have looking for a path.
+  *
+  * Note the two stops use different current LOOPS. Driving current runs out to
+  * the PDB and back, so the branch return wire is inside the loop. Brake
+  * current circulates locally — motor, OUT1, low-side FET, PGND, low-side FET,
+  * OUT2 — and never traverses that wire. Braking is therefore less exposed to
+  * the ground-loop failure mechanism, but it does put high current across the
+  * board's local star point.
+  *
+  * The DRV8874's current regulation caps brake current at the VREF setting, so
+  * the 40 rpm threshold can be lifted once it is fitted.
   *
   *
   * DUTY IS SIGNED PER-MILLE

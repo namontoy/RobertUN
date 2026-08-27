@@ -71,6 +71,44 @@
   * wrapped.
   *
   *
+  * VERIFYING THE WAVEFORM — AND WHY TIME BEATS VOLTAGE
+  * ---------------------------------------------------
+  * For a rectangular wave switching between 0 and V_H at duty D:
+  *
+  *     V_avg = D      * V_H
+  *     V_rms = sqrt(D) * V_H        (mean of v^2 is D*V_H^2, then square root)
+  *
+  * Rearranged, two voltmeter readings give both unknowns:
+  *
+  *     D    = (V_avg / V_rms)^2
+  *     V_H  = V_rms^2 / V_avg       so V_rms is the geometric mean of the two
+  *
+  * The form factor V_rms/V_avg = 1/sqrt(D) is always >= 1 and grows as duty
+  * falls — at 25% duty the RMS is twice the average.
+  *
+  * Both readings inherit the scope's DC gain AND offset error, though, and the
+  * offset dominates at low duty where the true average is under a volt.
+  * Measured on the bench Aug 26, 2026, this method returned a consistent
+  * V_H of 3.08-3.25 V (correct for a 3.3 V pin) but a duty compressed toward
+  * 50% — 33.5% read for 25% commanded, 75.5% for 80%.
+  *
+  * That compression cannot be real: CCR = duty * 4500 / 1000 is exact integer
+  * division at both those points (1125 and 3600 of 4500). Cursor measurements
+  * confirmed it — 12.6 us high of 50.0 us for 25%, 39.8 us of 49.8 us for 80%.
+  *
+  * **So measure the high TIME, not the voltage.** Timebase accuracy beats
+  * vertical accuracy by orders of magnitude and is immune to offset entirely.
+  * The same argument applies to frequency: the scope's counter read 19.92 kHz
+  * at asymmetric duty, while the cursor period of 50.0 us gives 20.000 kHz.
+  *
+  * One consequence worth carrying into W5: V_avg sets the SPEED (back-EMF
+  * balances the average applied voltage) while I_rms sets the HEATING. The
+  * voltage form factor above looks alarming at low duty, but it does not reach
+  * the winding — with L/R = 0.90 ms against a 50 us period the inductance
+  * smooths the current to ~99 mA of ripple, so I_rms is very nearly I_avg.
+  * That is the second, less obvious payoff of choosing 20 kHz.
+  *
+  *
   * nSLEEP NEEDS 1 ms
   * -----------------
   * Both drivers take up to 1 ms to wake. drive_enable() therefore BLOCKS for

@@ -1,8 +1,16 @@
 # Robotics Development Environment — Project Context Document
-**Last updated:** August 26, 2026 (**W4 acceptance criterion MET** — encoder measured at 8394.9 counts/rev over ten hand turns, 0.1% from the predicted 8403.2. Earlier: W4 pin allocation fixed — TIM2 32-bit encoder on PA15/PB3, TIM4 PWM on PB6/PB7. **Drive driver changed to DRV8874**, parts bought, arriving ~Sep 15; encoder corrected to 8403.2 counts/rev; motor measured at 1.90 Ω / 1.70 mH and the motor rail set at 9.5 V)
+**Last updated:** August 26, 2026 (**W4 acceptance criterion MET** — encoder measured at 8394.9 counts/rev over ten hand turns, 0.1% from the predicted 8403.2; PWM scope-verified at 20.000 kHz with both decay modes correct. Earlier: W4 pin allocation fixed — TIM2 32-bit encoder on PA15/PB3, TIM4 PWM on PB6/PB7. **Drive driver changed to DRV8874**, parts bought, arriving ~Sep 15; encoder corrected to 8403.2 counts/rev; motor measured at 1.90 Ω / 1.70 mH and the motor rail set at 9.5 V)
 *Paste this at the start of a new Claude session to restore full context.*
 
 ## Progress log (most recent first)
+- **Aug 26 (later)** — **PWM scope-verified with the motor disconnected**, the
+  gate before any actuator is wired. All four quadrants correct: in fast decay
+  the driven pin carries the PWM and the other sits low; in slow decay the
+  other sits high and the PWM'd pin is inverted. Brake and coast as expected.
+  Period measured with cursors at 50.0 µs = **20.000 kHz**, and duty at 25.2 %
+  and 79.9 % for 25 % and 80 % commanded. Two scope readings that initially
+  looked wrong — 19.92 kHz, and a duty compressed toward 50 % when derived from
+  V_avg/V_rms — were both instrument error, not firmware; see drive.h.
 - **Aug 26** — **W4 ACCEPTANCE CRITERION MET.** Encoder firmware written (TIM2
   delta accumulation, TIM6 1 kHz tick, `enc`/`drv` console commands) and
   verified on the bench: ten hand turns of the output shaft gave 83 949 counts
@@ -3045,16 +3053,20 @@ gearbox is the difference between a note and a broken bench setup.
       and localises a fault to either side of the MCU pin
     - ✅ **ACCEPTANCE MET Aug 26** — 8394.9 counts/rev measured over ten hand
       turns, 0.1% from predicted. Sign convention recorded on the bench
-    - ⬜ PWM helpers and the drive-scheme choice (drive-brake preferred)
-    - ⬜ **`drv` console commands**, mirroring the existing `mks <sub>` pattern
+    - ✅ PWM helpers, both decay modes reachable. Drive-scheme choice still
+      open — drive-brake is the default and is expected to linearise better at
+      low duty, but W5 measures which actually behaves
+    - ✅ **`drv` console commands**, mirroring the existing `mks <sub>` pattern
       in `console.c`'s command table: `drv duty <±pct>`, `drv enable|disable`,
       `drv coast|brake`, `drv status` (duty, nSLEEP level, nFAULT state).
       These exist so the driver can be exercised by hand from the bench
       without a debugger or a reflash, the same way `send` and `mks` do.
-    - ⬜ **Scope the PWM with the MOTOR DISCONNECTED — before any motor is
-      ever wired.** This is the gate between "the code compiles" and "power
-      touches an actuator", and it costs one bench session. Drive the duty
-      from the console commands above and confirm on PB6/PB7:
+    - ✅ **PASSED Aug 26 — PWM scoped with the motor disconnected**, the gate
+      between "the code compiles" and "power touches an actuator". 20.000 kHz
+      by cursor, duty exact to within one cursor step, all four
+      direction/decay quadrants correct, brake and coast confirmed. The
+      original checklist follows, kept because it is the right list to re-run
+      after any timer change:
       - 20.0 kHz on both channels, and the measured frequency actually matches
         (this is the check that catches a wrong APB1 timer-clock assumption —
         a ×2 error here would show as 10 or 40 kHz)

@@ -1,8 +1,18 @@
 # Robotics Development Environment — Project Context Document
-**Last updated:** August 26, 2026 (**W4 acceptance criterion MET** — encoder measured at 8394.9 counts/rev over ten hand turns, 0.1% from the predicted 8403.2; PWM scope-verified at 20.000 kHz with both decay modes correct. Earlier: W4 pin allocation fixed — TIM2 32-bit encoder on PA15/PB3, TIM4 PWM on PB6/PB7. **Drive driver changed to DRV8874**, parts bought, arriving ~Sep 15; encoder corrected to 8403.2 counts/rev; motor measured at 1.90 Ω / 1.70 mH and the motor rail set at 9.5 V)
+**Last updated:** August 26, 2026 (**W4 COMPLETE bar the harness work** — motor runs under console control, plant characterised at rpm = 0.672·duty − 1.8, slow decay confirmed. **W4 acceptance criterion MET** — encoder measured at 8394.9 counts/rev over ten hand turns, 0.1% from the predicted 8403.2; PWM scope-verified at 20.000 kHz with both decay modes correct. Earlier: W4 pin allocation fixed — TIM2 32-bit encoder on PA15/PB3, TIM4 PWM on PB6/PB7. **Drive driver changed to DRV8874**, parts bought, arriving ~Sep 15; encoder corrected to 8403.2 counts/rev; motor measured at 1.90 Ω / 1.70 mH and the motor rail set at 9.5 V)
 *Paste this at the start of a new Claude session to restore full context.*
 
 ## Progress log (most recent first)
+- **Aug 26 (evening)** — **First powered motion**, free shaft, console-driven.
+  Plant is strikingly linear: **rpm = 0.672 × duty% − 1.8**, per-step
+  increments varying only ±1.5% across 20–100%, so W5 needs no gain
+  scheduling. **Sign convention settled: positive duty → CW → positive
+  counts**, no lead swap needed. **Drive scheme closed — slow decay
+  (drive-brake) wins decisively**: its deadband is ~2.6% duty against fast
+  decay's >20%, which would not even break static friction at 20%. Two smaller
+  findings: a consistent ~3.5% CCW-faster direction asymmetry (brush timing,
+  normal, absorbed by integral action), and every velocity reading landing on
+  an exact multiple of the designed 0.357 rpm quantum.
 - **Aug 26 (later)** — **PWM scope-verified with the motor disconnected**, the
   gate before any actuator is wired. All four quadrants correct: in fast decay
   the driven pin carries the PWM and the other sits low; in slow decay the
@@ -2730,6 +2740,38 @@ current regulation to hold back a 7.1 A stall.
 zero at t = 0 — so a step from 0 to full duty is a 5 A event in normal
 operation, not only during a fault.
 
+### Plant model — measured Aug 26, 2026 (free shaft, no load, slow decay)
+
+Console-driven, motor unloaded, 9.5 V rail nominal. Averaged over both
+directions:
+
+| duty | CW rpm | CCW rpm |
+|---|---|---|
+| 20 | 11.78 | −11.78 |
+| 40 | 24.63 | −25.35 |
+| 60 | 37.84 | −39.27 |
+| 80 | 51.05 | −52.84 |
+| 100 | 64.26 | −66.76 |
+
+**Least-squares fit: `rpm = 0.672 × duty% − 1.8`, deadband ≈ 2.6% duty.**
+
+Per-step increments are 13.21 / 13.57 / 13.39 / 13.56 rpm per 20% — varying by
+only ±1.5% over the whole range. **The plant is linear enough that W5 needs no
+gain scheduling**, which is the single most useful thing this test established.
+
+**Sign convention: positive duty → CW → positive encoder counts.** Confirmed at
+every point. W5's PID sign follows from this; if it were ever inverted the fix
+is to swap the MOTOR leads, not the encoder.
+
+**Direction asymmetry ≈ 3.5%**, CCW consistently faster above 20% duty. Normal
+for a brushed motor — usually brush timing — and absorbed by integral action.
+Recorded so it is not chased as a fault later.
+
+**Velocity quantisation confirmed.** Every reading is an exact multiple of the
+designed quantum: 1000 Hz / 20 ticks = 50 windows/s, and 50 × 60 / 8403.2 =
+0.3570 rpm per count. 11.78 = 33 counts, 65.51 = 183. The encoder velocity path
+behaves exactly as `encoder.h` predicts.
+
 ### The inductance validates the 20 kHz PWM choice
 
 With L = 1.70 mH and R = 1.90 Ω:
@@ -3053,9 +3095,11 @@ gearbox is the difference between a note and a broken bench setup.
       and localises a fault to either side of the MCU pin
     - ✅ **ACCEPTANCE MET Aug 26** — 8394.9 counts/rev measured over ten hand
       turns, 0.1% from predicted. Sign convention recorded on the bench
-    - ✅ PWM helpers, both decay modes reachable. Drive-scheme choice still
-      open — drive-brake is the default and is expected to linearise better at
-      low duty, but W5 measures which actually behaves
+    - ✅ PWM helpers, both decay modes reachable. **Drive-scheme choice CLOSED
+      Aug 26: slow decay (drive-brake).** Measured deadband ~2.6% duty against
+      fast decay's >20% — fast decay would not move the free shaft at all at
+      20% duty, because the current collapses to zero each off phase and
+      average torque never breaks static friction
     - ✅ **`drv` console commands**, mirroring the existing `mks <sub>` pattern
       in `console.c`'s command table: `drv duty <±pct>`, `drv enable|disable`,
       `drv coast|brake`, `drv status` (duty, nSLEEP level, nFAULT state).
@@ -3087,6 +3131,12 @@ gearbox is the difference between a note and a broken bench setup.
       latching connector (JST-SM) instead of a permanent splice, so a motor
       can be swapped without rework
     - ⬜ `DIP_SW_1`/`DIP_SW_2` on PB14/PB15, then the latch-once ID read
+    - ✅ **First powered motion Aug 26** — free shaft, both directions, full
+      duty range, coast and brake all correct. See the plant model below.
+    - ⬜ Confirm the actual motor-terminal voltage at 100% duty. Extrapolated
+      no-load speed is 65.5 rpm where 9.5 V predicts 60.2 — either the vendor's
+      76 rpm @ 12 V is conservative, or the rail is nearer 10.3 V, which would
+      sit uncomfortably close to the DRV8833's 10.8 V ceiling
     - ⬜ Measure real drive current — the input HW4's PDB branch sizing has
       been waiting on. **Two ways in, and neither waits for the DRV8874:**
       (a) measure the motor's winding resistance with a multimeter, rotating

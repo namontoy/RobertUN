@@ -28,6 +28,7 @@
 #include "mks_servo.h"
 #include "encoder.h"
 #include "drive.h"
+#include "isense.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -127,6 +128,7 @@ int main(void)
      that Pulse = 0 in generated code. */
   drive_init();
   encoder_init();
+  isense_init();
 
   debug_uart_status_t uart_status = debug_uart_init();
 
@@ -152,6 +154,13 @@ int main(void)
                     drive_faulted() ? "ASSERTED" : "clear");
   debug_uart_printf("encoder: TIM2 32-bit, %.1f counts/output-rev, tick 1 kHz\r\n",
                     (double)ENCODER_COUNTS_PER_OUTPUT_REV);
+  /* Full scale and the current-regulation trip are the same number on this
+     carrier — VREF is tied to nSLEEP through 10k. Reported so a saturated
+     reading is recognised as the limit rather than as a broken sensor. */
+  debug_uart_printf("isense: ADC1_IN2 on PA2, %u mA full scale = trip"
+                    " (R_IPROPI %u ohm)\r\n",
+                    (unsigned)ISENSE_FULL_SCALE_MA,
+                    (unsigned)ISENSE_R_IPROPI_OHM);
 
   console_init();
   /* USER CODE END 2 */

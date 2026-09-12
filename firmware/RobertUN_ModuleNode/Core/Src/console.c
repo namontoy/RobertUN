@@ -27,6 +27,7 @@
 #include "mks_servo.h"
 #include "encoder.h"
 #include "drive.h"
+#include "isense.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -733,7 +734,7 @@ static void cmd_drv(int argc, char **argv)
                       drive_faulted() ? "ASSERTED" : "clear");
     debug_uart_puts(
       "  sub: enable | disable | duty <+/-pct> | brake | coast\r\n"
-      "       decay slow|fast | limit <pct>\r\n");
+      "       decay slow|fast | limit <pct> | current [n] | zero\r\n");
     return;
   }
 
@@ -787,6 +788,52 @@ static void cmd_drv(int argc, char **argv)
                       (drive_decay() == DRIVE_DECAY_SLOW)
                         ? "slow — IN1 high, IN2 PWM inverted (drive/brake)"
                         : "fast — IN1 PWM, IN2 low (drive/coast)");
+  }
+  else if (strcmp(argv[1], "current") == 0)
+  {
+    uint16_t n   = (argc >= 3) ? (uint16_t)strtoul(argv[2], NULL, 10) : 0u;
+    uint16_t raw = isense_read_avg(n);
+
+    /* Duty is printed with the current on purpose. Until the IMODE strap is
+       decoded it is unknown whether IPROPI reports during the recirculation
+       phase, so the reading is either motor current or supply current — and
+       those differ by exactly this duty. Recording both means the logs stay
+       usable whichever way the datasheet reads. See isense.h. */
+    debug_uart_printf("I %lu mA  (raw %u, offset %u)  at duty %+d%%  decay %s\r\n",
+                      (unsigned long)isense_raw_to_ma(raw),
+                      (unsigned)raw,
+                      (unsigned)isense_offset(),
+                      drive_duty() / 10,
+                      (drive_decay() == DRIVE_DECAY_SLOW) ? "slow" : "fast");
+
+    if (isense_saturated())
+    {
+      debug_uart_printf(
+        "  SATURATED — the bridge is current-regulating at ~%u mA, not a bad\r\n"
+        "  reading. VREF is tied to nSLEEP, so the trip point and full scale\r\n"
+        "  are the same number. A plateau BELOW 4095 means VREF is divided\r\n"
+        "  internally; where it sits is the divider. See isense.h\r\n",
+        (unsigned)ISENSE_FULL_SCALE_MA);
+    }
+
+    if (!drive_is_enabled())
+    {
+      debug_uart_puts("  (driver disabled — VREF is low too, so this is an offset"
+                      " reading, not a current)\r\n");
+    }
+  }
+  else if (strcmp(argv[1], "zero") == 0)
+  {
+    if (drive_is_enabled())
+    {
+      debug_uart_puts("refusing — 'drv disable' first. Zeroing while the bridge"
+                      " is live folds real current into the offset\r\n");
+      return;
+    }
+
+    debug_uart_printf("offset %u counts (%lu mA equivalent), 256 samples\r\n",
+                      (unsigned)isense_zero(),
+                      (unsigned long)isense_raw_to_ma(isense_offset()));
   }
   else if (strcmp(argv[1], "limit") == 0)
   {

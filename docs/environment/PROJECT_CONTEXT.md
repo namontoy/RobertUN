@@ -1,8 +1,25 @@
 # Robotics Development Environment — Project Context Document
-**Last updated:** September 11, 2026 (**W4 harness work CLOSED** — all seven motors encoder-checked and their cable extensions re-crimped to NASA-STD-8739.4A, so the broken-VCC failure is behind us. **DRV8874 arrived** ahead of the ~Sep 15 estimate. **A loaded wheel test rig has been built** — a static treadmill-style base that lets a wheel turn under real weight, so W5's PID is tuned against the load it will actually carry rather than a free shaft. Node PCB (HW1/HW2) delegated to a student, in progress since ~Aug 28. Earlier: W4 acceptance MET — 8394.9 counts/rev, plant linear at rpm = 0.672·duty − 1.8, slow decay chosen, stop policy coast)
+**Last updated:** September 12, 2026 (DRV8874 carrier straps measured — R_IPROPI 2.48 kΩ, IMODE 20 kΩ to GND, VREF tied to nSLEEP via 10 kΩ; isense module written, 2.957 A full scale = trip)
 *Paste this at the start of a new Claude session to restore full context.*
 
 ## Progress log (most recent first)
+- **Sep 12** — **The DRV8874 carrier's three straps were measured, and they settle
+  more than the scaling.** R_IPROPI is **2.48 kΩ** (the selection doc's 2.2 kΩ was
+  an assumption), IMODE has **20 kΩ to GND**, and **nSLEEP feeds VREF through
+  10 kΩ** — so VREF sits at ~3.3 V whenever the driver is awake. Consequences:
+  current sensing works out of the box at **1.116 V/A, 2.957 A full scale**;
+  the chip now enforces a **hardware current limit at that same 2.957 A**, which
+  the DRV8833 never had, so a stalled motor regulates instead of pulling its 5 A
+  stall; full scale and the trip point are one knob, not two; and the planned
+  **PA4/DAC1 software-settable VREF is foreclosed** on this carrier, one lifted
+  resistor away from being possible again. Firmware: new **`isense` module**
+  (`isense.h`/`isense.c`) on **PA2 / ADC1_IN2**, with `drv current [n]` and
+  `drv zero` console commands; `drv current` prints duty and decay mode on every
+  line so logs stay valid whichever way the IPROPI recirculation question
+  resolves. **The firmware does not build until CubeMX is regenerated** — the
+  `.ioc` has ADC1, the generated HAL does not. Still open: decode the 20 kΩ
+  IMODE strap; confirm the PMODE strap selects PWM mode; confirm the nFAULT
+  pull-up is fitted.
 - **Sep 11** — The three-week gap in this log was bench and delegation work, not a
   stall. Four things changed, and two of them close open W4 items outright:
   **(1) All seven motors** (six wheels plus the spare) have had their encoders
@@ -2988,10 +3005,10 @@ leftover jumper that parallels inputs is now wrong.
 | PB7 | DRV_PWM_B | **2 — PH/IN2** | MCU → driver | TIM4_CH2, 20 kHz |
 | PB5 | DRV_nSLEEP | **3 — nSLEEP** | MCU → driver | low = disabled; 100 kΩ internal pulldown |
 | PB12 | DRV_nFAULT | **4 — nFAULT** | driver → MCU | open-drain, active low, **needs a 10 kΩ pull-up to 3V3** |
-| **PA2** | **DRV_IPROPI** | **6 — IPROPI** | driver → MCU | **new.** ADC1_IN2; the pin's voltage is set by R_IPROPI to GND |
-| — | VREF | 5 — VREF | strap | fixed divider to start; PA4/`DAC1_OUT` is the upgrade |
+| **PA2** | **DRV_IPROPI** | **6 — IPROPI** | driver → MCU | **new.** ADC1_IN2; **R_IPROPI measured 2.48 kΩ** → 1.116 V/A |
+| — | VREF | 5 — VREF | strap | **carrier ties it to nSLEEP through 10 kΩ** → 3.3 V when awake |
 | — | PMODE | 16 — PMODE | strap | **must select PWM (IN1/IN2) mode — verify first** |
-| — | IMODE | 7 — IMODE | strap | sets current-regulation behaviour |
+| — | IMODE | 7 — IMODE | strap | **carrier fits 20 kΩ to GND** — decode against the datasheet table |
 | GND | common | 9 PGND / 15 GND | — | one ground reference, star point at the supply |
 
 **Power and motor:** VM (11) to the motor rail, OUT1 (8) and OUT2 (10) to the
@@ -3006,9 +3023,9 @@ open items from the selection doc:
    decides whether the W4 firmware drops in unchanged. In PWM mode IN1/IN2
    carry the same truth table as the DRV8833; in PH/EN mode they do not, and
    `drive.c`'s two-channel scheme would be driving the wrong thing.
-2. **Whether the carrier already populates R_IPROPI, and at what value.** The
-   2.2 kΩ / 0.99 V/A figure only holds if the value is ours to choose. If the
-   carrier fits something else, the firmware constant changes, not the wiring.
+2. ~~Whether the carrier already populates R_IPROPI, and at what value.~~
+   **ANSWERED Sep 12, 2026: 2.48 kΩ, fitted.** The selection doc's 2.2 kΩ was
+   an assumption and is superseded — see the scaling block below.
 3. **Whether the carrier populates the nFAULT pull-up.** The DRV8833 carrier
    did not and one had to be added. Do not assume this one does — a nFAULT pin
    that has only ever read high proves nothing. Short it to GND once and
@@ -3021,11 +3038,65 @@ for. What does change is policy, not plumbing: the DRV8833's `drive_set_limit()`
 bench cap existed because a 4 A carrier faced a 5.0 A stall. A 6 A part at the
 9.5 V rail does not need it.
 
+### DRV8874 carrier — the three straps, measured Sep 12, 2026
+
+Measured on the physical carrier, and each one changes something:
+
+| Strap | Measured | Consequence |
+|---|---|---|
+| nSLEEP → VREF | **10 kΩ** | VREF ≈ 3.3 V whenever the driver is awake |
+| IMODE → GND | **20 kΩ** | selects an IPROPI/regulation mode — **not yet decoded** |
+| R_IPROPI → GND | **2.48 kΩ** | 1.116 V/A, full scale 2.957 A |
+
+**The scaling, settled:**
+
+```
+scale      = A_IPROPI × R_IPROPI = 450 µA/A × 2480 Ω = 1.1160 V/A
+full scale = 3.300 V / 1.1160 V/A                    = 2.957 A
+LSB        = 3.300 V / 4096 / 1.1160 V/A             = 0.7219 mA
+                                                       (1385.2 counts/A)
+
+integer form, no float:   I_mA = raw × 2957 / 4096
+```
+
+**VREF tied to nSLEEP has three consequences, and only the first is obvious.**
+
+1. **There is now a hardware current limit where the DRV8833 had none.** VREF
+   programs the DRV8874's own current regulation; the chip chops the bridge on
+   its own once the trip is reached, with no firmware in the loop. On this
+   carrier that trip lands at **2.957 A** — comfortably above the ~1 A the free
+   shaft draws, and *below* the 5.0 A stall. A stalled motor will therefore
+   regulate rather than pull 5 A. That is a feature for the loaded-wheel rig,
+   but it means a stall test no longer measures stall current; it measures the
+   trip point.
+2. **Full scale and the trip point are the same number, and cannot be traded
+   independently.** Both are `VREF / (A_IPROPI × R_IPROPI)`. Changing R_IPROPI
+   to get more ADC resolution moves the current limit by the same factor. There
+   is exactly one knob here, not two.
+3. **The PA4/DAC1 VREF upgrade is foreclosed on this carrier.** The plan was to
+   drive VREF from the MCU's DAC for a software-settable current limit. The
+   10 kΩ from nSLEEP holds VREF at 3.3 V, so a DAC output would fight it. This
+   is one lifted resistor away from being possible again — worth knowing before
+   anyone spends time on the firmware side of it.
+
+**Still open: is VREF compared directly, or through an internal divider?** The
+datasheet families differ on this. There is a self-test that answers it without
+reading anything: **stall the motor and watch where `raw` PLATEAUS.**
+
+```
+raw plateaus near 4095  →  k = 1,  trip = 2.96 A   (VREF used directly)
+raw plateaus near 2048  →  k = 2,  trip = 1.48 A
+raw plateaus near 1365  →  k = 3,  trip = 0.99 A
+```
+
+A plateau is the signature: the current stops rising even though duty is still
+climbing. `drv current` prints raw alongside mA precisely so this is readable.
+
 ### IPROPI — the sampling question that decides whether the reading means anything
 
 `I_IPROPI = I_OUT × 450 µA/A`, and R_IPROPI converts that to a voltage the ADC
-reads. At 2.2 kΩ: **0.99 V/A**, so 2.97 V at 3 A — near-perfect full scale
-against 3.3 V with no op-amp.
+reads. At the carrier's measured 2.48 kΩ: **1.116 V/A**, so 3.3 V at 2.957 A —
+full scale against 3.3 V with no op-amp.
 
 **But which current does it report, and when?** IPROPI mirrors the current in
 the driver's FETs, and in **slow decay (drive-brake), which is the chosen
@@ -3050,8 +3121,8 @@ which one is on the ADC is not a detail.
 **The ADC is configured so either answer works without reconfiguring.**
 Sampling time is **28 cycles**, not the maximum 480: at PCLK2/4 = 22.5 MHz a
 full conversion is 28+12 = 40 cycles = **1.78 µs**, which fits comfortably
-inside the on-phase even at 25 % duty (12.5 µs). 28 cycles is still ~2.4× what
-a 2.2 kΩ source needs to settle to 12-bit accuracy, so nothing is given up.
+inside the on-phase even at 25 % duty (12.5 µs). 28 cycles is still ~2× what
+a 2.48 kΩ source needs to settle to 12-bit accuracy, so nothing is given up.
 Had the sample been set to 480 cycles (21.9 µs) it would have straddled nearly
 half the PWM period and PWM-synchronised sampling would have been impossible
 without going back to CubeMX.
@@ -3064,7 +3135,19 @@ at a chosen point in the on-phase and removes the question entirely.
 
 Until then the honest bench method is to **average many software-triggered
 conversions** and record the duty alongside every reading, so the D factor can
-be divided out afterwards whichever way the datasheet turns out to read.
+be divided out afterwards whichever way the datasheet turns out to read. This
+is why `drv current` prints duty and decay mode on every line — the logs stay
+usable no matter how the question resolves.
+
+**Two bench tests answer it faster than the datasheet does.** Either is enough:
+
+- **Scope IPROPI directly** while the motor runs at ~50 % duty. A 20 kHz square
+  wave means the mirror is active only during the drive phase → the average is
+  supply current. A near-DC level means it reports continuously → the average
+  is motor current.
+- **DC ammeter in the VM lead** at ~50 % duty, compared against `drv current`.
+  The two hypotheses differ by 2× at that duty, which no measurement error is
+  going to blur.
 
 ### ⚠️ HW1: fit the CARRIER, not the bare IC, on the milled board
 

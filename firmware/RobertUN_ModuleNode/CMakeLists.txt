@@ -57,6 +57,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/uart_events.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/encoder.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/drive.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/isense.c
 )
 
 # Add include paths

@@ -1,8 +1,23 @@
 # Robotics Development Environment — Project Context Document
-**Last updated:** August 26, 2026 (**W4 COMPLETE bar the harness work** — motor runs under console control, plant characterised at rpm = 0.672·duty − 1.8, slow decay confirmed. **W4 acceptance criterion MET** — encoder measured at 8394.9 counts/rev over ten hand turns, 0.1% from the predicted 8403.2; PWM scope-verified at 20.000 kHz with both decay modes correct. Earlier: W4 pin allocation fixed — TIM2 32-bit encoder on PA15/PB3, TIM4 PWM on PB6/PB7. **Drive driver changed to DRV8874**, parts bought, arriving ~Sep 15; encoder corrected to 8403.2 counts/rev; motor measured at 1.90 Ω / 1.70 mH and the motor rail set at 9.5 V)
+**Last updated:** September 11, 2026 (**W4 harness work CLOSED** — all seven motors encoder-checked and their cable extensions re-crimped to NASA-STD-8739.4A, so the broken-VCC failure is behind us. **DRV8874 arrived** ahead of the ~Sep 15 estimate. **A loaded wheel test rig has been built** — a static treadmill-style base that lets a wheel turn under real weight, so W5's PID is tuned against the load it will actually carry rather than a free shaft. Node PCB (HW1/HW2) delegated to a student, in progress since ~Aug 28. Earlier: W4 acceptance MET — 8394.9 counts/rev, plant linear at rpm = 0.672·duty − 1.8, slow decay chosen, stop policy coast)
 *Paste this at the start of a new Claude session to restore full context.*
 
 ## Progress log (most recent first)
+- **Sep 11** — The three-week gap in this log was bench and delegation work, not a
+  stall. Four things changed, and two of them close open W4 items outright:
+  **(1) All seven motors** (six wheels plus the spare) have had their encoders
+  checked and their cable extensions **re-terminated with crimped joints to
+  NASA-STD-8739.4A**. The broken-VCC conductor that killed two encoders on
+  Aug 25 is now ruled out fleet-wide rather than assumed. **(2) The DRV8874
+  arrived early** — before the ~Sep 15 estimate — so the interim DRV8833 and
+  its ~1.7 A ceiling stop constraining the bench. **(3) A loaded wheel test rig
+  was designed and built**: a static base that works like a treadmill belt under
+  a single wheel, so the wheel can be driven **while carrying real weight**.
+  This is a material upgrade to W5 — every plant figure on record was taken on
+  a free shaft, and PID tuned against a free shaft does not transfer to a loaded
+  one. **(4) Node PCB design (HW1/HW2) has been delegated to a student**,
+  working since roughly Aug 28. Expected to be slow, but it runs in parallel
+  and off the critical path. **Still not done: the ANT CNC parameters.**
 - **Aug 26 (late)** — Motor terminal voltage measured: **9.45 V supply → 9.35 V
   at the motor**, so the rail was never near the DRV8833's 10.8 V ceiling and
   the motor is simply ~11% faster than its datasheet. Gives **Ke ≈ 0.138 V/rpm**.
@@ -2748,6 +2763,33 @@ current regulation to hold back a 7.1 A stall.
 zero at t = 0 — so a step from 0 to full duty is a 5 A event in normal
 operation, not only during a fault.
 
+### Loaded wheel test rig — built Sep 11, 2026
+
+A static base was designed and built that holds one wheel against a
+**treadmill-style belt**, so the wheel can be driven at speed **while carrying
+real weight**. Nothing else on the bench can do this: every motor and plant
+figure on record — the 0.672 rpm/duty slope, the 2.6% deadband, the 154 mA
+no-load draw — was taken on a **free shaft**, which is the easiest load the
+motor will ever see.
+
+**Why this matters more than it sounds.** A velocity PID tuned on a free shaft
+does not transfer to a loaded wheel. Load changes the three things the loop is
+built around at once: the deadband widens (more torque is needed to break
+static friction), the duty-to-rpm slope drops, and the mechanical time constant
+lengthens, so gains that are crisp unloaded turn sluggish or oscillatory under
+weight. The rig means W5 can tune against the load the rover will actually
+carry, and can test the one case bench tuning normally misses — a **load step**,
+which is what a wheel hitting a rock or dropping off a ledge looks like to the
+controller.
+
+**Re-measure on the rig, at the weight the rover will actually run:** the
+duty-to-rpm line and its deadband, the current draw at each operating point
+(this is the honest input to HW4's PDB branch sizing, better than either the
+resistance calculation or the stall test), and the response to a step change in
+both command and load. Keep the free-shaft numbers below for comparison rather
+than overwriting them — the difference between the two is itself the useful
+figure, and it is what tells you how much margin the gain set has.
+
 ### Plant model — measured Aug 26, 2026 (free shaft, no load, slow decay)
 
 Console-driven, motor unloaded, 9.5 V rail nominal. Averaged over both
@@ -3195,12 +3237,10 @@ gearbox is the difference between a note and a broken bench setup.
       - `drv disable` returns both pins to 0 V and drops nSLEEP
       - nSLEEP rises only on a non-zero command and falls again at zero
       Only after all of that passes does a motor get connected.
-    - ⬜ **Check the encoder VCC conductor on the remaining five motors**
-      before assuming they work — two of two were broken (see KEY LEARNINGS).
-      `enc probe` finds it in 2 seconds per motor.
-    - ⬜ Re-terminate the extended motor leads with crimped joints; consider a
-      latching connector (JST-SM) instead of a permanent splice, so a motor
-      can be swapped without rework
+    - ✅ **DONE Sep 11 — all seven motors checked and re-harnessed.** Every
+      motor (six wheels plus the spare) had its encoder verified and its cable
+      extension **re-terminated with crimped joints per NASA-STD-8739.4A**.
+      The Aug 25 broken-VCC failure is closed fleet-wide, not sampled.
     - ⬜ `DIP_SW_1`/`DIP_SW_2` on PB14/PB15, then the latch-once ID read
     - ✅ **First powered motion Aug 26** — free shaft, both directions, full
       duty range, coast and brake all correct. See the plant model below.
@@ -3214,11 +3254,19 @@ gearbox is the difference between a note and a broken bench setup.
       the shaft between readings to average brush position — if it lands near
       2.18 Ω the whole current analysis is validated; (b) stall the motor from
       a current-limited bench supply with no driver in the loop and read the
-      current directly (spec says 2.8 A at 6 V). Do both before Sep 15.
-    - ⬜ On DRV8874 arrival (~Sep 15): IPROPI on PA2 (`ADC1_IN2`), optional
-      VREF on PA4 (`DAC1_OUT`), confirm the PMODE strap selects PWM mode
+      current directly (spec says 2.8 A at 6 V). **Now a third and better
+      path exists: measure it on the loaded wheel rig at real weight**, which
+      gives the actual duty cycle of operation rather than a bounding figure.
+      The DRV8874's IPROPI output makes this a firmware reading, not a
+      multimeter session.
+    - ⬜ **DRV8874 ARRIVED Sep 11** (ahead of the ~Sep 15 estimate), not yet
+      wired. On fitting: IPROPI on PA2 (`ADC1_IN2`), optional VREF on PA4
+      (`DAC1_OUT`), confirm the PMODE strap selects PWM mode. Check whether
+      the carrier already populates an IPROPI resistor and at what value.
+      `drive.c` needs no change for the swap — the two parts share the
+      IN1/IN2 truth table, nSLEEP polarity and nFAULT behaviour by design
 
-**Nothing in W4 or W5 is blocked by the DRV8874's ~Sep 15 arrival.** W4's
+**Superseded Sep 11 — the DRV8874 arrived, so none of this is live any more.** It is kept because the reasoning held: nothing in W4 or W5 was blocked by the wait. W4's
 acceptance needs no motor power at all, and W5's PID tuning runs at bench loads
 far below the DRV8833's ~1.7 A. The only real collision is HW3 (Sep 7–13),
 which mills and populates one reference board — populate everything except the
@@ -3284,7 +3332,12 @@ rework session, not a week.
     Dell laptop works correctly without any special configuration
 
 16. **Power distribution & grounding — architecture decided Aug 14, 2026,
-    hardware not yet built:**
+    hardware not yet built. Node PCB design (HW1/HW2) delegated to a student
+    since ~Aug 28, 2026** — expected to move slowly, but it runs in parallel
+    and off the firmware critical path. The constraints below are what the
+    design has to satisfy; review against them rather than assuming they were
+    inherited. The **ANT CNC milling parameters are still not captured**, and
+    HW2's layout cannot be finished without the trace/space minimum:
     - Design PDB: 6 individually fused branch outputs, single star point,
       13–13.5V nominal output to pre-compensate branch-wire voltage drop
     - Size PDB branch wire gauge precisely once real drive current is measured

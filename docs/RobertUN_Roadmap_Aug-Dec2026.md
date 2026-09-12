@@ -19,36 +19,57 @@ Orion (Jetson, ROS 2) --raw CAN bus (SocketCAN)--
 
 ---
 
-## STATUS — last updated Aug 16, 2026
+## STATUS — last updated Sep 11, 2026
 
-**Phase 1: W1 ✅ complete (Aug 6). W2 ✅ complete (Aug 10, six days early).
-W3 ✅ complete (Aug 13) — closed before its nominal Aug 17 start date even
-opened. W4 is the next week to open.**
+**Phase 1: W1 ✅ (Aug 6). W2 ✅ (Aug 10). W3 ✅ (Aug 13). W4 ✅ (Aug 26 for the
+acceptance criterion, harness work closed Sep 11). W5 is the open week and has
+not started — it is now the only thing standing between here and W6.**
 
 | Week | Status |
 |---|---|
 | W1 — CAN bus bring-up | ✅ **DONE** Aug 6 — every acceptance criterion met |
 | W2 — STM32 CAN bring-up | ✅ **DONE** Aug 10 — STM32 heartbeat crossing a real 250 kbps bus to Orion, confirmed independently on the CANable, zero error counters on both ends |
-| W3 — MKS SERVO42C UART | ✅ **DONE** Aug 13 — STM32 commands the steering motor to a target angle, confirmed against the driver's own encoder; hardware wired and running |
-| W4–W9 | ⬜ not started |
-| HW1–HW4 — node PCB + PDB | ⬜ not started — new parallel track, see *Hardware track* below. **Unblocked Aug 16:** drive motor and driver are settled and in hand. One constraint to solve in HW1 — the DRV8833's 10.8 V ceiling vs the 13–13.5 V branch rail |
+| W3 — MKS SERVO42C UART | ✅ **DONE** Aug 13 — STM32 commands the steering motor to a target angle, confirmed against the driver's own encoder |
+| W4 — encoder + drive | ✅ **DONE** — acceptance met Aug 26 (8394.9 counts/rev over ten hand turns, 0.1% from predicted). Plant characterised on a free shaft at rpm = 0.672·duty − 1.8, slow decay chosen, stop policy coast. Harness work closed Sep 11: all seven motors encoder-checked and re-crimped to NASA-STD-8739.4A |
+| W5 — encoder PID tuning | ⬜ **OPEN, not started.** Nominal window Aug 31–Sep 6 has passed. See the note below on why this is less alarming than the dates suggest |
+| W6–W9 | ⬜ not started |
+| HW1–HW2 — node PCB | 🟡 **delegated to a student since ~Aug 28**, in progress, expected slow. Off the firmware critical path |
+| HW3–HW4 — mill + batch | ⬜ not started. **Blocked on the ANT CNC parameters**, which are still not written down |
 
-**Days banked: 10.** W3 closed Aug 13 against its nominal Aug 23 finish.
+### Schedule position — honest reading
 
-The earlier W1 and W2 banks are **superseded, not added to this figure.** W1's
-three days went into working W2 early (Aug 7-9) and W2's six-day bank is where
-the early W3 work (Aug 13) came from, so adding all three banks would count the
-same calendar twice. The honest measure is a single number: the gap between the
-last completed week's actual finish and its nominal one.
+**The ten banked days are spent.** W4 closed its acceptance criterion four days
+early, but W5's nominal deadline (Sep 6) passed with the week not opened, so the
+bank is gone and W5 is roughly a week late to start. W6's window (Sep 7–13) is
+open now and its predecessor is not done.
 
-Per the standing rule these ten days widen the margin in front of the Oct 4 gate
-— they do not move it earlier. W4 opens on its own terms (nominally Aug 24)
-rather than being pulled forward by default.
+**Four things work in the other direction, and they are not small:**
 
-The intent is to keep buying slack early, since the weeks most likely to
-overrun (W5 encoder PID tuning, W3 MKS protocol port) are the ones where
-surprises are hardest to predict. Bank time *now*, spend it *later* —
-do not let an early finish become an early stop.
+1. **The plant is strikingly linear** — rpm = 0.672·duty − 1.8, per-step
+   increments varying only ±1.5% across 20–100% duty. W5 was flagged as the
+   riskiest week in the whole plan precisely because it was unknown territory;
+   a linear plant needing no gain scheduling is the best case it had.
+2. **The DRV8874 arrived early** (Sep 11, ahead of ~Sep 15), so the HW3
+   collision the Aug 16 revision warned about never happened, and the bench is
+   no longer capped at the DRV8833's ~1.7 A.
+3. **A loaded wheel test rig now exists** — a static treadmill-style base that
+   drives one wheel under real weight. This is a *quality* change, not just a
+   schedule one: W5 can now tune against the load the rover actually carries
+   and test load steps, instead of tuning on a free shaft and discovering the
+   difference during W8 integration. Free-shaft tuning that has to be redone
+   under load costs more than a week.
+4. **The motor fleet is de-risked.** All seven encoders verified and re-crimped
+   to spec, so W7's six-node wiring week does not inherit an unknown harness.
+
+**What this means for the Oct 4 gate.** W6–W9 is four weeks against roughly
+3.3 weeks of calendar. W9 is the designated buffer, so the gate survives if W5
+lands short of its full week — which the linear plant makes plausible but not
+guaranteed. **This is the point to watch, and the honest call is that the
+margin is now thin rather than comfortable.** The two levers, in order: run W5
+tight against the rig rather than exploring, and keep the PCB track delegated
+so it cannot consume firmware time.
+
+**Immediate priority: open W5.** Everything it needs is on the bench today.
 
 ---
 

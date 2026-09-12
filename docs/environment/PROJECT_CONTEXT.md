@@ -1789,28 +1789,30 @@ Each step verified before proceeding to the next (W1 method).
 belongs to firmware or wiring. Same position W1 left `can0` in, and it is what
 makes W3–W5 debugging tractable.
 
-## STM32F446RE — PIN ALLOCATION (settled Aug 25, 2026)
+## STM32F446RE — PIN ALLOCATION (settled Aug 25, revised Sep 11, 2026)
 
-Complete map for the module node. Everything below is in the `.ioc` and builds
-clean; the DRV8833 and encoder lines are wired and verified at rest, not yet
-exercised under power.
+Complete map for the module node. Everything below is in the `.ioc`. The
+encoder and the four DRV lines are wired and exercised under power; **PA2
+(IPROPI) was added Sep 11** for the DRV8874 and is configured but not yet
+wired.
 
 | Pin | Signal | Peripheral | AF | Task |
 |---|---|---|---|---|
 | PA0 | UART4_TX | UART4 @ 38400 8N1 | AF8 | MKS SERVO42C steering link |
 | PA1 | UART4_RX | UART4 | AF8 | SERVO42C replies |
+| PA2 | DRV_IPROPI | **ADC1_IN2**, 12-bit | — | drive current feedback, 28-cycle sample |
 | PA8 | MCO1 | RCC, HSE ÷1 | AF0 | 8 MHz clock-out, scope check |
 | PA9 | USART1_TX | USART1 @ 115200 | AF7 | `debug_uart` console |
 | PA10 | USART1_RX | USART1 | AF7 | console command interpreter |
 | PA15 | ENC_A | **TIM2_CH1**, encoder | AF1 | drive-motor quadrature A |
 | PB2 | LED_BLINKY | GPIO out | — | heartbeat LED (also BOOT1) |
 | PB3 | ENC_B | **TIM2_CH2**, encoder | AF1 | drive-motor quadrature B |
-| PB5 | DRV_nSLEEP | GPIO out | — | DRV8833 EEP; **low = disabled** |
-| PB6 | DRV_PWM_A | TIM4_CH1, PWM 20 kHz | AF2 | DRV8833 IN1+IN3 (paralleled) |
-| PB7 | DRV_PWM_B | TIM4_CH2, PWM 20 kHz | AF2 | DRV8833 IN2+IN4 (paralleled) |
+| PB5 | DRV_nSLEEP | GPIO out | — | DRV8874 nSLEEP; **low = disabled** |
+| PB6 | DRV_PWM_A | TIM4_CH1, PWM 20 kHz | AF2 | DRV8874 **EN/IN1** (single bridge) |
+| PB7 | DRV_PWM_B | TIM4_CH2, PWM 20 kHz | AF2 | DRV8874 **PH/IN2** (single bridge) |
 | PB8 | CAN1_RX | bxCAN1 @ 250 kbps | AF9 | rover CAN bus |
 | PB9 | CAN1_TX | bxCAN1 | AF9 | rover CAN bus |
-| PB12 | DRV_nFAULT | GPIO in, pull-up | — | DRV8833 ULT, open-drain, active low |
+| PB12 | DRV_nFAULT | GPIO in, pull-up | — | DRV8874 nFAULT, open-drain, active low |
 | PB13 | DIP_SW_0 | GPIO in, pull-up | — | module ID bit 0 |
 | PH0/PH1 | HSE | 8 MHz crystal | — | → 180 MHz PLL (M=4, N=180, P=2) |
 | PC14/PC15 | LSE | 32.768 kHz | — | in the `.ioc`, **not enabled** in code |
@@ -1820,6 +1822,11 @@ debug access. PA11/PA12 are the USB-C connector (this is why CAN1 lives on
 PB8/PB9). PB4 is NJTRST — avoided deliberately; PA15/PB3 are the other two
 JTAG remnants and *are* used, which is fine under 2-wire SWD but means full
 JTAG is gone for good on this design.
+
+**PA4 is still free and is the VREF option** — `DAC1_OUT` driving the
+DRV8874's VREF gives a software-programmable current limit (roughly 0–3.3 A on
+a 2.2 kΩ IPROPI resistor). Not fitted; a fixed divider is the simpler start.
+PA5/DAC2 stays reserved for SPI1_SCK.
 
 **Deliberately kept free:** PA5/PA6/PA7 for SPI1 (software NSS) and PB10/PB11
 for I2C2 — the two obvious buses if a per-module IMU ever appears. This is the
@@ -2966,6 +2973,98 @@ four-way comparison against DRV8876, DRV8871 and DRV8833 in
 **But A<sub>IPROPI</sub> differs: 450 µA/A on the DRV8874, 1000 µA/A on the
 DRV8876.** Electrically drop-in, but the sense resistor and the firmware
 calibration constant both change by 2.22×. The swap is not transparent.
+
+### DRV8874 — CONNECTION MAP (bench wiring, Sep 11, 2026)
+
+**The single biggest change is that the two bridges stop being paralleled.**
+The DRV8833 has two half-bridge pairs and the carrier had IN1+IN3 and IN2+IN4
+tied together to share current. The DRV8874 is **one full bridge rated 6 A on
+its own**, so PB6 goes to one input and PB7 to the other, full stop. Any
+leftover jumper that parallels inputs is now wrong.
+
+| STM32 pin | Signal | DRV8874 pin | Direction | Notes |
+|---|---|---|---|---|
+| PB6 | DRV_PWM_A | **1 — EN/IN1** | MCU → driver | TIM4_CH1, 20 kHz |
+| PB7 | DRV_PWM_B | **2 — PH/IN2** | MCU → driver | TIM4_CH2, 20 kHz |
+| PB5 | DRV_nSLEEP | **3 — nSLEEP** | MCU → driver | low = disabled; 100 kΩ internal pulldown |
+| PB12 | DRV_nFAULT | **4 — nFAULT** | driver → MCU | open-drain, active low, **needs a 10 kΩ pull-up to 3V3** |
+| **PA2** | **DRV_IPROPI** | **6 — IPROPI** | driver → MCU | **new.** ADC1_IN2; the pin's voltage is set by R_IPROPI to GND |
+| — | VREF | 5 — VREF | strap | fixed divider to start; PA4/`DAC1_OUT` is the upgrade |
+| — | PMODE | 16 — PMODE | strap | **must select PWM (IN1/IN2) mode — verify first** |
+| — | IMODE | 7 — IMODE | strap | sets current-regulation behaviour |
+| GND | common | 9 PGND / 15 GND | — | one ground reference, star point at the supply |
+
+**Power and motor:** VM (11) to the motor rail, OUT1 (8) and OUT2 (10) to the
+two motor leads — **the pair that reads ~1.9 Ω**, per the colour-code rule in
+KEY LEARNINGS. The encoder's own supply and its A/B pair do not touch the
+driver at all; they go to the MCU side as before.
+
+**Three things to confirm on the physical carrier before wiring**, all of them
+open items from the selection doc:
+
+1. **Which PMODE strap selects PWM (IN1/IN2) mode.** This is the one that
+   decides whether the W4 firmware drops in unchanged. In PWM mode IN1/IN2
+   carry the same truth table as the DRV8833; in PH/EN mode they do not, and
+   `drive.c`'s two-channel scheme would be driving the wrong thing.
+2. **Whether the carrier already populates R_IPROPI, and at what value.** The
+   2.2 kΩ / 0.99 V/A figure only holds if the value is ours to choose. If the
+   carrier fits something else, the firmware constant changes, not the wiring.
+3. **Whether the carrier populates the nFAULT pull-up.** The DRV8833 carrier
+   did not and one had to be added. Do not assume this one does — a nFAULT pin
+   that has only ever read high proves nothing. Short it to GND once and
+   confirm the boot line reports `ASSERTED`.
+
+**What does NOT change:** `drive.c` needs no edit. nSLEEP polarity, the 1 ms
+wake, the IN1/IN2 truth table and the open-drain active-low nFAULT are the same
+on both parts — that is exactly what the module was written driver-agnostic
+for. What does change is policy, not plumbing: the DRV8833's `drive_set_limit()`
+bench cap existed because a 4 A carrier faced a 5.0 A stall. A 6 A part at the
+9.5 V rail does not need it.
+
+### IPROPI — the sampling question that decides whether the reading means anything
+
+`I_IPROPI = I_OUT × 450 µA/A`, and R_IPROPI converts that to a voltage the ADC
+reads. At 2.2 kΩ: **0.99 V/A**, so 2.97 V at 3 A — near-perfect full scale
+against 3.3 V with no op-amp.
+
+**But which current does it report, and when?** IPROPI mirrors the current in
+the driver's FETs, and in **slow decay (drive-brake), which is the chosen
+scheme**, the bridge spends only D of each 50 µs period pulling current from
+VM — the rest of the time current recirculates locally through the low-side
+FETs. So the answer depends on whether IPROPI reports during the recirculation
+phase, which is set by the IMODE strap and the datasheet's IPROPI section.
+**This has not been verified here and must be read before trusting a number.**
+
+The two outcomes, and why both are still useful:
+
+- **If IPROPI reports only during the drive phase**, a free-running ADC returns
+  a duty-weighted average — which is the **supply current**, `I_motor × D`.
+  That is precisely the figure HW4's PDB branch sizing needs, and it is the one
+  the old resistance calculation and stall test could only bound.
+- **If IPROPI reports continuously**, the reading is the **motor current**
+  directly — which is what a W5 current inner loop wants.
+
+They differ by a factor of D, so at 50% duty one is half the other. Knowing
+which one is on the ADC is not a detail.
+
+**The ADC is configured so either answer works without reconfiguring.**
+Sampling time is **28 cycles**, not the maximum 480: at PCLK2/4 = 22.5 MHz a
+full conversion is 28+12 = 40 cycles = **1.78 µs**, which fits comfortably
+inside the on-phase even at 25 % duty (12.5 µs). 28 cycles is still ~2.4× what
+a 2.2 kΩ source needs to settle to 12-bit accuracy, so nothing is given up.
+Had the sample been set to 480 cycles (21.9 µs) it would have straddled nearly
+half the PWM period and PWM-synchronised sampling would have been impossible
+without going back to CubeMX.
+
+**The upgrade path, when W5 wants it:** trigger the ADC from **TIM4_CH4's
+compare event**. TIM4 is already the PWM timer, and a compare channel generates
+its event with no pin configured — TIM4_CH3/CH4 land on PB8/PB9, which are the
+CAN pins, but the *internal* event does not need them. That places the sample
+at a chosen point in the on-phase and removes the question entirely.
+
+Until then the honest bench method is to **average many software-triggered
+conversions** and record the duty alongside every reading, so the D factor can
+be divided out afterwards whichever way the datasheet turns out to read.
 
 ### ⚠️ HW1: fit the CARRIER, not the bare IC, on the milled board
 

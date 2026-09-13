@@ -1,8 +1,40 @@
 # Robotics Development Environment — Project Context Document
-**Last updated:** September 12, 2026 (bench carrier modified — nSLEEP/VREF 10 kΩ lifted, R_IPROPI now 1.474 kΩ; VREF on PA4/DAC1, ceiling 4.975 A and trip independently settable)
+**Last updated:** September 12, 2026 (IPROPI decoded — the reading is SUPPLY current, I_motor × D; `.ioc` signal-name root cause found and fixed; CubeMX regeneration silently ate two USER CODE blocks and killed both timers)
 *Paste this at the start of a new Claude session to restore full context.*
 
 ## Progress log (most recent first)
+- **Sep 12 (3)** — **Three things closed in one bench session: the CubeMX
+  blocker, a silent regression it caused, and the IPROPI question.**
+  **(1) The `.ioc` was invalid, not corrupted.** PA15 had been red and
+  unclickable in CubeMX for two sessions; the cause was that the file used
+  signal names that do not exist in the device DB — `S_TIM2_CH1` instead of
+  **`S_TIM2_CH1_ETR`**, and bare `TIM4_CH1`/`TIM4_CH2` instead of
+  **`S_TIM4_CH1`**/**`S_TIM4_CH2`** — with the required `SH.*` shared-signal
+  blocks missing entirely. CubeMX silently dropped TIM2 and TIM4 on every load
+  and left PA15 `Locked=true` pinned to nothing. Fixed, regenerated, ADC1 + DAC
+  now generate, build clean.
+  **(2) The regeneration then silently ate two USER CODE blocks** —
+  `TIM4_Init 2` and `TIM2_Init 2` — which were the only places
+  `HAL_TIM_PWM_Start()` and `HAL_TIM_Encoder_Start()` were called. The motor
+  went dead with **`nFAULT clear`, no build error and no warning**: the timers
+  simply were never running. Diagnosed from the console line
+  `I 0 mA (raw 0)` on an awake, unfaulted driver. Both starts now live in
+  `drive_init()` / `encoder_init()`, files CubeMX never touches, so they cannot
+  be lost that way again.
+  **(3) IPROPI is decoded — it reports SUPPLY current**, `I_motor × D`; the
+  20 kΩ IMODE strap blanks the mirror during slow-decay recirculation. Settled
+  by stalling the output shaft, which removes back-EMF and makes the motor
+  current pure Ohm's law: at 20% duty the two hypotheses predicted **984 mA**
+  (continuous) versus **197 mA** (supply), and the bench read **189 / 190 mA**.
+  A 5× discriminator with no friction model in the way. **The consequence that
+  bites:** the trip regulates *motor* current (correctly — `drv trip 3000` does
+  limit the motor to 3 A) while `drv current` reports the duty-averaged
+  *supply* figure, so a plateau sweep plateaus at `trip² × R_motor / Vm`, not
+  at the trip. `drv current` now prints `Isup` and the implied `Imotor`.
+  Also fixed: 40 em dashes in string literals that the serial terminal rendered
+  as empty squares. **Still pending:** `ISENSE_VDDA_MV` 3300 → **3325** and
+  `ISENSE_R_IPROPI_OHM` 1474 → **1465**, both measured, both deliberately held
+  until after the plateau sweep so nothing changes mid-experiment.
 - **Sep 12 (2)** — **The bench carrier was modified and VREF moved under software
   control.** Lifted the 10 kΩ between nSLEEP and VREF, and replaced the 2.48 kΩ
   R_IPROPI with **2.0 kΩ ∥ 5.6 kΩ = 1.474 kΩ**. Result: the ADC ceiling and the
@@ -3135,31 +3167,63 @@ the highest-value hour available on the bench right now.** `drv current` names
 the plateau when a reading sits within 5 % of the commanded trip, so it is hard
 to mistake for a broken sensor.
 
-### IPROPI — the sampling question that decides whether the reading means anything
+### IPROPI — SETTLED Sep 12, 2026: the reading is SUPPLY current
 
 `I_IPROPI = I_OUT × 450 µA/A`, and R_IPROPI converts that to a voltage the ADC
 reads. At the carrier's measured 2.48 kΩ: **1.116 V/A**, so 3.3 V at 2.957 A —
 full scale against 3.3 V with no op-amp.
 
-**But which current does it report, and when?** IPROPI mirrors the current in
-the driver's FETs, and in **slow decay (drive-brake), which is the chosen
-scheme**, the bridge spends only D of each 50 µs period pulling current from
-VM — the rest of the time current recirculates locally through the low-side
-FETs. So the answer depends on whether IPROPI reports during the recirculation
-phase, which is set by the IMODE strap and the datasheet's IPROPI section.
-**This has not been verified here and must be read before trusting a number.**
+**Which current does it report, and when?** IPROPI mirrors the current in the
+driver's FETs, and in **slow decay (drive-brake), which is the chosen scheme**,
+the bridge spends only D of each 50 µs period pulling current from VM — the rest
+of the time current recirculates locally through the low-side FETs. With the
+carrier's **20 kΩ IMODE strap the mirror is blanked during that recirculation**,
+so a free-running ADC returns a duty-weighted average:
 
-The two outcomes, and why both are still useful:
+> **`isense_read_ma()` returns SUPPLY current — `I_motor × D`.**
 
-- **If IPROPI reports only during the drive phase**, a free-running ADC returns
-  a duty-weighted average — which is the **supply current**, `I_motor × D`.
-  That is precisely the figure HW4's PDB branch sizing needs, and it is the one
-  the old resistance calculation and stall test could only bound.
-- **If IPROPI reports continuously**, the reading is the **motor current**
-  directly — which is what a W5 current inner loop wants.
+That is precisely the figure HW4's PDB branch sizing needs, and the one the old
+resistance calculation and stall test could only bound. It is *not* the motor
+current a W5 current inner loop would want; divide by D for that.
 
-They differ by a factor of D, so at 50% duty one is half the other. Knowing
-which one is on the ADC is not a detail.
+**How it was settled (Sep 12, 2026) — stall the shaft.** At stall there is no
+back-EMF, so the motor current is pure Ohm's law and neither hypothesis needs a
+friction model. At 20% duty, Vm 9.35 V, R_motor 1.90 Ω:
+
+| Hypothesis | Predicted `drv current` | |
+|---|---|---|
+| Continuous (motor current) | `0.20 × 9.35 / 1.90` = **984 mA** | ✗ |
+| Drive-phase only (supply) | `984 × 0.20` = **197 mA** | ✓ |
+| **Measured**, 256-sample average, twice | **189, 190 mA** | |
+
+A 5× discriminator landing within 4% of the supply prediction. The residual is
+accounted for: the bridge's own R<sub>DS(on)</sub> (~0.16 Ω across the two
+conducting FETs) drops ~0.15 V at 950 mA so the motor never sees the full rail,
+plus the ~1.4% the module currently reads low from `ISENSE_VDDA_MV` and
+`ISENSE_R_IPROPI_OHM` both being uncorrected. Together those close it to ~2.5%.
+
+A free-run duty sweep pointed the same way first and is worth recording as the
+cheap pre-test: 20% → 23 mA, 40% → 64 mA, a ratio of **2.9×**. Free-run friction
+is Coulomb plus a viscous term rising with speed, so under continuous reporting
+the ratio is *capped at 2* however the friction splits; the extra factor of D is
+what pushes it past 2. Suggestive, but not conclusive on its own — a
+grease-packed 131:1 gearbox could plausibly have superlinear losses. The stall
+test is the one that closes it.
+
+**⚠️ The consequence that bites: the trip and the reading are in different
+units.** The DRV8874 regulates by comparing the *instantaneous* IPROPI voltage
+to VREF, cycle by cycle. Since IPROPI mirrors the drive phase, the regulated
+quantity is true **motor** current during drive — so the trip does the right
+thing, and `drv trip 3000` really does limit the motor to 3 A. But `drv current`
+reports the duty-averaged **supply** figure. So during a plateau sweep the
+reported current does **not** plateau at the trip value; it plateaus at
+
+> `trip × D_regulation`, where `D_regulation = trip × R_motor / Vm`
+> — i.e. at **`trip² × R_motor / Vm`**, quadratic in the trip.
+
+Read a plateau as though it were the trip itself and the VREF divider will look
+wrong when it is not. `drv current` prints `Isup` and the implied `Imotor`
+(= `Isup / D`) on separate lines for exactly this reason.
 
 **The ADC is configured so either answer works without reconfiguring.**
 Sampling time is **28 cycles**, not the maximum 480: at PCLK2/4 = 22.5 MHz a
@@ -3176,21 +3240,11 @@ its event with no pin configured — TIM4_CH3/CH4 land on PB8/PB9, which are the
 CAN pins, but the *internal* event does not need them. That places the sample
 at a chosen point in the on-phase and removes the question entirely.
 
-Until then the honest bench method is to **average many software-triggered
-conversions** and record the duty alongside every reading, so the D factor can
-be divided out afterwards whichever way the datasheet turns out to read. This
-is why `drv current` prints duty and decay mode on every line — the logs stay
-usable no matter how the question resolves.
-
-**Two bench tests answer it faster than the datasheet does.** Either is enough:
-
-- **Scope IPROPI directly** while the motor runs at ~50 % duty. A 20 kHz square
-  wave means the mirror is active only during the drive phase → the average is
-  supply current. A near-DC level means it reports continuously → the average
-  is motor current.
-- **DC ammeter in the VM lead** at ~50 % duty, compared against `drv current`.
-  The two hypotheses differ by 2× at that duty, which no measurement error is
-  going to blur.
+Until that upgrade lands, the bench method is to **average many
+software-triggered conversions** — `drv current [n]`, default 32, and the
+scatter is binomial sampling noise, not instability — and to record the duty
+alongside every reading so the D factor can be divided out. `drv current` prints
+duty and decay mode on every line for that reason.
 
 ### ⚠️ HW1: fit the CARRIER, not the bare IC, on the milled board
 
@@ -3490,6 +3544,30 @@ gearbox is the difference between a note and a broken bench setup.
       the carrier already populates an IPROPI resistor and at what value.
       `drive.c` needs no change for the swap — the two parts share the
       IN1/IN2 truth table, nSLEEP polarity and nFAULT behaviour by design
+    - ✅ **`.ioc` root cause found and fixed Sep 12** — the file used signal
+      names absent from the CubeMX device DB (`S_TIM2_CH1` for what must be
+      **`S_TIM2_CH1_ETR`**; bare `TIM4_CH1`/`CH2` for **`S_TIM4_CH1`/`S_TIM4_CH2`**)
+      with the `SH.*` shared-signal blocks missing. CubeMX had been silently
+      dropping TIM2 and TIM4 on load since commit `30944da`. ADC1 + DAC now
+      generate and the project builds clean
+    - ✅ **First motion on the DRV8874 Sep 12** — 20% duty, +11557 counts for
+      positive duty (sign convention holds), 11.07 rpm, extrapolating to ~55 rpm
+      at the full 9.35 V rail. ADC1/PA2 confirmed live in the same test
+    - ✅ **IPROPI decoded Sep 12 — the reading is SUPPLY current**, `I_motor × D`.
+      Stalled-shaft test: predicted 984 mA (continuous) vs 197 mA (supply),
+      measured **189/190 mA**. See the IPROPI section above for the consequence
+      that a plateau sweep plateaus at `trip² × R_motor / Vm`, not at the trip
+    - ⬜ **Plateau sweep** — `drv trip 1000 / 2000 / 3000`, stall, step duty up,
+      record where the reported current flattens, to settle the internal VREF
+      divider (k = 1 / 2 / 3). Immune to both pending constant corrections,
+      because measured current and commanded trip pass through the same
+      R_IPROPI and the same VDDA and the ratio cancels them
+    - ⬜ **Apply the two measured constants after the sweep** (held until then so
+      nothing changes mid-experiment): `ISENSE_VDDA_MV` 3300 → **3325**,
+      `ISENSE_R_IPROPI_OHM` 1474 → **1465**. Net effect is that readings
+      currently sit ~1.4% low
+    - ⬜ Confirm the PMODE strap selects PWM (IN1/IN2) mode, and that the nFAULT
+      pull-up is fitted
 
 **Superseded Sep 11 — the DRV8874 arrived, so none of this is live any more.** It is kept because the reasoning held: nothing in W4 or W5 was blocked by the wait. W4's
 acceptance needs no motor power at all, and W5's PID tuning runs at bench loads
@@ -3633,6 +3711,42 @@ section; this is for things that will bite again somewhere else.
   drive motor the two leads reading ~2.5 Ω are unambiguously the winding;
   everything else follows from there. Colour codes vary by batch, and a
   swapped supply pair produces exactly the passive-divider signature above.
+- **After any CubeMX regeneration, diff the USER CODE blocks — it can drop one
+  silently.** Regenerating for ADC1 + DAC (Sep 12, 2026) emptied
+  `USER CODE BEGIN TIM4_Init 2` and `TIM2_Init 2`, which between them held the
+  only calls to `HAL_TIM_PWM_Start()` and `HAL_TIM_Encoder_Start()`. The cause
+  is that the merge is keyed on marker position, and the newer CubeMX emits
+  `HAL_TIM_MspPostInit()` on the *other* side of the markers than the old one
+  did. There is **no warning and no build error** — the motor was simply dead
+  with `nFAULT clear`, which reads like a hardware fault and is not one.
+  - The fix that generalises: **put peripheral start calls in your own `.c`
+    files**, not in USER CODE blocks. `drive_init()` and `encoder_init()` are
+    ours; CubeMX cannot touch them.
+  - The check that generalises: after regenerating, extract every
+    `USER CODE BEGIN/END` block and diff the set against `HEAD`. A block that
+    went from N bytes to 0 is the signature.
+- **A `.ioc` that loads without error can still be silently invalid.** CubeMX
+  accepts unknown *signal names* and just drops the peripheral — the symptom
+  surfaces as a pin stuck red and unclickable in the GUI ("reset state"),
+  because it stays `Locked=true` while pinned to nothing. Two rules that would
+  have saved two sessions:
+  - Signals with a `ShareableGroupName` in the IP-modes XML must be written as
+    `P<pin>.Signal=<GroupName>` **plus** a paired `SH.<GroupName>.0=<real
+    signal>,<mode>` and `SH.<GroupName>.ConfNb=1`. The pin's mode lives *inside*
+    the `SH` entry, not in a separate `P<pin>.Mode=` line. Instance-specific
+    exclusions are real: on the F446 it is `S_TIM2_CH1_ETR`, not `S_TIM2_CH1`,
+    because CH1 and ETR share a pin.
+  - **Never hand-edit an `.ioc` and trust it.** Let CubeMX save the file once
+    and adopt its canonical form as the oracle. Validate headlessly with
+    `STM32CubeMX -q <script>` (`config load …` / `project generate` / `exit`)
+    and read `~/.stm32cubemx/STM32CubeMX.log` for
+    `ImportTextPane … (OptionalMessage_ERROR)` lines — **the log is overwritten
+    on every run**, so save it before the next invocation.
+- **When a driver reports "awake, unfaulted, zero current", suspect the
+  controller, not the driver.** A bridge that is enabled with no fault flag and
+  passes *exactly* zero current is not failing — it is being correctly commanded
+  to do nothing. `raw 0` on the current ADC is the same evidence twice. Reach
+  for "is the timer actually running" before reaching for a scope.
 
 ## KEY DECISIONS AND RATIONALE
 - **X11 over Wayland (Dell):** Wayland has incomplete NVIDIA PRIME support

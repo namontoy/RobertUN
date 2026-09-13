@@ -116,31 +116,49 @@
   * That is the single most valuable hour available on this bench right now.
   *
   *
-  * WHAT THE READING MEANS IS STILL AN OPEN QUESTION - READ THIS
-  * ------------------------------------------------------------
+  * WHAT THE READING MEANS - SETTLED ON THE BENCH 2026-09-12
+  * ---------------------------------------------------------
   * In slow decay (drive-brake, the chosen scheme) the bridge draws from VM for
   * only D of each 50 us period; the rest of the time current recirculates
-  * through the low-side FETs. Whether IPROPI reports during that recirculation
-  * decides what this module returns:
+  * through the low-side FETs. With the carrier's 20 kOhm IMODE strap, IPROPI is
+  * BLANKED during that recirculation. Therefore:
   *
-  *   reports during drive only  -> the average is SUPPLY current, I_motor x D
-  *   reports continuously       -> the average is MOTOR current
+  *   isense_read_ma() returns SUPPLY current - that is, I_motor x D.
   *
-  * They differ by a factor of D. At 50% duty one is half the other, so this is
-  * not a correction to apply later - it is which quantity is on the pin.
+  * Measured, not inferred. Stalling the output shaft removes back-EMF, so the
+  * motor current is pure Ohm's law and both hypotheses predict a number with no
+  * friction model in the way:
   *
-  * The IMODE strap selects this behaviour and the carrier fits 20 kOhm to GND;
-  * the datasheet's IMODE table says which mode that is. It has NOT been
-  * verified here. Two bench tests settle it faster than the datasheet:
+  *   20% duty, stalled, Vm 9.35 V, R_motor 1.90 ohm
+  *     motor current  = 0.20 x 9.35 / 1.90 = 984 mA   (if continuous)
+  *     supply current = 984 x 0.20         = 197 mA   (if drive-phase only)
+  *     MEASURED (256-sample average, twice) = 189, 190 mA
   *
-  *   - Scope the IPROPI pin. A 20 kHz square wave means drive-phase only; a
-  *     near-DC level means continuous. Ten seconds, and unambiguous.
-  *   - Or put a DC ammeter in the VM lead at ~50% duty under load and compare.
-  *     The two hypotheses differ by 2x, which cannot be misread.
+  * A 5x discriminator landing within 4% of the supply prediction. The residual
+  * is the bridge's own RDS(on) - about 0.16 ohm across the two conducting FETs,
+  * so ~0.15 V of the rail never reaches the motor - plus the ~1.4% this module
+  * currently reads low from ISENSE_VDDA_MV and ISENSE_R_IPROPI_OHM both being
+  * uncorrected. Together those close the gap to ~2.5%.
   *
-  * Until it is settled, isense_read_ma() returns what the ADC sees and the
-  * caller records the duty alongside it. drive_duty() is right there, and
-  * `drv current` already prints both.
+  * TWO CONSEQUENCES, AND THE SECOND ONE BITES
+  *
+  * 1. The DRV8874 regulates by comparing the INSTANTANEOUS IPROPI voltage to
+  *    VREF, cycle by cycle. Since IPROPI mirrors the drive phase, the quantity
+  *    being regulated is true motor current during drive. So the trip does what
+  *    you want: `drv trip 3000` really does limit the motor to 3 A.
+  *
+  * 2. But this module reports the duty-averaged SUPPLY figure, so the trip and
+  *    the reading are in different units. During a plateau sweep the reported
+  *    current does NOT plateau at the trip value - it plateaus at
+  *
+  *      trip x D_regulation,  where D_regulation = trip x R_motor / Vm
+  *
+  *    i.e. at trip^2 x R_motor / Vm, quadratic in the trip. Read a plateau as
+  *    though it were the trip itself and the VREF divider will look wrong when
+  *    it is not.
+  *
+  * Callers should keep recording duty alongside the reading regardless -
+  * drive_duty() is right there, and `drv current` already prints both.
   *
   *
   * SAMPLING TIME IS 28 CYCLES ON PURPOSE

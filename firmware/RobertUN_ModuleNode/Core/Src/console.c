@@ -287,12 +287,12 @@ static void cmd_stats(int argc, char **argv)
 
   if (c->rx_overruns != 0u)
   {
-    debug_uart_puts("  warning : FIFO0 overran — frames were lost. The counter is\r\n"
+    debug_uart_puts("  warning : FIFO0 overran - frames were lost. The counter is\r\n"
                     "            events, not frames; the hardware cannot say how many.\r\n");
   }
   else if (c->rx_fifo_full != 0u)
   {
-    debug_uart_puts("  note    : FIFO0 hit its 3-message depth but nothing was lost —\r\n"
+    debug_uart_puts("  note    : FIFO0 hit its 3-message depth but nothing was lost -\r\n"
                     "            the drain loop is keeping up, with no margin to spare.\r\n");
   }
 }
@@ -311,7 +311,7 @@ static void cmd_errors(int argc, char **argv)
   if (can_bus_last_error() == 3u)
   {
     debug_uart_puts("  note    : 'ack' means the frame went out but no other node\r\n"
-                    "            acknowledged it — a transmitter cannot ACK itself.\r\n");
+                    "            acknowledged it - a transmitter cannot ACK itself.\r\n");
   }
 }
 
@@ -346,13 +346,13 @@ static void cmd_send(int argc, char **argv)
 
   if (!parse_hex_u32(argv[1], &id) || (id > 0x7FFu))
   {
-    debug_uart_printf("bad id '%s' — expected 11-bit hex, 000..7FF\r\n", argv[1]);
+    debug_uart_printf("bad id '%s' - expected 11-bit hex, 000..7FF\r\n", argv[1]);
     return;
   }
 
   if ((argc > 2) && !parse_hex_bytes(argc - 2, &argv[2], payload, &len, sizeof(payload)))
   {
-    debug_uart_puts("bad payload — expected up to 8 bytes as hex digit pairs\r\n");
+    debug_uart_puts("bad payload - expected up to 8 bytes as hex digit pairs\r\n");
     return;
   }
 
@@ -364,7 +364,7 @@ static void cmd_send(int argc, char **argv)
   }
   else
   {
-    debug_uart_printf("send failed — no free mailbox (state %s, last err %s)\r\n",
+    debug_uart_printf("send failed - no free mailbox (state %s, last err %s)\r\n",
                       can_state_str(), can_bus_last_error_str());
   }
 }
@@ -468,13 +468,13 @@ static void cmd_mks(int argc, char **argv)
   if (strcmp(argv[1], "abort") == 0)
   {
     mks_abort();
-    debug_uart_puts("mks transaction aborted (motor NOT stopped — use 'mks stop')\r\n");
+    debug_uart_puts("mks transaction aborted (motor NOT stopped - use 'mks stop')\r\n");
     return;
   }
 
   if (mks_busy())
   {
-    debug_uart_puts("mks busy — a transaction is outstanding ('mks abort' to drop it)\r\n");
+    debug_uart_puts("mks busy - a transaction is outstanding ('mks abort' to drop it)\r\n");
     return;
   }
 
@@ -551,7 +551,7 @@ static void cmd_mks(int argc, char **argv)
       }
       else
       {
-        debug_uart_puts("value too small — one pulse is 0.0118 deg at the output\r\n");
+        debug_uart_puts("value too small - one pulse is 0.0118 deg at the output\r\n");
         return;
       }
     }
@@ -572,7 +572,7 @@ static void cmd_mks(int argc, char **argv)
   }
   else
   {
-    debug_uart_printf("unknown subcommand '%s' — try 'mks'\r\n", argv[1]);
+    debug_uart_printf("unknown subcommand '%s' - try 'mks'\r\n", argv[1]);
     return;
   }
 
@@ -641,7 +641,7 @@ static void cmd_enc(int argc, char **argv)
 
     enc_watch_on   = on;
     enc_watch_last = HAL_GetTick();
-    debug_uart_printf("watch %s\r\n", on ? "on — turn the shaft" : "off");
+    debug_uart_printf("watch %s\r\n", on ? "on - turn the shaft" : "off");
   }
   else if (strcmp(argv[1], "window") == 0)
   {
@@ -656,7 +656,7 @@ static void cmd_enc(int argc, char **argv)
     double res = (1000.0 / (double)encoder_velocity_window())
                  * 60.0 / (double)ENCODER_COUNTS_PER_OUTPUT_REV;
 
-    debug_uart_printf("window %u ticks — %.0f Hz update, %.2f rpm per count\r\n",
+    debug_uart_printf("window %u ticks - %.0f Hz update, %.2f rpm per count\r\n",
                       (unsigned)encoder_velocity_window(),
                       1000.0 / (double)encoder_velocity_window(),
                       res);
@@ -674,7 +674,7 @@ static void cmd_enc(int argc, char **argv)
 
     encoder_probe_t p;
 
-    debug_uart_printf("watching A/B for %lu ms — TURN THE SHAFT NOW\r\n",
+    debug_uart_printf("watching A/B for %lu ms - TURN THE SHAFT NOW\r\n",
                       (unsigned long)ms);
     (void)debug_uart_flush(100u);   /* get the prompt out before we block */
 
@@ -717,7 +717,7 @@ static void cmd_enc(int argc, char **argv)
   }
   else
   {
-    debug_uart_printf("unknown subcommand '%s' — try 'enc'\r\n", argv[1]);
+    debug_uart_printf("unknown subcommand '%s' - try 'enc'\r\n", argv[1]);
   }
 }
 
@@ -749,12 +749,12 @@ static void cmd_drv(int argc, char **argv)
   if (strcmp(argv[1], "enable") == 0)
   {
     drive_enable();
-    debug_uart_puts("nSLEEP high — driver awake (waited 2 ms)\r\n");
+    debug_uart_puts("nSLEEP high - driver awake (waited 2 ms)\r\n");
   }
   else if (strcmp(argv[1], "disable") == 0)
   {
     drive_disable();
-    debug_uart_puts("duty 0, nSLEEP low — driver disabled\r\n");
+    debug_uart_puts("duty 0, nSLEEP low - driver disabled\r\n");
   }
   else if (strcmp(argv[1], "duty") == 0)
   {
@@ -770,18 +770,18 @@ static void cmd_drv(int argc, char **argv)
     debug_uart_printf("duty %+d%%%s\r\n",
                       drive_duty() / 10,
                       drive_is_enabled() ? ""
-                                         : "  (driver still disabled — pins only,"
+                                         : "  (driver still disabled - pins only,"
                                            " which is what you want for a scope check)");
   }
   else if (strcmp(argv[1], "brake") == 0)
   {
     drive_brake();
-    debug_uart_puts("both inputs high — brake\r\n");
+    debug_uart_puts("both inputs high - brake\r\n");
   }
   else if (strcmp(argv[1], "coast") == 0)
   {
     drive_coast();
-    debug_uart_puts("both inputs low — coast\r\n");
+    debug_uart_puts("both inputs low - coast\r\n");
   }
   else if (strcmp(argv[1], "decay") == 0)
   {
@@ -794,30 +794,43 @@ static void cmd_drv(int argc, char **argv)
 
     debug_uart_printf("decay %s\r\n",
                       (drive_decay() == DRIVE_DECAY_SLOW)
-                        ? "slow — IN1 high, IN2 PWM inverted (drive/brake)"
-                        : "fast — IN1 PWM, IN2 low (drive/coast)");
+                        ? "slow - IN1 high, IN2 PWM inverted (drive/brake)"
+                        : "fast - IN1 PWM, IN2 low (drive/coast)");
   }
   else if (strcmp(argv[1], "current") == 0)
   {
     uint16_t n   = (argc >= 3) ? (uint16_t)strtoul(argv[2], NULL, 10) : 0u;
     uint16_t raw = isense_read_avg(n);
 
-    /* Duty is printed with the current on purpose. Until the IMODE strap is
-       decoded it is unknown whether IPROPI reports during the recirculation
-       phase, so the reading is either motor current or supply current — and
-       those differ by exactly this duty. Recording both means the logs stay
-       usable whichever way the datasheet reads. See isense.h. */
-    debug_uart_printf("I %lu mA  (raw %u, offset %u)  at duty %+d%%  decay %s\r\n",
-                      (unsigned long)isense_raw_to_ma(raw),
+    uint32_t ma    = isense_raw_to_ma(raw);
+    int16_t  dperm = drive_duty();
+    uint16_t dmag  = (uint16_t)((dperm < 0) ? -dperm : dperm);
+
+    /* The carrier's 20 kOhm IMODE strap blanks IPROPI during slow-decay
+       recirculation, so what the ADC averages is SUPPLY current - I_motor x D.
+       Measured on the bench, not read off the datasheet; the stalled-shaft test
+       that settled it is written up in isense.h. The quantity is named here
+       because the trip regulates MOTOR current: the two are in different units
+       and a log line that just said "I" invited reading them as one number. */
+    debug_uart_printf("Isup %lu mA  (raw %u, offset %u)  at duty %+d%%  decay %s\r\n",
+                      (unsigned long)ma,
                       (unsigned)raw,
                       (unsigned)isense_offset(),
-                      drive_duty() / 10,
+                      dperm / 10,
                       (drive_decay() == DRIVE_DECAY_SLOW) ? "slow" : "fast");
+
+    /* Below ~1% the division blows the estimate up into nonsense, so it is
+       simply not offered rather than printed with a caveat nobody will read. */
+    if (dmag >= 10u)
+    {
+      debug_uart_printf("  implies Imotor %lu mA  (Isup / D)\r\n",
+                        (unsigned long)((ma * (uint32_t)DRIVE_DUTY_MAX) / dmag));
+    }
 
     if (isense_saturated())
     {
       debug_uart_printf(
-        "  CLIPPED — the reading hit the ADC ceiling (%u mA). Since the\r\n"
+        "  CLIPPED - the reading hit the ADC ceiling (%u mA). Since the\r\n"
         "  carrier was modified this is NOT the same event as the bridge\r\n"
         "  regulating: regulation shows up as a plateau at the trip"
         " (%lu mA).\r\n"
@@ -834,7 +847,7 @@ static void cmd_drv(int argc, char **argv)
       if ((ma * 20u) >= (isense_trip_ma() * 19u))
       {
         debug_uart_printf(
-          "  at the TRIP (%lu mA) — if this number stops rising while duty\r\n"
+          "  at the TRIP (%lu mA) - if this number stops rising while duty\r\n"
           "  climbs, the bridge is regulating. Where it plateaus against the\r\n"
           "  commanded trip is the VREF divider test in isense.h\r\n",
           (unsigned long)isense_trip_ma());
@@ -843,7 +856,7 @@ static void cmd_drv(int argc, char **argv)
 
     if (!drive_is_enabled())
     {
-      debug_uart_puts("  (driver disabled — no bridge current, so this is an"
+      debug_uart_puts("  (driver disabled - no bridge current, so this is an"
                       " offset reading, not a current)\r\n");
     }
   }
@@ -851,7 +864,7 @@ static void cmd_drv(int argc, char **argv)
   {
     if (drive_is_enabled())
     {
-      debug_uart_puts("refusing — 'drv disable' first. Zeroing while the bridge"
+      debug_uart_puts("refusing - 'drv disable' first. Zeroing while the bridge"
                       " is live folds real current into the offset\r\n");
       return;
     }
@@ -873,7 +886,7 @@ static void cmd_drv(int argc, char **argv)
 
       if (!on)
       {
-        debug_uart_puts("buffer OFF — ceiling rises to the full scale, but the"
+        debug_uart_puts("buffer OFF - ceiling rises to the full scale, but the"
                         " DAC is now high-impedance.\r\n"
                         "  Put a meter on PA4 and confirm VREF actually reads"
                         " what is commanded below.\r\n"
@@ -887,7 +900,7 @@ static void cmd_drv(int argc, char **argv)
 
       if (!isense_set_trip_ma(want))
       {
-        debug_uart_printf("clamped — %lu mA is outside the %lu..%lu mA the DAC"
+        debug_uart_printf("clamped - %lu mA is outside the %lu..%lu mA the DAC"
                           " can reach with the buffer %s\r\n",
                           (unsigned long)want,
                           (unsigned long)isense_trip_min_ma(),
@@ -909,7 +922,7 @@ static void cmd_drv(int argc, char **argv)
 
     if (drive_is_enabled())
     {
-      debug_uart_puts("  (applied live — the driver follows VREF immediately)\r\n");
+      debug_uart_puts("  (applied live - the driver follows VREF immediately)\r\n");
     }
   }
   else if (strcmp(argv[1], "limit") == 0)
@@ -925,7 +938,7 @@ static void cmd_drv(int argc, char **argv)
   }
   else
   {
-    debug_uart_printf("unknown subcommand '%s' — try 'drv'\r\n", argv[1]);
+    debug_uart_printf("unknown subcommand '%s' - try 'drv'\r\n", argv[1]);
   }
 }
 
@@ -947,12 +960,12 @@ static const command_t commands[] =
   { "errors",    "",             "CAN error registers, decoded",              cmd_errors    },
   { "clear",     "",             "zero the software counters",                cmd_clear     },
   { "send",      "<id> [hex]",   "transmit a CAN frame, e.g. send 123 DEADBEEF", cmd_send   },
-  { "heartbeat", "[on|off]",     "periodic 0x500 frame — off to silence the bus", cmd_heartbeat },
+  { "heartbeat", "[on|off]",     "periodic 0x500 frame - off to silence the bus", cmd_heartbeat },
   { "monitor",   "[on|off]",     "print received CAN frames as they arrive",  cmd_monitor   },
-  { "loopback",  "[on|off]",     "CAN loopback — test with no bus attached",  cmd_loopback  },
-  { "mks",       "<sub> [args]", "MKS SERVO42C on UART4 — 'mks' for subcommands", cmd_mks   },
-  { "enc",       "[sub]",        "drive encoder — 'enc' for position and speed", cmd_enc   },
-  { "drv",       "[sub]",        "drive H-bridge — 'drv' for state",          cmd_drv       },
+  { "loopback",  "[on|off]",     "CAN loopback - test with no bus attached",  cmd_loopback  },
+  { "mks",       "<sub> [args]", "MKS SERVO42C on UART4 - 'mks' for subcommands", cmd_mks   },
+  { "enc",       "[sub]",        "drive encoder - 'enc' for position and speed", cmd_enc   },
+  { "drv",       "[sub]",        "drive H-bridge - 'drv' for state",          cmd_drv       },
   { "reset",     "",             "reboot the MCU",                            cmd_reset     },
 };
 
@@ -1002,7 +1015,7 @@ static void dispatch(char *text)
     }
   }
 
-  debug_uart_printf("unknown command '%s' — try 'help'\r\n", argv[0]);
+  debug_uart_printf("unknown command '%s' - try 'help'\r\n", argv[0]);
 }
 
 /** @brief Terminate, dispatch, reset the buffer and print a fresh prompt.
@@ -1131,7 +1144,7 @@ void console_report_mks(void)
       }
       else
       {
-        debug_uart_puts("  hint    : no reply at all — check PA0->RX / PA1<-TX (crossed),\r\n"
+        debug_uart_puts("  hint    : no reply at all - check PA0->RX / PA1<-TX (crossed),\r\n"
                         "            common ground, 38400 baud, and driver power.\r\n");
       }
     }

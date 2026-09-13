@@ -43,6 +43,19 @@ void drive_init(void)
 
   apply(0u, 0u);
   HAL_GPIO_WritePin(DRV_nSLEEP_GPIO_Port, DRV_nSLEEP_Pin, GPIO_PIN_RESET);
+
+  /* Start the outputs from here, not from a USER CODE block inside
+     MX_TIM4_Init(). A CubeMX regeneration silently dropped that block once and
+     the bridge went dead with no fault flag and no error - the timer simply was
+     never running. This file is ours, so the call cannot be lost that way.
+     Both channels are already at 0% and nSLEEP is low, so starting is inert. */
+  HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_1);
+  HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_2);
+
+  /* Halt the PWM when the core halts. Without this, stopping at a breakpoint
+     leaves the motor driven while the control loop is frozen - the wheel keeps
+     turning and the encoder delta accumulated on resume is meaningless. */
+  __HAL_DBGMCU_FREEZE_TIM4();
 }
 
 void drive_enable(void)

@@ -46,6 +46,12 @@ static inline void unlock(uint32_t primask)
 
 void encoder_init(void)
 {
+  /* Counting starts here rather than in a USER CODE block inside
+     MX_TIM2_Init() - see the note in drive_init(). CNT is free-running and read
+     by the control loop as a delta, never as an absolute position, so it has to
+     be running before prev_count is sampled below. */
+  HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
+
   uint32_t primask = lock();
 
   prev_count    = __HAL_TIM_GET_COUNTER(&htim2);

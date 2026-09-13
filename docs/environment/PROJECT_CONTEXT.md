@@ -1,8 +1,27 @@
 # Robotics Development Environment — Project Context Document
-**Last updated:** September 12, 2026 (IPROPI decoded — the reading is SUPPLY current, I_motor × D; `.ioc` signal-name root cause found and fixed; CubeMX regeneration silently ate two USER CODE blocks and killed both timers)
+**Last updated:** September 12, 2026 (IPROPI decoded — the reading is SUPPLY current, I_motor × D; `.ioc` signal-name root cause fixed; motor rail reopened 9.5 V → 12 V now that current regulation is real; new `config` module requested — parameters in FLASH, editable from the console)
 *Paste this at the start of a new Claude session to restore full context.*
 
 ## Progress log (most recent first)
+- **Sep 12 (4)** — **Two things reopened, both because the DRV8874 changed what
+  is possible.** **(1) The motor rail goes 9.5 V → 12 V.** The 9.5 V figure was
+  chosen for the DRV8833's 10.8 V ceiling and *deliberately reinstated Aug 25*
+  on the reasoning that "9.5 V keeps stall at 5.0 A, inside the DRV8874's 6 A
+  peak, which is simpler than relying on current regulation to hold back a 7.1 A
+  stall at 13.5 V". That reasoning was correct **at the time, when current
+  regulation was unproven**. It now exists, is metered, and the trip arithmetic
+  is verified end to end — so the trade it was avoiding is no longer a gamble.
+  The motor is a 6 V/12 V unit and 9.5 V was leaving ~21% of its speed on the
+  table. **The catch, stated plainly: stall at 12 V is 6.32 A, which is above
+  the DRV8874's 6 A peak.** At 12 V the current trip stops being a convenience
+  and becomes a protection the part depends on, so **the plateau sweep must pass
+  before the rail is raised** — see task 17. **(2) A `config` module is
+  required** — see task 18. Constants like `ISENSE_R_IPROPI_OHM` compiled into
+  the image mean an edit-build-flash cycle to change a number, no way to differ
+  between the seven nodes without seven builds, and no way to know what is
+  actually in a device without reading source at the matching commit. Values
+  move to FLASH, editable from the serial console, with the compiled-in values
+  demoted to *defaults*.
 - **Sep 12 (3)** — **Three things closed in one bench session: the CubeMX
   blocker, a silent regression it caused, and the IPROPI question.**
   **(1) The `.ioc` was invalid, not corrupted.** PA15 had been red and
@@ -2691,6 +2710,16 @@ This is not a derating margin question. It is over the limit.
 3. **Lower the PDB rail.** Rejected — it breaks the SERVO42C drop budget, which
    is the reason 13–13.5 V was chosen.
 
+**RESOLVED Sep 11, 2026 by option 2 — the driver was swapped.** The DRV8874
+runs to 37 V, so the conflict that created this section no longer exists: the
+branch rail is inside the driver's range with enormous margin. Option 1's buck
+survived the swap only as a way to hold *the motor* (a 6 V/12 V unit) below its
+rating and to keep the stall current inside the driver's 6 A peak — not because
+the driver could not take the rail. Both of those jobs are now contestable in
+firmware; see the reopened bullet in the power-distribution section above.
+This section is kept because the DRV8833 reasoning is still the correct
+reasoning for a DRV8833, and seven stock carriers remain in the parts box.
+
 ### The carrier in hand — characterised Aug 25, 2026
 
 Vendor documentation: https://lastminuteengineers.com/drv8833-arduino-tutorial/
@@ -3649,13 +3678,32 @@ rework session, not a week.
       the set limit)
     - Design local buck regulator (12–13.5V → 3.3V direct into WeAct 3V3
       pin, bypassing the onboard ME6231A33PG LDO) for each node PCB
-    - **Second buck per node PCB: 13–13.5V → 9.5V motor rail.** Fed
+    - **Second buck per node PCB: 13–13.5V → motor rail.** Fed
       independently from the 13V rail, not cascaded off the motor rail —
       motor noise must not sit upstream of the MCU. (Briefly cancelled
       Aug 25 when the DRV8874's 37V range made a direct feed possible;
       reinstated the same day — 9.5V keeps stall at 5.0A, inside the
       DRV8874's 6A peak, which is simpler than relying on current
       regulation to hold back a 7.1A stall at 13.5V)
+      - ⚠️ **REOPENED Sep 12, 2026, and the buck may now be deletable.** The
+        Aug 25 reasoning rested on current regulation being unproven. It is now
+        built, metered and verified, so the argument for buying safety with a
+        lower rail has weakened. Two separate jobs were being done by that buck,
+        and each now has a cheaper answer:
+        - *limiting motor voltage* → a **firmware duty cap**. 12 V from a
+          13.5 V rail is 89% duty, and `drive_set_limit()` already does exactly
+          this. Free, and it tracks nothing — but note it must be derived from
+          the **measured** rail, which sags as the battery discharges, so the
+          cap belongs in the `config` module (task 18), not in a `#define`.
+        - *limiting motor current* → the **DRV8874's own regulation**, which is
+          what the trip is.
+        **Deleting the buck is worth real money here:** one fewer inductor,
+        one fewer switcher and its heat, less board area on a single-sided
+        milled PCB, and one fewer failure mode per node × 6 nodes.
+        **Do not delete it until the plateau sweep proves regulation actually
+        holds** — at 13.5 V direct, an unregulated stall is 7.1 A into a 6 A
+        part, and the buck is the thing currently standing between those two
+        numbers. Decide after task 17.
     - Add a **10 kΩ pull-up on nFAULT** to the node PCB schematic — neither the
       DRV8833 nor the DRV8874 carrier can be assumed to have one
     - Design 3D-printed XT60 retention/weather cover (zip-tie channel or
@@ -3667,6 +3715,110 @@ rework session, not a week.
       MCUs against the destructive-ground-loop mechanism now documented
       (wrong disconnect order, hot-plugged connector, lost ground contact
       under vibration) — see POWER DISTRIBUTION & GROUNDING section
+
+17. **Motor rail 9.5 V → 12 V (decided Sep 12, 2026 — gated on the plateau sweep)**
+    The motor is a **6 V / 12 V** unit and has been run at **9.35 V at the
+    terminals** since Aug 26. That figure exists only because the DRV8833 could
+    not exceed 10.8 V. The DRV8874 runs to 37 V, so the constraint is gone and
+    ~21% of the motor's speed is being left unused.
+
+    **What changes at 12 V** (R_motor 1.90 Ω, L 1.70 mH, both unchanged — these
+    are electrical properties, not supply-dependent):
+
+    | | 9.35 V (now) | 12 V |
+    |---|---|---|
+    | Stall current | 4.92 A | **6.32 A** |
+    | Free-run output speed | ~55 rpm | **~70 rpm** |
+    | Deadband (slow decay) | ~2.6% duty | ~2.0% duty |
+    | Supply current at a regulated 4 A stall | 2.6 A | **2.5 A** |
+
+    **⚠️ The one that matters: 6.32 A stall is above the DRV8874's 6 A peak.**
+    At 9.5 V the part was intrinsically safe; at 12 V it is safe *because the
+    trip holds*. This is the exact trade the Aug 25 decision declined to make,
+    and the only thing that has changed is that current regulation is now built
+    and measured rather than assumed. So:
+
+    - ⬜ **Gate: the plateau sweep must pass first.** Do not raise the rail
+      until regulation is demonstrated to flatten the current at a commanded
+      trip. This is the whole reason the sweep is worth doing.
+    - ⬜ Set `drv trip` to **4000 mA** before raising the rail, and confirm it
+      reads back at the boot line. 4 A is below the 6 A peak with margin and
+      below the 4.975 A ADC ceiling, so a regulated stall is still *measurable*
+      rather than clipped.
+    - ⬜ Raise the bench supply so the **motor terminals** read 12 V, not the
+      supply output — there is ~0.10 V of harness drop at light load and more
+      under current. The 9.45 V → 9.35 V measurement is the precedent.
+    - ⬜ The 5.5 A bench-supply limit **does not need raising**: in slow decay
+      the supply sees `I_motor × D`, so a regulated 4 A stall draws ~2.5 A from
+      the PSU. It stays a useful backstop rather than a fold-back nuisance.
+    - ⬜ Re-measure the plant at 12 V before W5 tuning. R, L and Ke carry over;
+      the duty→speed and duty→current mappings do not. **W5 has not started,
+      so this is the right moment** — PID gains tuned at one rail do not
+      transfer to another, and re-tuning later costs more than re-measuring now.
+    - ⬜ Restate the recorded plant figures with their rail attached, so a
+      future reader cannot mistake a 9.35 V number for a 12 V one.
+
+18. **`config` module — persistent parameters in FLASH, editable from the
+    console (NEW, requested Sep 12, 2026)**
+
+    **The problem.** Values like `ISENSE_R_IPROPI_OHM`, `ISENSE_VDDA_MV`,
+    `ISENSE_TRIP_DEFAULT_MA` and the duty limits are `#define`s. Three costs,
+    all of them already being paid on this bench:
+    - changing a number is an edit-build-flash cycle, so measured corrections
+      get deferred in batches (the 3300 → 3325 and 1474 → 1465 pair is sitting
+      unapplied right now purely to avoid a mid-experiment reflash);
+    - the seven nodes cannot hold different values without seven builds, yet
+      per-unit values are exactly what these are — each carrier's R_IPROPI is
+      its own resistor, each motor its own constants;
+    - what is actually running in a device is only knowable by reading source
+      at the matching commit.
+
+    **The requirement.** Values live in FLASH, are editable from the serial
+    console, survive reset, and the compiled-in values become **defaults** —
+    a fallback, not the source of truth.
+
+    **Storage sketch** (STM32F446RE, 512 KB, sectors 0–3 = 16 KB,
+    4 = 64 KB, 5–7 = 128 KB):
+    - Reserve **sector 7** (`0x08060000`, 128 KB) and shorten `FLASH` in
+      `STM32F446xx_FLASH.ld` to 384 KB. The image is ~77 KB, so nothing is
+      given up in practice.
+    - **Append-only record log**, not write-in-place: each save appends
+      `{magic, version, length, seq, CRC32, payload}` and only the newest valid
+      record is live. Erase the sector only when it fills. At ~64 B a record
+      that is ~2000 saves per erase, which against the 10k-cycle endurance is
+      effectively unlimited — where a naive erase-then-write burns one cycle
+      per save and would be a real limit during tuning.
+    - Use the **hardware CRC unit** (the F446 has one; it is free and already
+      unused).
+    - On boot, scan for the newest record whose CRC validates; on any failure
+      fall back to compiled defaults and say so on the boot line. **A corrupt
+      config must never prevent boot** — this module sits upstream of the motor
+      limits, so its failure mode has to be "safe defaults", loudly.
+
+    **Console surface**, following the existing `mks <sub>` / `drv <sub>`
+    pattern: `cfg` (list every key with value, default, units and range),
+    `cfg <key> <value>` (set in RAM, takes effect immediately),
+    `cfg save` (commit), `cfg revert` (reload from FLASH),
+    `cfg default [<key>]`, `cfg diff` (show only what differs from defaults —
+    the line worth pasting into a log).
+
+    **Safety rules, not optional given what these values control:**
+    - Range-check and clamp every key on set *and* on load. A config that can
+      set the trip to 0 or the duty limit to 100% is a way to destroy hardware
+      from a typo.
+    - **Refuse `cfg save` while the bridge is enabled**, mirroring the existing
+      `drv zero` rule. Flash erase/program **stalls instruction fetch** on the
+      F446's single bank, and a 128 KB sector erase is ~1–2 s — running the
+      motor through that is not acceptable. For the same reason, never write
+      from the 1 kHz control-loop ISR.
+
+    **Candidate keys**: `ISENSE_VDDA_MV`, `ISENSE_R_IPROPI_OHM`,
+    `ISENSE_A_IPROPI_UA_PER_A`, trip default, duty limit, **measured motor rail
+    mV** (which is what task 17's duty cap must be derived from), encoder
+    counts/rev, the brake/coast threshold rpm, node-ID fallback — and, the
+    biggest payoff by far, **W5's PID gains**. Tuning a velocity loop without a
+    reflash between every trial is the difference between an afternoon and a
+    week, so this module is worth doing *before* W5 rather than after.
 
 ## KEY LEARNINGS & GOTCHAS
 

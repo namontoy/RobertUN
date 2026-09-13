@@ -3,20 +3,23 @@
 *Paste this at the start of a new Claude session to restore full context.*
 
 ## Progress log (most recent first)
-- **Sep 12 (4)** — **Two things reopened, both because the DRV8874 changed what
-  is possible.** **(1) The motor rail goes 9.5 V → 12 V.** The 9.5 V figure was
-  chosen for the DRV8833's 10.8 V ceiling and *deliberately reinstated Aug 25*
-  on the reasoning that "9.5 V keeps stall at 5.0 A, inside the DRV8874's 6 A
-  peak, which is simpler than relying on current regulation to hold back a 7.1 A
-  stall at 13.5 V". That reasoning was correct **at the time, when current
-  regulation was unproven**. It now exists, is metered, and the trip arithmetic
-  is verified end to end — so the trade it was avoiding is no longer a gamble.
-  The motor is a 6 V/12 V unit and 9.5 V was leaving ~21% of its speed on the
-  table. **The catch, stated plainly: stall at 12 V is 6.32 A, which is above
-  the DRV8874's 6 A peak.** At 12 V the current trip stops being a convenience
-  and becomes a protection the part depends on, so **the plateau sweep must pass
-  before the rail is raised** — see task 17. **(2) A `config` module is
-  required** — see task 18. Constants like `ISENSE_R_IPROPI_OHM` compiled into
+- **Sep 12 (4)** — **The motor rail goes 9.5 V → 12 V, and a `config` module is
+  required.** **(1) Rail.** 9.5 V was never a motor requirement — it was the
+  DRV8833's 10.8 V ceiling with margin, and it survived the DRV8874 swap on
+  Aug 25 for a reason that has since expired (current regulation being
+  unproven; it is now built and metered). The motor is a 6 V/**12 V** unit, so
+  9.5 V gives up ~21% of its speed and, more usefully, torque headroom at
+  speed. **Nothing about the architecture changes:** the per-motor step-down on
+  each node PCB stays, fed independently from the >13.5 V rail; only its output
+  set-point moves to 12 V. **One number to keep straight** — the datasheet
+  stall at 12 V is **5.5 A**, while this project's own bench measurement
+  (Aug 25, two motors, three methods) gives **6.3 A cold**. Both are right:
+  5.5 A is a warm winding, and copper falls ~15% in resistance between hot and
+  cold. Setting `drv trip 5000` makes the distinction moot and caps it below
+  the DRV8874's 6 A peak either way. Note the trip then becomes the binding
+  limit on **peak** torque, so the gain from 12 V is speed and torque *at
+  speed*, not a higher stall torque. **(2) A `config` module is required** —
+  see task 18. Constants like `ISENSE_R_IPROPI_OHM` compiled into
   the image mean an edit-build-flash cycle to change a number, no way to differ
   between the seven nodes without seven builds, and no way to know what is
   actually in a device without reading source at the matching commit. Values
@@ -2713,12 +2716,11 @@ This is not a derating margin question. It is over the limit.
 **RESOLVED Sep 11, 2026 by option 2 — the driver was swapped.** The DRV8874
 runs to 37 V, so the conflict that created this section no longer exists: the
 branch rail is inside the driver's range with enormous margin. Option 1's buck
-survived the swap only as a way to hold *the motor* (a 6 V/12 V unit) below its
-rating and to keep the stall current inside the driver's 6 A peak — not because
-the driver could not take the rail. Both of those jobs are now contestable in
-firmware; see the reopened bullet in the power-distribution section above.
-This section is kept because the DRV8833 reasoning is still the correct
-reasoning for a DRV8833, and seven stock carriers remain in the parts box.
+stays anyway, because the **motor** is a 6 V/12 V unit and the rail is
+13.5 V — the regulator now exists to protect the motor, not the driver, and its
+output is **12 V** as of Sep 12. This section is kept because the DRV8833
+reasoning is still the correct reasoning for a DRV8833, and seven stock
+carriers remain in the parts box.
 
 ### The carrier in hand — characterised Aug 25, 2026
 
@@ -3685,25 +3687,18 @@ rework session, not a week.
       reinstated the same day — 9.5V keeps stall at 5.0A, inside the
       DRV8874's 6A peak, which is simpler than relying on current
       regulation to hold back a 7.1A stall at 13.5V)
-      - ⚠️ **REOPENED Sep 12, 2026, and the buck may now be deletable.** The
-        Aug 25 reasoning rested on current regulation being unproven. It is now
-        built, metered and verified, so the argument for buying safety with a
-        lower rail has weakened. Two separate jobs were being done by that buck,
-        and each now has a cheaper answer:
-        - *limiting motor voltage* → a **firmware duty cap**. 12 V from a
-          13.5 V rail is 89% duty, and `drive_set_limit()` already does exactly
-          this. Free, and it tracks nothing — but note it must be derived from
-          the **measured** rail, which sags as the battery discharges, so the
-          cap belongs in the `config` module (task 18), not in a `#define`.
-        - *limiting motor current* → the **DRV8874's own regulation**, which is
-          what the trip is.
-        **Deleting the buck is worth real money here:** one fewer inductor,
-        one fewer switcher and its heat, less board area on a single-sided
-        milled PCB, and one fewer failure mode per node × 6 nodes.
-        **Do not delete it until the plateau sweep proves regulation actually
-        holds** — at 13.5 V direct, an unregulated stall is 7.1 A into a 6 A
-        part, and the buck is the thing currently standing between those two
-        numbers. Decide after task 17.
+      - **Set-point changed Sep 12, 2026: the buck outputs 12 V, not 9.5 V.**
+        The buck itself is not in question — it stays, one per motor per node
+        PCB, fed independently from the 13.5 V rail. Only its output voltage
+        changes. 9.5 V was never a motor requirement; it was the DRV8833's
+        10.8 V ceiling with margin, and the motor is a 6 V/**12 V** unit being
+        run 21% under its rating.
+        - A **firmware duty cap** off the raw 13.5 V rail was considered as a
+          way to delete the buck entirely, and **rejected**: it would put
+          switching motor current on the same rail as the MCU supply, which is
+          the thing the independent-feed rule above exists to prevent, and it
+          would make the motor voltage track battery state of charge.
+          A regulator is the right part for this job.
     - Add a **10 kΩ pull-up on nFAULT** to the node PCB schematic — neither the
       DRV8833 nor the DRV8874 carrier can be assumed to have one
     - Design 3D-printed XT60 retention/weather cover (zip-tie channel or
@@ -3716,45 +3711,50 @@ rework session, not a week.
       (wrong disconnect order, hot-plugged connector, lost ground contact
       under vibration) — see POWER DISTRIBUTION & GROUNDING section
 
-17. **Motor rail 9.5 V → 12 V (decided Sep 12, 2026 — gated on the plateau sweep)**
-    The motor is a **6 V / 12 V** unit and has been run at **9.35 V at the
-    terminals** since Aug 26. That figure exists only because the DRV8833 could
-    not exceed 10.8 V. The DRV8874 runs to 37 V, so the constraint is gone and
-    ~21% of the motor's speed is being left unused.
+17. **Motor rail 9.5 V → 12 V (decided Sep 12, 2026)**
+    The motor is a **6 V / 12 V** unit run at **9.35 V at the terminals** since
+    Aug 26. That figure exists only because the DRV8833 could not exceed 10.8 V.
+    The architecture does not change: the **per-motor step-down on each node
+    PCB stays**, fed independently from the >13.5 V rail — only its output
+    set-point moves from 9.5 V to 12 V.
 
-    **What changes at 12 V** (R_motor 1.90 Ω, L 1.70 mH, both unchanged — these
-    are electrical properties, not supply-dependent):
+    **What changes** (R_w 1.87 Ω, V_brush 0.14 V, L 1.70 mH — electrical
+    properties, unchanged by the supply):
 
     | | 9.35 V (now) | 12 V |
     |---|---|---|
-    | Stall current | 4.92 A | **6.32 A** |
-    | Free-run output speed | ~55 rpm | **~70 rpm** |
+    | No-load output speed | ~60 rpm | **~76 rpm** |
+    | Stall current, datasheet | — | 5.5 A |
+    | Stall current, measured cold | 5.0 A | **6.3 A** |
     | Deadband (slow decay) | ~2.6% duty | ~2.0% duty |
-    | Supply current at a regulated 4 A stall | 2.6 A | **2.5 A** |
+    | Supply draw at a regulated 5 A stall | — | ~3.9 A |
 
-    **⚠️ The one that matters: 6.32 A stall is above the DRV8874's 6 A peak.**
-    At 9.5 V the part was intrinsically safe; at 12 V it is safe *because the
-    trip holds*. This is the exact trade the Aug 25 decision declined to make,
-    and the only thing that has changed is that current regulation is now built
-    and measured rather than assumed. So:
+    **On the two stall figures.** The datasheet says 5.5 A at 12 V (implying
+    2.18 Ω); the Aug 25 bench work on two motors, cross-checked three ways,
+    gives 1.87 Ω + 0.14 V of brush drop, i.e. 6.3 A. These are not in conflict —
+    copper rises ~0.39%/°C, so a winding hot from stalling reads ~15% higher
+    resistance than the cold one that was measured. **5.5 A is the settled
+    figure; 6.3 A is the first instant.** Since every start from rest draws
+    stall current momentarily, the cold number is the one the driver sees.
 
-    - ⬜ **Gate: the plateau sweep must pass first.** Do not raise the rail
-      until regulation is demonstrated to flatten the current at a commanded
-      trip. This is the whole reason the sweep is worth doing.
-    - ⬜ Set `drv trip` to **4000 mA** before raising the rail, and confirm it
-      reads back at the boot line. 4 A is below the 6 A peak with margin and
-      below the 4.975 A ADC ceiling, so a regulated stall is still *measurable*
-      rather than clipped.
-    - ⬜ Raise the bench supply so the **motor terminals** read 12 V, not the
-      supply output — there is ~0.10 V of harness drop at light load and more
-      under current. The 9.45 V → 9.35 V measurement is the precedent.
-    - ⬜ The 5.5 A bench-supply limit **does not need raising**: in slow decay
-      the supply sees `I_motor × D`, so a regulated 4 A stall draws ~2.5 A from
-      the PSU. It stays a useful backstop rather than a fold-back nuisance.
+    - ⬜ **Set `drv trip 5000` before raising the rail.** This makes the
+      5.5-vs-6.3 question moot, sits below the DRV8874's 6 A peak, and stays
+      under the 4.975 A ADC ceiling only in the *supply* reading — the motor
+      figure will clip, which is expected and harmless.
+    - ⬜ Raise the supply so the **motor terminals** read 12 V, not the supply
+      output — there is ~0.10 V of harness drop at light load and more under
+      current. The 9.45 V → 9.35 V measurement is the precedent.
+    - ⬜ The 5.5 A bench-supply limit **needs no change**: in slow decay the
+      supply sees `I_motor × D`, so even a regulated 5 A stall draws ~3.9 A.
+    - ⬜ **Peak torque will be trip-limited, not voltage-limited.** Torque ∝
+      current, so capping current at 5 A caps stall torque at roughly what
+      9.5 V already gave. The real gain from 12 V is **speed, and torque at
+      speed** — more voltage headroom to drive current against back-EMF, which
+      shifts the whole torque-speed curve out. Worth being explicit about so
+      nobody expects a bigger stall number.
     - ⬜ Re-measure the plant at 12 V before W5 tuning. R, L and Ke carry over;
-      the duty→speed and duty→current mappings do not. **W5 has not started,
-      so this is the right moment** — PID gains tuned at one rail do not
-      transfer to another, and re-tuning later costs more than re-measuring now.
+      the duty→speed and duty→current mappings do not. **W5 has not started, so
+      this is the right moment** — gains tuned at one rail do not transfer.
     - ⬜ Restate the recorded plant figures with their rail attached, so a
       future reader cannot mistake a 9.35 V number for a 12 V one.
 

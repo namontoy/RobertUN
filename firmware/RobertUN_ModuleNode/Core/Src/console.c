@@ -732,9 +732,17 @@ static void cmd_drv(int argc, char **argv)
                                                           : "fast (sign-magnitude)",
                       (unsigned)(drive_limit() / 10u),
                       drive_faulted() ? "ASSERTED" : "clear");
+    debug_uart_printf("trip %lu mA (VREF %u mV, DAC %u, buffer %s)"
+                      "  ADC ceiling %u mA\r\n",
+                      (unsigned long)isense_trip_ma(),
+                      (unsigned)isense_vref_mv(),
+                      (unsigned)isense_vref_code(),
+                      isense_vref_buffered() ? "on" : "off",
+                      (unsigned)ISENSE_FULL_SCALE_MA);
     debug_uart_puts(
       "  sub: enable | disable | duty <+/-pct> | brake | coast\r\n"
-      "       decay slow|fast | limit <pct> | current [n] | zero\r\n");
+      "       decay slow|fast | limit <pct> | current [n] | zero\r\n"
+      "       trip [<mA> | buf on|off]\r\n");
     return;
   }
 
@@ -809,17 +817,34 @@ static void cmd_drv(int argc, char **argv)
     if (isense_saturated())
     {
       debug_uart_printf(
-        "  SATURATED — the bridge is current-regulating at ~%u mA, not a bad\r\n"
-        "  reading. VREF is tied to nSLEEP, so the trip point and full scale\r\n"
-        "  are the same number. A plateau BELOW 4095 means VREF is divided\r\n"
-        "  internally; where it sits is the divider. See isense.h\r\n",
-        (unsigned)ISENSE_FULL_SCALE_MA);
+        "  CLIPPED — the reading hit the ADC ceiling (%u mA). Since the\r\n"
+        "  carrier was modified this is NOT the same event as the bridge\r\n"
+        "  regulating: regulation shows up as a plateau at the trip"
+        " (%lu mA).\r\n"
+        "  Both at once just means the trip is sitting at the ceiling.\r\n",
+        (unsigned)ISENSE_FULL_SCALE_MA,
+        (unsigned long)isense_trip_ma());
+    }
+    else if (raw > 0u)
+    {
+      uint32_t ma = isense_raw_to_ma(raw);
+      /* Within 5% of the trip and not clipping is the signature of the driver
+         doing its own limiting. Worth naming, because a plateau that is not
+         recognised gets debugged as a bad sensor. */
+      if ((ma * 20u) >= (isense_trip_ma() * 19u))
+      {
+        debug_uart_printf(
+          "  at the TRIP (%lu mA) — if this number stops rising while duty\r\n"
+          "  climbs, the bridge is regulating. Where it plateaus against the\r\n"
+          "  commanded trip is the VREF divider test in isense.h\r\n",
+          (unsigned long)isense_trip_ma());
+      }
     }
 
     if (!drive_is_enabled())
     {
-      debug_uart_puts("  (driver disabled — VREF is low too, so this is an offset"
-                      " reading, not a current)\r\n");
+      debug_uart_puts("  (driver disabled — no bridge current, so this is an"
+                      " offset reading, not a current)\r\n");
     }
   }
   else if (strcmp(argv[1], "zero") == 0)
@@ -834,6 +859,58 @@ static void cmd_drv(int argc, char **argv)
     debug_uart_printf("offset %u counts (%lu mA equivalent), 256 samples\r\n",
                       (unsigned)isense_zero(),
                       (unsigned long)isense_raw_to_ma(isense_offset()));
+  }
+  else if (strcmp(argv[1], "trip") == 0)
+  {
+    if ((argc >= 4) && (strcmp(argv[2], "buf") == 0))
+    {
+      bool on;
+      if      (strcmp(argv[3], "on")  == 0) { on = true;  }
+      else if (strcmp(argv[3], "off") == 0) { on = false; }
+      else { debug_uart_puts("usage: drv trip buf on|off\r\n"); return; }
+
+      isense_set_vref_buffered(on);
+
+      if (!on)
+      {
+        debug_uart_puts("buffer OFF — ceiling rises to the full scale, but the"
+                        " DAC is now high-impedance.\r\n"
+                        "  Put a meter on PA4 and confirm VREF actually reads"
+                        " what is commanded below.\r\n"
+                        "  If it droops, the VREF pin loads it and the buffer"
+                        " belongs back on.\r\n");
+      }
+    }
+    else if (argc >= 3)
+    {
+      uint32_t want = strtoul(argv[2], NULL, 10);
+
+      if (!isense_set_trip_ma(want))
+      {
+        debug_uart_printf("clamped — %lu mA is outside the %lu..%lu mA the DAC"
+                          " can reach with the buffer %s\r\n",
+                          (unsigned long)want,
+                          (unsigned long)isense_trip_min_ma(),
+                          (unsigned long)isense_trip_max_ma(),
+                          isense_vref_buffered() ? "on" : "off");
+      }
+    }
+
+    debug_uart_printf("trip %lu mA  (VREF %u mV, DAC code %u, buffer %s)\r\n",
+                      (unsigned long)isense_trip_ma(),
+                      (unsigned)isense_vref_mv(),
+                      (unsigned)isense_vref_code(),
+                      isense_vref_buffered() ? "on" : "off");
+    debug_uart_printf("  range %lu..%lu mA, ADC ceiling %u mA, 1 code = 1 ADC"
+                      " LSB\r\n",
+                      (unsigned long)isense_trip_min_ma(),
+                      (unsigned long)isense_trip_max_ma(),
+                      (unsigned)ISENSE_FULL_SCALE_MA);
+
+    if (drive_is_enabled())
+    {
+      debug_uart_puts("  (applied live — the driver follows VREF immediately)\r\n");
+    }
   }
   else if (strcmp(argv[1], "limit") == 0)
   {

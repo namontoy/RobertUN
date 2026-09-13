@@ -154,13 +154,25 @@ int main(void)
                     drive_faulted() ? "ASSERTED" : "clear");
   debug_uart_printf("encoder: TIM2 32-bit, %.1f counts/output-rev, tick 1 kHz\r\n",
                     (double)ENCODER_COUNTS_PER_OUTPUT_REV);
-  /* Full scale and the current-regulation trip are the same number on this
-     carrier — VREF is tied to nSLEEP through 10k. Reported so a saturated
-     reading is recognised as the limit rather than as a broken sensor. */
-  debug_uart_printf("isense: ADC1_IN2 on PA2, %u mA full scale = trip"
-                    " (R_IPROPI %u ohm)\r\n",
+  /* Both numbers, every boot. The carrier is modified — VREF is no longer
+     tied to nSLEEP — so the ceiling and the trip are independent and a log
+     that records only one of them cannot be interpreted later. */
+  debug_uart_printf("isense: ADC1_IN2 on PA2, ceiling %u mA"
+                    " (R_IPROPI %u ohm, MODIFIED carrier)\r\n",
                     (unsigned)ISENSE_FULL_SCALE_MA,
                     (unsigned)ISENSE_R_IPROPI_OHM);
+  debug_uart_printf("vref:   DAC1_OUT1 on PA4, trip armed at %lu mA"
+                    " (%u mV, buffer %s)\r\n",
+                    (unsigned long)isense_trip_ma(),
+                    (unsigned)isense_vref_mv(),
+                    isense_vref_buffered() ? "on" : "off");
+
+  if (isense_trip_ma() == 0u)
+  {
+    debug_uart_puts("WARNING: trip is 0 mA — VREF is not being driven, and the"
+                    " motor will not turn.\r\n"
+                    "  Check MX_DAC_Init() exists and PA4 is DAC_OUT1.\r\n");
+  }
 
   console_init();
   /* USER CODE END 2 */

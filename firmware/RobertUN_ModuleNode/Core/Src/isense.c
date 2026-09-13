@@ -1,12 +1,12 @@
 /**
   ******************************************************************************
   * @file           : isense.c
-  * @brief          : Drive current from the DRV8874's IPROPI output (PA2)
+  * @brief          : Drive current — measurement (PA2/IPROPI) and limit (PA4/VREF)
   ******************************************************************************
-  * Rationale — the carrier's 2.48 kOhm sense resistor, why VREF being tied to
-  * nSLEEP sets the current limit and the ADC full scale to the same number,
-  * and the unresolved question of whether IPROPI reports during recirculation
-  * — is in isense.h. This file is the mechanics.
+  * Rationale — the modified carrier, why measurement and limit share a module,
+  * what removing the nSLEEP-to-VREF resistor bought and cost, and the plateau
+  * test that validates the whole chain — is in isense.h. This file is the
+  * mechanics.
   ******************************************************************************
   */
 #include "isense.h"
@@ -14,15 +14,14 @@
 #include "main.h"
 
 extern ADC_HandleTypeDef hadc1;
+extern DAC_HandleTypeDef hdac;
 
-static uint16_t zero_offset;   /*!< raw counts read with the bridge off */
-static bool     was_saturated; /*!< set by the last conversion taken    */
+static uint16_t zero_offset;    /*!< raw counts read with the bridge off   */
+static bool     was_saturated;  /*!< set by the last conversion taken      */
+static uint16_t vref_code;      /*!< last code written to the DAC          */
+static bool     vref_buffered;  /*!< output buffer state, tracked here     */
 
-void isense_init(void)
-{
-  zero_offset   = 0u;
-  was_saturated = false;
-}
+/* --- measurement --------------------------------------------------------- */
 
 uint16_t isense_read_raw(void)
 {
@@ -62,8 +61,8 @@ uint16_t isense_read_avg(uint16_t samples)
   for (i = 0u; i < n; i++)
   {
     sum += isense_read_raw();
-    /* Latch saturation across the whole average. A bridge that regulated for
-       part of the window did regulate, and averaging would hide it. */
+    /* Latch saturation across the whole average. A bridge that clipped for
+       part of the window did clip, and averaging would hide it. */
     saturated = saturated || was_saturated;
   }
 
@@ -107,4 +106,130 @@ uint16_t isense_offset(void)
 bool isense_saturated(void)
 {
   return was_saturated;
+}
+
+/* --- current limit ------------------------------------------------------- */
+
+/** @brief Lowest VREF the DAC can hold, mV. The buffer cannot reach GND. */
+static uint16_t vref_floor_mv(void)
+{
+  return vref_buffered ? (uint16_t)ISENSE_VREF_BUF_MARGIN_MV : 0u;
+}
+
+/** @brief Highest VREF the DAC can hold, mV. Nor can it reach VDDA. */
+static uint16_t vref_ceiling_mv(void)
+{
+  return vref_buffered
+           ? (uint16_t)(ISENSE_VDDA_MV - ISENSE_VREF_BUF_MARGIN_MV)
+           : (uint16_t)ISENSE_VDDA_MV;
+}
+
+/* The DAC divides by 4095, not 4096 — Vout = VDDA x DOR / 4095. The ADC uses
+   4096. They are genuinely different in the reference manual and the one-count
+   discrepancy is not worth hiding behind a shared constant. */
+static uint16_t mv_to_code(uint32_t mv)
+{
+  uint32_t code = (mv * 4095u + (ISENSE_VDDA_MV / 2u)) / ISENSE_VDDA_MV;
+  return (code > 4095u) ? 4095u : (uint16_t)code;
+}
+
+static uint16_t code_to_mv(uint16_t code)
+{
+  return (uint16_t)(((uint32_t)code * ISENSE_VDDA_MV) / 4095u);
+}
+
+/** @brief Push vref_code to the hardware. */
+static void vref_apply(void)
+{
+  (void)HAL_DAC_SetValue(&hdac, DAC_CHANNEL_1, DAC_ALIGN_12B_R, vref_code);
+  (void)HAL_DAC_Start(&hdac, DAC_CHANNEL_1);
+}
+
+bool isense_set_trip_ma(uint32_t ma)
+{
+  uint32_t mv      = isense_ma_to_vref_mv(ma);
+  bool     clamped = false;
+
+  if (mv < vref_floor_mv())   { mv = vref_floor_mv();   clamped = true; }
+  if (mv > vref_ceiling_mv()) { mv = vref_ceiling_mv(); clamped = true; }
+
+  vref_code = mv_to_code(mv);
+  vref_apply();
+
+  return !clamped;
+}
+
+uint32_t isense_trip_ma(void)
+{
+  /* Derived back from the code that was actually written, so quantisation and
+     clamping are both visible to the caller rather than assumed away. */
+  return isense_vref_mv_to_ma(code_to_mv(vref_code));
+}
+
+uint16_t isense_vref_mv(void)
+{
+  return code_to_mv(vref_code);
+}
+
+uint16_t isense_vref_code(void)
+{
+  return vref_code;
+}
+
+uint32_t isense_trip_max_ma(void)
+{
+  return isense_vref_mv_to_ma(vref_ceiling_mv());
+}
+
+uint32_t isense_trip_min_ma(void)
+{
+  return isense_vref_mv_to_ma(vref_floor_mv());
+}
+
+void isense_set_vref_buffered(bool on)
+{
+  DAC_ChannelConfTypeDef cfg = {0};
+  uint32_t               trip;
+
+  if (on == vref_buffered)
+  {
+    return;
+  }
+
+  /* Capture the trip before the range changes, then re-request it: the new
+     range may not be able to hold it, and isense_set_trip_ma() will clamp and
+     report honestly rather than leaving a stale number in vref_code. */
+  trip = isense_trip_ma();
+
+  (void)HAL_DAC_Stop(&hdac, DAC_CHANNEL_1);
+
+  cfg.DAC_Trigger      = DAC_TRIGGER_NONE;
+  cfg.DAC_OutputBuffer = on ? DAC_OUTPUTBUFFER_ENABLE : DAC_OUTPUTBUFFER_DISABLE;
+  (void)HAL_DAC_ConfigChannel(&hdac, &cfg, DAC_CHANNEL_1);
+
+  vref_buffered = on;
+  (void)isense_set_trip_ma(trip);
+}
+
+bool isense_vref_buffered(void)
+{
+  return vref_buffered;
+}
+
+/* --- init ---------------------------------------------------------------- */
+
+void isense_init(void)
+{
+  zero_offset   = 0u;
+  was_saturated = false;
+
+  /* Matches MX_DAC_Init()'s generated configuration. Tracked rather than read
+     back because the HAL exposes no getter, and isense_set_vref_buffered()
+     needs to know what it is changing from. */
+  vref_buffered = true;
+
+  /* The trip is armed HERE, before main() can call anything that raises
+     nSLEEP. On the modified carrier VREF no longer follows nSLEEP, so a
+     driver woken with VREF still at reset would regulate at 0 A. */
+  (void)isense_set_trip_ma(ISENSE_TRIP_DEFAULT_MA);
 }

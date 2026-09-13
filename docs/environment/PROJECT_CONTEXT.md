@@ -1,8 +1,24 @@
 # Robotics Development Environment — Project Context Document
-**Last updated:** September 12, 2026 (DRV8874 carrier straps measured — R_IPROPI 2.48 kΩ, IMODE 20 kΩ to GND, VREF tied to nSLEEP via 10 kΩ; isense module written, 2.957 A full scale = trip)
+**Last updated:** September 12, 2026 (bench carrier modified — nSLEEP/VREF 10 kΩ lifted, R_IPROPI now 1.474 kΩ; VREF on PA4/DAC1, ceiling 4.975 A and trip independently settable)
 *Paste this at the start of a new Claude session to restore full context.*
 
 ## Progress log (most recent first)
+- **Sep 12 (2)** — **The bench carrier was modified and VREF moved under software
+  control.** Lifted the 10 kΩ between nSLEEP and VREF, and replaced the 2.48 kΩ
+  R_IPROPI with **2.0 kΩ ∥ 5.6 kΩ = 1.474 kΩ**. Result: the ADC ceiling and the
+  regulation trip are **no longer the same number** — R_IPROPI alone fixes the
+  ceiling at **4.975 A**, and **PA4/DAC1_OUT1** sets the trip anywhere below it,
+  at 1.215 mA per DAC code (exactly one ADC LSB). Motivation was the 5.0 A
+  stall, which the stock 2.957 A carrier could neither measure nor permit.
+  Seven spare carriers remain stock. Firmware: DAC added to the `.ioc`, VREF
+  control folded into `isense` (same module, because trip and measurement are
+  the same arithmetic and two copies of the scale constant would drift), new
+  `drv trip [<mA> | buf on|off]` console command, boot line reports ceiling and
+  trip separately. **Two new standing rules:** VREF must be set before nSLEEP
+  rises (the 10 kΩ used to guarantee that; `isense_init()` now does), and the
+  buffered DAC ceiling is **4.67 A**, below the 4.92 A stall — `drv trip buf off`
+  reclaims it but needs a meter on PA4 to confirm the unbuffered output holds.
+  **Still does not build until CubeMX is regenerated** (ADC1 + DAC).
 - **Sep 12** — **The DRV8874 carrier's three straps were measured, and they settle
   more than the scaling.** R_IPROPI is **2.48 kΩ** (the selection doc's 2.2 kΩ was
   an assumption), IMODE has **20 kΩ to GND**, and **nSLEEP feeds VREF through
@@ -1818,6 +1834,7 @@ wired.
 | PA0 | UART4_TX | UART4 @ 38400 8N1 | AF8 | MKS SERVO42C steering link |
 | PA1 | UART4_RX | UART4 | AF8 | SERVO42C replies |
 | PA2 | DRV_IPROPI | **ADC1_IN2**, 12-bit | — | drive current feedback, 28-cycle sample |
+| PA4 | DRV_VREF | **DAC1_OUT1**, 12-bit | — | drive current LIMIT; must be set before nSLEEP rises |
 | PA8 | MCO1 | RCC, HSE ÷1 | AF0 | 8 MHz clock-out, scope check |
 | PA9 | USART1_TX | USART1 @ 115200 | AF7 | `debug_uart` console |
 | PA10 | USART1_RX | USART1 | AF7 | console command interpreter |
@@ -3005,8 +3022,8 @@ leftover jumper that parallels inputs is now wrong.
 | PB7 | DRV_PWM_B | **2 — PH/IN2** | MCU → driver | TIM4_CH2, 20 kHz |
 | PB5 | DRV_nSLEEP | **3 — nSLEEP** | MCU → driver | low = disabled; 100 kΩ internal pulldown |
 | PB12 | DRV_nFAULT | **4 — nFAULT** | driver → MCU | open-drain, active low, **needs a 10 kΩ pull-up to 3V3** |
-| **PA2** | **DRV_IPROPI** | **6 — IPROPI** | driver → MCU | **new.** ADC1_IN2; **R_IPROPI measured 2.48 kΩ** → 1.116 V/A |
-| — | VREF | 5 — VREF | strap | **carrier ties it to nSLEEP through 10 kΩ** → 3.3 V when awake |
+| **PA2** | **DRV_IPROPI** | **6 — IPROPI** | driver → MCU | **new.** ADC1_IN2; **R_IPROPI now 1.474 kΩ** (2.0k∥5.6k) → 0.6632 V/A |
+| **PA4** | **DRV_VREF** | **5 — VREF** | MCU → driver | **new.** DAC1_OUT1. Carrier's 10 kΩ to nSLEEP **removed Sep 12** |
 | — | PMODE | 16 — PMODE | strap | **must select PWM (IN1/IN2) mode — verify first** |
 | — | IMODE | 7 — IMODE | strap | **carrier fits 20 kΩ to GND** — decode against the datasheet table |
 | GND | common | 9 PGND / 15 GND | — | one ground reference, star point at the supply |
@@ -3038,59 +3055,85 @@ for. What does change is policy, not plumbing: the DRV8833's `drive_set_limit()`
 bench cap existed because a 4 A carrier faced a 5.0 A stall. A 6 A part at the
 9.5 V rail does not need it.
 
-### DRV8874 carrier — the three straps, measured Sep 12, 2026
+### DRV8874 carrier — the three straps, and the two that were changed
 
-Measured on the physical carrier, and each one changes something:
+Measured as-shipped on Sep 12, 2026, then **the bench carrier was modified the
+same day**. Seven spare carriers remain stock.
 
-| Strap | Measured | Consequence |
+| Strap | As shipped | On the bench carrier now |
 |---|---|---|
-| nSLEEP → VREF | **10 kΩ** | VREF ≈ 3.3 V whenever the driver is awake |
-| IMODE → GND | **20 kΩ** | selects an IPROPI/regulation mode — **not yet decoded** |
-| R_IPROPI → GND | **2.48 kΩ** | 1.116 V/A, full scale 2.957 A |
+| nSLEEP → VREF | 10 kΩ | **REMOVED** — VREF driven by PA4/DAC1_OUT1 |
+| IMODE → GND | 20 kΩ | unchanged — **still not decoded** |
+| R_IPROPI → GND | 2.48 kΩ | **1.474 kΩ** (2.0 kΩ ∥ 5.6 kΩ) |
 
-**The scaling, settled:**
+**Why:** the motor stalls at 5.0 A on the 9.5 V rail, and the stock carrier
+could neither measure that (2.957 A ceiling) nor permit it (2.957 A trip). The
+modification is small, reversible, and off the spares.
 
-```
-scale      = A_IPROPI × R_IPROPI = 450 µA/A × 2480 Ω = 1.1160 V/A
-full scale = 3.300 V / 1.1160 V/A                    = 2.957 A
-LSB        = 3.300 V / 4096 / 1.1160 V/A             = 0.7219 mA
-                                                       (1385.2 counts/A)
-
-integer form, no float:   I_mA = raw × 2957 / 4096
-```
-
-**VREF tied to nSLEEP has three consequences, and only the first is obvious.**
-
-1. **There is now a hardware current limit where the DRV8833 had none.** VREF
-   programs the DRV8874's own current regulation; the chip chops the bridge on
-   its own once the trip is reached, with no firmware in the loop. On this
-   carrier that trip lands at **2.957 A** — comfortably above the ~1 A the free
-   shaft draws, and *below* the 5.0 A stall. A stalled motor will therefore
-   regulate rather than pull 5 A. That is a feature for the loaded-wheel rig,
-   but it means a stall test no longer measures stall current; it measures the
-   trip point.
-2. **Full scale and the trip point are the same number, and cannot be traded
-   independently.** Both are `VREF / (A_IPROPI × R_IPROPI)`. Changing R_IPROPI
-   to get more ADC resolution moves the current limit by the same factor. There
-   is exactly one knob here, not two.
-3. **The PA4/DAC1 VREF upgrade is foreclosed on this carrier.** The plan was to
-   drive VREF from the MCU's DAC for a software-settable current limit. The
-   10 kΩ from nSLEEP holds VREF at 3.3 V, so a DAC output would fight it. This
-   is one lifted resistor away from being possible again — worth knowing before
-   anyone spends time on the firmware side of it.
-
-**Still open: is VREF compared directly, or through an internal divider?** The
-datasheet families differ on this. There is a self-test that answers it without
-reading anything: **stall the motor and watch where `raw` PLATEAUS.**
+**The scaling as modified:**
 
 ```
-raw plateaus near 4095  →  k = 1,  trip = 2.96 A   (VREF used directly)
-raw plateaus near 2048  →  k = 2,  trip = 1.48 A
-raw plateaus near 1365  →  k = 3,  trip = 0.99 A
+scale       = A_IPROPI × R_IPROPI = 450 µA/A × 1474 Ω = 0.6632 V/A
+ADC ceiling = 3.300 V / 0.6632 V/A                    = 4.975 A
+LSB         = 4975 / 4096                             = 1.215 mA
+                                                        (823.1 counts/A)
+
+integer form, no float:   I_mA = raw × 4975 / 4096
 ```
 
-A plateau is the signature: the current stops rising even though duty is still
-climbing. `drv current` prints raw alongside mA precisely so this is readable.
+R_IPROPI is the **nominal** parallel value. If the pair reads differently on a
+meter, `ISENSE_R_IPROPI_OHM` is the one constant to change — a 1 % error there
+is a 1 % error in every current ever logged.
+
+**Removing the 10 kΩ undid the coupling, which was the whole point.** On the
+stock carrier VREF followed nSLEEP, so the trip point and the ADC full scale
+were the same number and could not be moved apart. They are now independent:
+
+- **R_IPROPI alone sets the CEILING** — 4.975 A, fixed in hardware.
+- **VREF sets the TRIP**, anywhere from 0 up to that ceiling, in software.
+- One DAC code moves the trip by **1.215 mA — exactly one ADC LSB**, because
+  both converters are 12 bits across the same 3.3 V through the same resistor.
+
+**The cost is that the fail-safe is gone.** The 10 kΩ guaranteed VREF could
+never be wrong while nSLEEP was high; they moved together. Now **VREF must be
+set before nSLEEP rises**, every time, including after any reset. `isense_init()`
+does this at boot. If the DAC is somehow not running the trip is 0 A and the
+motor will not turn — the safe direction to fail, and deliberate.
+
+**The DAC output buffer costs the top of the range.** Buffered, the F446 swings
+roughly 0.2 V to VDDA−0.2 V:
+
+| buffer | VREF range | trip range |
+|---|---|---|
+| on (default) | 0.200–3.100 V | **0.30–4.67 A** |
+| off | 0.000–3.300 V | 0.00–4.98 A |
+
+4.67 A is *below* the 4.92 A the motor draws stalled at the measured 9.35 V
+motor terminal, so with the buffer on a genuine stall regulates rather than
+being measured. `drv trip buf off` reclaims it — but the unbuffered DAC is
+high-impedance, so **put a meter on PA4 and confirm VREF reads what was
+commanded** before trusting it.
+
+**Default trip is 3000 mA**, matching what the stock carrier enforced, so
+lifting the resistor did not quietly make anything more dangerous. Full
+capacity is an explicit act: `drv trip 4600`.
+
+**Still open: is VREF compared directly, or through an internal divider?** With
+VREF under software control this stops being a guess and becomes a measurement:
+**set a known trip, stall the motor, and see where the reading plateaus.**
+
+```
+drv trip 2000 → plateau at ~2000 mA  →  k = 1, as assumed
+drv trip 2000 → plateau at ~1000 mA  →  k = 2, halve every trip
+drv trip 2000 → plateau at  ~667 mA  →  k = 3
+```
+
+Sweep it — 1000, 2000, 3000 — and the relation should be a straight line
+through the origin. If it is, the scaling is confirmed end to end: the ADC and
+the DAC agree and every current this firmware reports is trustworthy. **This is
+the highest-value hour available on the bench right now.** `drv current` names
+the plateau when a reading sits within 5 % of the commanded trip, so it is hard
+to mistake for a broken sensor.
 
 ### IPROPI — the sampling question that decides whether the reading means anything
 

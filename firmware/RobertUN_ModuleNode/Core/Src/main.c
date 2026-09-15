@@ -843,6 +843,12 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
          read shows up directly as noise in the reading. The call reads one
          register and does integer arithmetic. */
       encoder_on_tick();
+
+      /* nFAULT is open-drain and the driver may assert it for a few hundred
+         microseconds and recover. Sampling here rather than in the main loop
+         is what makes a transient visible at all: the console runs whenever it
+         runs, and a fault that clears before the next `drv` leaves no trace. */
+      drive_on_tick();
   }
 }
 /* USER CODE END 4 */

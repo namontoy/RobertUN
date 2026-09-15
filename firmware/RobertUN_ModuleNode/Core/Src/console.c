@@ -750,10 +750,30 @@ static void cmd_drv(int argc, char **argv)
                       (unsigned)isense_vref_code(),
                       isense_vref_buffered() ? "on" : "off",
                       (unsigned)isense_full_scale_ma());
+
+    /* The live pin above says what is true now; this says what has happened.
+       A driver that tripped and auto-retried during a stall test reads clear
+       on the pin and still owes you an explanation. */
+    if (drive_fault_latched())
+    {
+      debug_uart_printf("  FAULT SEEN: %lu ms asserted, first at duty %+d%%"
+                        " - 'drv clearfault' to reset\r\n",
+                        (unsigned long)drive_fault_ticks(),
+                        drive_fault_duty() / 10);
+    }
+
     debug_uart_puts(
       "  sub: enable | disable | duty <+/-pct> | brake | coast\r\n"
       "       decay slow|fast | limit <pct> | current [n] | zero\r\n"
-      "       trip [<mA> | buf on|off]\r\n");
+      "       trip [<mA> | buf on|off] | clearfault\r\n");
+    return;
+  }
+
+  if (strcmp(argv[1], "clearfault") == 0)
+  {
+    drive_clear_fault();
+    debug_uart_printf("fault latch cleared - nFAULT reads %s right now\r\n",
+                      drive_faulted() ? "ASSERTED (still faulting)" : "clear");
     return;
   }
 

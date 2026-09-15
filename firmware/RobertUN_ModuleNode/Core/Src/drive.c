@@ -19,6 +19,16 @@ static uint16_t      limit = DRIVE_DUTY_MAX;    /*!< magnitude cap             *
 static drive_decay_t decay = DRIVE_DECAY_SLOW;
 static bool          enabled;
 
+/* Written by drive_on_tick() in the TIM6 ISR, read by the console. Each is a
+   single 32-bit-or-smaller object, so a read cannot tear on Cortex-M4 and no
+   critical section is needed. They are not consistent with each other under a
+   concurrent update — a reader could see the flag set with the duty not yet
+   written — but the window is two instructions and the cost of being wrong is
+   one misreported number in a diagnostic, not a control decision. */
+static volatile bool     fault_latched;
+static volatile uint32_t fault_ticks;
+static volatile int16_t  fault_duty;
+
 /** @brief Compare value for 100% output. CCR > ARR never matches, so the
   *        channel stays active for the whole period — a true 100%, not
   *        4499/4500. */
@@ -148,6 +158,52 @@ void drive_coast(void)
 bool drive_faulted(void)
 {
   return HAL_GPIO_ReadPin(DRV_nFAULT_GPIO_Port, DRV_nFAULT_Pin) == GPIO_PIN_RESET;
+}
+
+void drive_on_tick(void)
+{
+  if (!drive_faulted())
+  {
+    return;
+  }
+
+  fault_ticks++;
+
+  if (!fault_latched)
+  {
+    /* Captured on the first tick only. A fault that persists while the duty is
+       being changed should report the duty that CAUSED it, not the one it
+       happened to end at. */
+    fault_duty    = duty;
+    fault_latched = true;
+  }
+}
+
+bool drive_fault_latched(void)
+{
+  return fault_latched;
+}
+
+uint32_t drive_fault_ticks(void)
+{
+  return fault_ticks;
+}
+
+int16_t drive_fault_duty(void)
+{
+  return fault_duty;
+}
+
+void drive_clear_fault(void)
+{
+  /* Order matters if a tick lands mid-clear: drop the flag last, so the worst
+     case is a zeroed counter with the flag still set - which reads as "faulted,
+     count unknown" and is recoverable by clearing again. The reverse order
+     could leave the flag clear and the counter non-zero, which reads as
+     "no fault" while a fault is active. */
+  fault_ticks   = 0u;
+  fault_duty    = 0;
+  fault_latched = false;
 }
 
 void drive_set_decay(drive_decay_t new_decay)

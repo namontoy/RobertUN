@@ -243,6 +243,39 @@ void drive_set_limit(uint16_t permille);
 /** @brief Current duty limit, per-mille. */
 uint16_t drive_limit(void);
 
+/**
+  * @brief  Sample nFAULT and latch it. Call from the 1 kHz control tick.
+  *
+  * OBSERVATION, NOT POLICY. This does not disable the bridge, drop the duty or
+  * decide anything — the module still never acts behind the caller's back, and
+  * what to DO about a fault is still W5's. All it does is make sure a fault
+  * that happened leaves a mark.
+  *
+  * It exists because nFAULT was previously read only at boot and by the `drv`
+  * command, which means an over-current that trips, auto-retries and clears
+  * between two console commands is completely invisible. During a stall test
+  * on a loaded wheel that is precisely the event worth knowing about, and it
+  * is the one you are least likely to be looking at when it happens.
+  */
+void drive_on_tick(void);
+
+/** @brief True if nFAULT has been seen low since the last clear. Sticky: it
+  *        stays true after the pin recovers, which is the whole point. */
+bool drive_fault_latched(void);
+
+/** @brief Ticks (≈ms) nFAULT has been observed low since the last clear.
+  *        1-2 is a glitch worth noting; hundreds is a driver shutting down
+  *        and retrying. The distinction matters and costs one counter. */
+uint32_t drive_fault_ticks(void);
+
+/** @brief Duty commanded at the moment the latch first set. Answers "what were
+  *        we doing when it faulted?" without a log. Zero if never latched. */
+int16_t drive_fault_duty(void);
+
+/** @brief Drop the latch. Deliberately manual — a fault record that clears
+  *        itself is a fault record nobody reads. */
+void drive_clear_fault(void);
+
 #ifdef __cplusplus
 }
 #endif

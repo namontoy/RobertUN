@@ -3666,12 +3666,17 @@ gearbox is the difference between a note and a broken bench setup.
       gives the actual duty cycle of operation rather than a bounding figure.
       The DRV8874's IPROPI output makes this a firmware reading, not a
       multimeter session.
-    - ⬜ **DRV8874 ARRIVED Sep 11** (ahead of the ~Sep 15 estimate), not yet
-      wired. On fitting: IPROPI on PA2 (`ADC1_IN2`), optional VREF on PA4
-      (`DAC1_OUT`), confirm the PMODE strap selects PWM mode. Check whether
-      the carrier already populates an IPROPI resistor and at what value.
-      `drive.c` needs no change for the swap — the two parts share the
-      IN1/IN2 truth table, nSLEEP polarity and nFAULT behaviour by design
+    - ✅ **DRV8874 arrived Sep 11 and is wired and running** — IPROPI on PA2
+      (`ADC1_IN2`), VREF on PA4 (`DAC1_OUT1`), carrier modified, R_IPROPI
+      measured at 1465 Ω. `drive.c` needed no change for the swap, as designed.
+    - ✅ **PMODE confirmed to select PWM (IN1/IN2) mode — Sep 14, from data
+      already on record.** No separate test was needed. At 20% duty `drive.c`
+      emits IN1 constantly high and IN2 PWM'd at 80% (slow decay). Under
+      *either* PH/EN pin assignment one of those two pins would be EN, sitting
+      at 100% or 80%, so a 20% command would have produced roughly 50–55 rpm.
+      The Sep 12 measurement was **11.07 rpm**, within 6% of the DRV8833's
+      11.78 rpm at the same command. No PH/EN interpretation lands near 11 rpm.
+      A second duty point comes free with the 12 V rail work in task 17
     - ✅ **`.ioc` root cause found and fixed Sep 12** — the file used signal
       names absent from the CubeMX device DB (`S_TIM2_CH1` for what must be
       **`S_TIM2_CH1_ETR`**; bare `TIM4_CH1`/`CH2` for **`S_TIM4_CH1`/`S_TIM4_CH2`**)

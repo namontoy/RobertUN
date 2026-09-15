@@ -29,6 +29,7 @@
 #include "drive.h"
 #include "isense.h"
 #include "config.h"
+#include "dipsw.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -264,9 +265,10 @@ static void cmd_info(int argc, char **argv)
   debug_uart_printf("            sample point %lu.%lu%%\r\n", sample / 10u, sample % 10u);
   debug_uart_printf("CAN mode  : %s, %s\r\n",
                     can_bus_is_loopback() ? "LOOPBACK" : "normal", can_state_str());
-  debug_uart_printf("heartbeat : %s, ID 0x%03lX\r\n",
+  debug_uart_printf("heartbeat : %s, ID 0x%03lX%s\r\n",
                     heartbeat_on ? "on" : "off",
-                    (unsigned long)CAN_ID_HEARTBEAT_BASE);
+                    (unsigned long)dipsw_can_id(),
+                    dipsw_valid() ? "" : "  (NOT SENT - no module identity)");
   debug_uart_printf("monitor   : %s\r\n", monitor_on ? "on" : "off");
 }
 
@@ -1202,6 +1204,46 @@ static void cmd_cfg(int argc, char **argv)
                   " reset)\r\n");
 }
 
+/**
+  * @brief  Module identity: what was latched at boot, and what the pins say now.
+  * @note   The two can differ, and that is the point - a switch moved since
+  *         boot shows up here instead of silently doing nothing.
+  */
+static void cmd_id(int argc, char **argv)
+{
+  (void)argc;
+  (void)argv;
+
+  uint8_t latched = dipsw_code();
+  uint8_t live    = dipsw_read_live();
+
+  debug_uart_printf("module ID : %u  (0b%u%u%u, SW2 SW1 SW0)\r\n",
+                    (unsigned)latched,
+                    (unsigned)((latched >> 2) & 1u),
+                    (unsigned)((latched >> 1) & 1u),
+                    (unsigned)(latched & 1u));
+  debug_uart_printf("role      : %s\r\n", dipsw_role_str(dipsw_role()));
+
+  if (dipsw_valid())
+  {
+    debug_uart_printf("CAN node  : 0x%03lX\r\n", (unsigned long)dipsw_can_id());
+  }
+  else
+  {
+    debug_uart_puts("CAN node  : none - transmit disabled\r\n");
+    debug_uart_puts("            0b111 is what an unfitted switch block reads."
+                    " Ground PB13/PB14/PB15\r\n"
+                    "            to select an ID; closed = 0, open = 1.\r\n");
+  }
+
+  if (live != latched)
+  {
+    debug_uart_printf("pins now  : %u - CHANGED SINCE BOOT."
+                      " Identity is latched; reset to adopt it.\r\n",
+                      (unsigned)live);
+  }
+}
+
 static const command_t commands[] =
 {
   { "help",      "",             "list these commands",                       cmd_help      },
@@ -1217,6 +1259,7 @@ static const command_t commands[] =
   { "enc",       "[sub]",        "drive encoder - 'enc' for position and speed", cmd_enc   },
   { "drv",       "[sub]",        "drive H-bridge - 'drv' for state",          cmd_drv       },
   { "cfg",       "[key] [val]",  "stored tunables - 'cfg' to list",           cmd_cfg       },
+  { "id",        "",             "module identity from the DIP switches",     cmd_id        },
   { "reset",     "",             "reboot the MCU",                            cmd_reset     },
 };
 

@@ -30,6 +30,7 @@
 #include "drive.h"
 #include "isense.h"
 #include "config.h"
+#include "dipsw.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -132,6 +133,10 @@ int main(void)
   MX_ADC1_Init();
   MX_DAC_Init();
   /* USER CODE BEGIN 2 */
+  /* Identity first, and never again - see dipsw.h. Nothing below may read the
+     pins; everything reads the latch. */
+  dipsw_init();
+
   /* FIRST. drive_init() takes its duty cap from here and isense_init() takes
      the trip and the whole current scale, so anything that reads a config key
      must start after this line. Reported below, once the console is up. */
@@ -179,6 +184,23 @@ int main(void)
   {
     debug_uart_puts("WARNING: stored configuration was not usable as-is."
                     " Check 'cfg', then 'cfg save' to rewrite it.\r\n");
+  }
+
+  debug_uart_printf("module: ID %u, %s\r\n",
+                    (unsigned)dipsw_id(), dipsw_role_str(dipsw_role()));
+
+  /* The one boot line that decides whether this board is allowed on the bus.
+     0b111 is what an unfitted switch block reads, so this fires on a bare
+     bench board - which is the design working, not a fault. */
+  if (!dipsw_valid())
+  {
+    debug_uart_puts("WARNING: no module identity - CAN transmit is disabled."
+                    " Ground DIP_SW_0/1/2 (PB13/PB14/PB15) to select an ID.\r\n");
+  }
+  else
+  {
+    debug_uart_printf("        CAN node ID 0x%03lX\r\n",
+                      (unsigned long)dipsw_can_id());
   }
 
   debug_uart_printf("drive: disabled (nSLEEP low, PWM 0%%, %u kHz), nFAULT=%s\r\n",
@@ -246,14 +268,20 @@ int main(void)
                                (can_bus_is_error_passive()  ? 0x02u : 0u) |
                                (can_bus_is_error_warning()  ? 0x01u : 0u));
 
-        bool sent = can_bus_send(CAN_ID_HEARTBEAT_BASE, payload, sizeof(payload));
+        /* Identity gates the transmit, not just the ID. A board with no
+           switches fitted would otherwise heartbeat at the base address and
+           collide with module 0 - and on a six-node bus that does not present
+           as "wrong ID", it presents as arbitration chaos. */
+        bool sent = dipsw_valid() &&
+                    can_bus_send(dipsw_can_id(), payload, sizeof(payload));
         seq++;
 
         /* TEC/REC and the last-error code are the on-chip equivalent of Orion's
            berr-counter — with no second node answering, expect lec=ack. */
         debug_uart_printf("hb %lu %s | tec %u rec %u lec %s%s%s%s\r\n",
                           (unsigned long)seq,
-                          sent ? "queued" : "NO MAILBOX",
+                          sent ? "queued"
+                               : (dipsw_valid() ? "NO MAILBOX" : "NO ID"),
                           can_bus_tec(),
                           can_bus_rec(),
                           can_bus_last_error_str(),

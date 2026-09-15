@@ -381,6 +381,14 @@ static void cmd_heartbeat(int argc, char **argv)
   }
 
   debug_uart_printf("heartbeat %s\r\n", heartbeat_on ? "on" : "off");
+
+  /* Say it here, not only in the per-frame line. Turning the heartbeat on and
+     watching nothing appear on the bus is a confusing way to discover that the
+     board has no identity. */
+  if (heartbeat_on && !dipsw_valid())
+  {
+    debug_uart_puts("  (nothing will be sent - no module identity, see 'id')\r\n");
+  }
 }
 
 static void cmd_monitor(int argc, char **argv)
@@ -1252,7 +1260,7 @@ static const command_t commands[] =
   { "errors",    "",             "CAN error registers, decoded",              cmd_errors    },
   { "clear",     "",             "zero the software counters",                cmd_clear     },
   { "send",      "<id> [hex]",   "transmit a CAN frame, e.g. send 123 DEADBEEF", cmd_send   },
-  { "heartbeat", "[on|off]",     "periodic 0x500 frame - off to silence the bus", cmd_heartbeat },
+  { "heartbeat", "[on|off]",     "periodic frame at this module's ID - off to silence the bus", cmd_heartbeat },
   { "monitor",   "[on|off]",     "print received CAN frames as they arrive",  cmd_monitor   },
   { "loopback",  "[on|off]",     "CAN loopback - test with no bus attached",  cmd_loopback  },
   { "mks",       "<sub> [args]", "MKS SERVO42C on UART4 - 'mks' for subcommands", cmd_mks   },

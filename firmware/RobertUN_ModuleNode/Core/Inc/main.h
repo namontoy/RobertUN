@@ -65,6 +65,10 @@ void Error_Handler(void);
 #define DRV_nFAULT_GPIO_Port GPIOB
 #define DIP_SW_0_Pin GPIO_PIN_13
 #define DIP_SW_0_GPIO_Port GPIOB
+#define DIP_SW_1_Pin GPIO_PIN_14
+#define DIP_SW_1_GPIO_Port GPIOB
+#define DIP_SW_2_Pin GPIO_PIN_15
+#define DIP_SW_2_GPIO_Port GPIOB
 #define DRV_nSLEEP_Pin GPIO_PIN_5
 #define DRV_nSLEEP_GPIO_Port GPIOB
 

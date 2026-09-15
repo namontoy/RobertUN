@@ -796,8 +796,8 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : DRV_nFAULT_Pin DIP_SW_0_Pin */
-  GPIO_InitStruct.Pin = DRV_nFAULT_Pin|DIP_SW_0_Pin;
+  /*Configure GPIO pins : DRV_nFAULT_Pin DIP_SW_0_Pin DIP_SW_1_Pin DIP_SW_2_Pin */
+  GPIO_InitStruct.Pin = DRV_nFAULT_Pin|DIP_SW_0_Pin|DIP_SW_1_Pin|DIP_SW_2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);

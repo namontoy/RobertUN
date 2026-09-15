@@ -1,8 +1,23 @@
 # Robotics Development Environment — Project Context Document
-**Last updated:** September 13, 2026 (`config` module built — eight tunables in FLASH sector 7 as an append-only CRC'd log, `cfg` console command, saves refused while the bridge is enabled; not yet bench-verified. Earlier: IPROPI decoded — the reading is SUPPLY current, I_motor × D; `.ioc` signal-name root cause fixed; motor rail reopened 9.5 V → 12 V now that current regulation is real; new `config` module requested — parameters in FLASH, editable from the console)
+**Last updated:** September 14, 2026 (`config` module verified on hardware — eight bench checks, two bugs found and fixed, and a reflash confirmed not to erase sector 7 so per-node calibration survives firmware updates)
 *Paste this at the start of a new Claude session to restore full context.*
 
 ## Progress log (most recent first)
+- **Sep 14** — **`config` module verified on hardware; two bugs found and
+  fixed.** Eight bench checks, all passing: boot scan on a blank sector, the
+  save/reset/read-back round trip, range rejection, unchanged-detection with no
+  slot burned, revert and default, the save refusal while the bridge is
+  enabled, and the live-apply coupling both ways. The post-refactor ceiling and
+  trip came back byte-identical to the pre-refactor values, proving the
+  macro-to-function move was transparent. **A reflash does not erase sector 7**,
+  so per-node calibration survives firmware updates — load-bearing for W7.
+  Both bugs were the same class: a consistency check comparing two values in a
+  space where they were not comparable. The `drv trip` hint compared milliamps
+  when one side had been through DAC quantisation and the other had not, so it
+  fired every time; `cfg revert` replaced stored values without re-applying
+  them, so the display could claim a 40% duty cap while the bridge enforced
+  100%. Known untested: the corrupt-record fallback and the sector-full wrap.
+
 - **Sep 13** — **`config` module built: the tunables now live in FLASH.**
   Eight keys (`vdda_mv`, `r_ipropi`, `a_ipropi`, `trip_ma`, `duty_limit`,
   `rail_mv`, `isense_avg`, `sat_raw`) moved out of `#define`s and into sector 7
@@ -3617,8 +3632,14 @@ gearbox is the difference between a note and a broken bench setup.
       nothing changes mid-experiment): `ISENSE_VDDA_MV` 3300 → **3325**,
       `ISENSE_R_IPROPI_OHM` 1474 → **1465**. Net effect is that readings
       currently sit ~1.4% low
+    - ✅ **`config` module verified on hardware Sep 14** — eight checks, plus
+      the finding that a reflash preserves sector 7. See NEXT TASKS item 18
     - ⬜ Confirm the PMODE strap selects PWM (IN1/IN2) mode, and that the nFAULT
-      pull-up is fitted
+      pull-up is fitted. **Already strongly indicated by the Sep 12 data:** at
+      20% duty the DRV8874 gave 11.07 rpm against the DRV8833's 11.78 rpm at
+      the same command. Under either PH/EN pin assignment `drive.c`'s
+      slow-decay output would have produced roughly 50-55 rpm at that command,
+      because one input is held constantly high. A second duty point closes it
 
 **Superseded Sep 11 — the DRV8874 arrived, so none of this is live any more.** It is kept because the reasoning held: nothing in W4 or W5 was blocked by the wait. W4's
 acceptance needs no motor power at all, and W5's PID tuning runs at bench loads
@@ -3778,9 +3799,10 @@ rework session, not a week.
     - ⬜ Restate the recorded plant figures with their rail attached, so a
       future reader cannot mistake a 9.35 V number for a 12 V one.
 
-18. **`config` module — BUILT Sep 13, 2026; NOT YET BENCH-VERIFIED**
+18. **`config` module — BUILT Sep 13, VERIFIED ON HARDWARE Sep 14, 2026**
 
-    Written and compiling clean; every line below is untested on hardware.
+    Eight checks on the bench, all passing; two bugs found and fixed in the
+    process (below).
     `Core/Inc/config.h` + `Core/Src/config.c`, plus a `cfg` console command.
     What exists:
 
@@ -3819,18 +3841,42 @@ rework session, not a week.
       actually diverged from the stored value. Without this the two commands
       would disagree about the same number until the next reset.
 
+    **Verified Sep 14** — boot scan on a blank sector; the save/reset/read-back
+    round trip; range rejection; unchanged-detection (no slot burned);
+    `revert` and `default`; the `cfg save` refusal while the bridge is enabled;
+    and the live-apply coupling in both directions. The post-refactor ceiling
+    and trip came back byte-identical to the pre-refactor values (4975 mA,
+    2997 mA), which is what proved the macro-to-function move was transparent.
+
+    **A firmware reflash does NOT erase sector 7** — confirmed Sep 14 by
+    flashing and finding the stored record intact. The toolchain sector-erases
+    only the regions it writes. This is load-bearing for W7: without it, every
+    firmware update would silently wipe each node's calibration.
+
+    **Two bugs found by the verification, both the same class** — a consistency
+    check compared in a space where the two sides were not comparable:
+    - The `drv trip` "not persistent" hint compared milliamps.
+      `isense_trip_ma()` derives back from the DAC code and is therefore always
+      quantised; a stored config value is not. It fired on every call, gate
+      useless. Fixed by comparing DAC codes, the only space where "would a
+      reset change this?" has a yes/no answer.
+    - `cfg revert` and `cfg default` replaced the stored values without
+      re-applying them, so `cfg` could report a 40% duty cap while the bridge
+      still enforced 100% — the dangerous direction. Fixed with
+      `cfg_apply_live()`.
+
     **Still to do:**
-    - Bench-verify: `cfg` lists; set / `save` / reset / values survive; corrupt
-      a slot and confirm the fallback path; confirm `cfg save` is refused while
-      enabled.
-    - Apply the two measured constants through it rather than by rebuild:
+    - Two paths remain untested and are known to be so: the corrupt-record
+      fallback (needs garbage deliberately written into sector 7), and the
+      sector-full erase and wrap at save 1025, which contains the only
+      `HAL_FLASHEx_Erase` call. Cheap way to reach the second: build with
+      `CONFIG_SLOTS` forced to 4 and wrap it in seconds.
+    - Apply the two measured constants through `cfg` rather than a rebuild:
       `cfg vdda_mv 3325`, `cfg r_ipropi 1465` (after the plateau sweep).
     - Set `cfg rail_mv` once task 17's 12 V is metered at the motor terminals.
-    - **Add W5's PID gains as keys before tuning starts** — this is the biggest
-      payoff of the whole module. Tuning a velocity loop without a reflash
-      between trials is the difference between an afternoon and a week.
-    - Consider `cfg diff` (list only what differs from default) if the `*`
-      marker in the main listing turns out not to be enough.
+    - **Add W5's PID gains as keys before tuning starts** — the biggest payoff
+      of the module. Tuning a velocity loop without a reflash between trials is
+      the difference between an afternoon and a week.
 
 ## KEY LEARNINGS & GOTCHAS
 

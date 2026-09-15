@@ -1,8 +1,28 @@
 # Robotics Development Environment — Project Context Document
-**Last updated:** September 12, 2026 (IPROPI decoded — the reading is SUPPLY current, I_motor × D; `.ioc` signal-name root cause fixed; motor rail reopened 9.5 V → 12 V now that current regulation is real; new `config` module requested — parameters in FLASH, editable from the console)
+**Last updated:** September 13, 2026 (`config` module built — eight tunables in FLASH sector 7 as an append-only CRC'd log, `cfg` console command, saves refused while the bridge is enabled; not yet bench-verified. Earlier: IPROPI decoded — the reading is SUPPLY current, I_motor × D; `.ioc` signal-name root cause fixed; motor rail reopened 9.5 V → 12 V now that current regulation is real; new `config` module requested — parameters in FLASH, editable from the console)
 *Paste this at the start of a new Claude session to restore full context.*
 
 ## Progress log (most recent first)
+- **Sep 13** — **`config` module built: the tunables now live in FLASH.**
+  Eight keys (`vdda_mv`, `r_ipropi`, `a_ipropi`, `trip_ma`, `duty_limit`,
+  `rail_mv`, `isense_avg`, `sat_raw`) moved out of `#define`s and into sector 7
+  as an append-only log of CRC'd records — 1024 saves per erase, newest valid
+  `seq` wins, and a save interrupted by power loss fails its own checksum with
+  the previous record still live. The compiled numbers stayed in `isense.h` as
+  `_DEFAULT`s so the reasoning stays next to the hardware it describes.
+  `isense_full_scale_ma()`, `isense_raw_to_ma()` and the two VREF conversions
+  stopped being macros/inlines — an inline would have frozen the build-time
+  default, which is precisely what this module exists to undo.
+  Safety: out-of-range rejected rather than clamped (a clamp hides the typo),
+  per-key range check on load as well as on set (a valid CRC says the bytes
+  survived, not that the number still makes sense), fall back to defaults
+  *loudly* on the boot line, and **`cfg save` refused while the bridge is
+  enabled** — flash writes stall instruction fetch for up to 3 s and a turning
+  motor keeps turning open-loop through the whole stall. `cfg trip_ma` and
+  `cfg duty_limit` apply live too, and `drv trip` / `drv limit` now flag
+  themselves as non-persistent only once they have actually diverged.
+  Builds clean at 84 KB of 384 KB; **nothing bench-verified yet.**
+
 - **Sep 12 (4)** — **The motor rail goes 9.5 V → 12 V, and a `config` module is
   required.** **(1) Rail.** 9.5 V was never a motor requirement — it was the
   DRV8833's 10.8 V ceiling with margin, and it survived the DRV8874 swap on
@@ -3758,67 +3778,59 @@ rework session, not a week.
     - ⬜ Restate the recorded plant figures with their rail attached, so a
       future reader cannot mistake a 9.35 V number for a 12 V one.
 
-18. **`config` module — persistent parameters in FLASH, editable from the
-    console (NEW, requested Sep 12, 2026)**
+18. **`config` module — BUILT Sep 13, 2026; NOT YET BENCH-VERIFIED**
 
-    **The problem.** Values like `ISENSE_R_IPROPI_OHM`, `ISENSE_VDDA_MV`,
-    `ISENSE_TRIP_DEFAULT_MA` and the duty limits are `#define`s. Three costs,
-    all of them already being paid on this bench:
-    - changing a number is an edit-build-flash cycle, so measured corrections
-      get deferred in batches (the 3300 → 3325 and 1474 → 1465 pair is sitting
-      unapplied right now purely to avoid a mid-experiment reflash);
-    - the seven nodes cannot hold different values without seven builds, yet
-      per-unit values are exactly what these are — each carrier's R_IPROPI is
-      its own resistor, each motor its own constants;
-    - what is actually running in a device is only knowable by reading source
-      at the matching commit.
+    Written and compiling clean; every line below is untested on hardware.
+    `Core/Inc/config.h` + `Core/Src/config.c`, plus a `cfg` console command.
+    What exists:
 
-    **The requirement.** Values live in FLASH, are editable from the serial
-    console, survive reset, and the compiled-in values become **defaults** —
-    a fallback, not the source of truth.
+    - **Eight keys**: `vdda_mv`, `r_ipropi`, `a_ipropi`, `trip_ma`,
+      `duty_limit`, `rail_mv`, `isense_avg`, `sat_raw`. Each carries name,
+      units, min, max, default and one line of help in a single table in
+      `config.c`; adding a key is one enum entry plus one row.
+    - **Defaults stay in the owning header.** `isense.h` keeps the numbers and
+      the reasoning, renamed with a `_DEFAULT` suffix so that reading one at
+      runtime — where `config_get()` was meant — reads wrong at the call site.
+    - **Sector 7** (`0x08060000`, 128 KB) reserved; `FLASH` in
+      `STM32F446xx_FLASH.ld` shortened to 384 KB, with a named `CONFIG` region
+      so the map file shows the reservation. Image now 84 KB of 384 KB, and
+      objdump confirms nothing is linked above `0x08014818`.
+    - **Append-only log**: 48-byte record at a fixed 128-byte stride → 1024
+      saves per erase, so the 10k-cycle endurance becomes ~10M saves. CRC is
+      the last field and is programmed last, so a save interrupted by a power
+      loss fails its own checksum and the previous record stays live. Boot
+      scans all 1024 slots (a corrupt magic mid-log therefore cannot hide the
+      records after it) and takes the highest `seq` that validates.
+    - **Hardware CRC unit driven at register level**, deliberately not through
+      CubeMX — adding a peripheral to the `.ioc` means a regeneration, and this
+      project has already lost USER CODE blocks to one.
+    - **Fails to defaults, loudly.** Corrupt / version-mismatched / out-of-range
+      each print on the boot line *and* raise a second WARNING line, so a board
+      silently on defaults cannot be mistaken for one deliberately at defaults.
+      Out-of-range is per-key: a valid CRC is not a reason to trust a number.
+    - **`cfg save` refuses while the bridge is enabled**, mirroring `drv zero`,
+      with the reason printed: flash writes stall instruction fetch for up to
+      3 s and a turning motor keeps turning open-loop through all of it.
+    - **Out-of-range values are rejected, not clamped** — a clamp accepts
+      `trip 9000`, silently gives 6000, and hides the typo where it is most
+      expensive.
+    - **`cfg trip_ma` and `cfg duty_limit` apply live as well as at boot**, and
+      `drv trip` / `drv limit` now say "not persistent" *only when* they have
+      actually diverged from the stored value. Without this the two commands
+      would disagree about the same number until the next reset.
 
-    **Storage sketch** (STM32F446RE, 512 KB, sectors 0–3 = 16 KB,
-    4 = 64 KB, 5–7 = 128 KB):
-    - Reserve **sector 7** (`0x08060000`, 128 KB) and shorten `FLASH` in
-      `STM32F446xx_FLASH.ld` to 384 KB. The image is ~77 KB, so nothing is
-      given up in practice.
-    - **Append-only record log**, not write-in-place: each save appends
-      `{magic, version, length, seq, CRC32, payload}` and only the newest valid
-      record is live. Erase the sector only when it fills. At ~64 B a record
-      that is ~2000 saves per erase, which against the 10k-cycle endurance is
-      effectively unlimited — where a naive erase-then-write burns one cycle
-      per save and would be a real limit during tuning.
-    - Use the **hardware CRC unit** (the F446 has one; it is free and already
-      unused).
-    - On boot, scan for the newest record whose CRC validates; on any failure
-      fall back to compiled defaults and say so on the boot line. **A corrupt
-      config must never prevent boot** — this module sits upstream of the motor
-      limits, so its failure mode has to be "safe defaults", loudly.
-
-    **Console surface**, following the existing `mks <sub>` / `drv <sub>`
-    pattern: `cfg` (list every key with value, default, units and range),
-    `cfg <key> <value>` (set in RAM, takes effect immediately),
-    `cfg save` (commit), `cfg revert` (reload from FLASH),
-    `cfg default [<key>]`, `cfg diff` (show only what differs from defaults —
-    the line worth pasting into a log).
-
-    **Safety rules, not optional given what these values control:**
-    - Range-check and clamp every key on set *and* on load. A config that can
-      set the trip to 0 or the duty limit to 100% is a way to destroy hardware
-      from a typo.
-    - **Refuse `cfg save` while the bridge is enabled**, mirroring the existing
-      `drv zero` rule. Flash erase/program **stalls instruction fetch** on the
-      F446's single bank, and a 128 KB sector erase is ~1–2 s — running the
-      motor through that is not acceptable. For the same reason, never write
-      from the 1 kHz control-loop ISR.
-
-    **Candidate keys**: `ISENSE_VDDA_MV`, `ISENSE_R_IPROPI_OHM`,
-    `ISENSE_A_IPROPI_UA_PER_A`, trip default, duty limit, **measured motor rail
-    mV** (which is what task 17's duty cap must be derived from), encoder
-    counts/rev, the brake/coast threshold rpm, node-ID fallback — and, the
-    biggest payoff by far, **W5's PID gains**. Tuning a velocity loop without a
-    reflash between every trial is the difference between an afternoon and a
-    week, so this module is worth doing *before* W5 rather than after.
+    **Still to do:**
+    - Bench-verify: `cfg` lists; set / `save` / reset / values survive; corrupt
+      a slot and confirm the fallback path; confirm `cfg save` is refused while
+      enabled.
+    - Apply the two measured constants through it rather than by rebuild:
+      `cfg vdda_mv 3325`, `cfg r_ipropi 1465` (after the plateau sweep).
+    - Set `cfg rail_mv` once task 17's 12 V is metered at the motor terminals.
+    - **Add W5's PID gains as keys before tuning starts** — this is the biggest
+      payoff of the whole module. Tuning a velocity loop without a reflash
+      between trials is the difference between an afternoon and a week.
+    - Consider `cfg diff` (list only what differs from default) if the `*`
+      marker in the main listing turns out not to be enough.
 
 ## KEY LEARNINGS & GOTCHAS
 

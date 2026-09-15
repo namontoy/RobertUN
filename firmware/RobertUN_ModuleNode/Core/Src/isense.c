@@ -11,6 +11,7 @@
   */
 #include "isense.h"
 
+#include "config.h"
 #include "main.h"
 
 extern ADC_HandleTypeDef hadc1;
@@ -20,6 +21,49 @@ static uint16_t zero_offset;    /*!< raw counts read with the bridge off   */
 static bool     was_saturated;  /*!< set by the last conversion taken      */
 static uint16_t vref_code;      /*!< last code written to the DAC          */
 static bool     vref_buffered;  /*!< output buffer state, tracked here     */
+
+/* --- scaling ------------------------------------------------------------- *
+ * All three of these used to be macros or inlines in the header, evaluated at
+ * compile time. They are functions now because their inputs are config keys:
+ * an inline would have frozen whatever the defaults were at build time, which
+ * is exactly the freezing the config module exists to undo.
+ * -------------------------------------------------------------------------- */
+
+uint16_t isense_full_scale_ma(void)
+{
+  uint32_t a_ua = (uint32_t)config_get(CFG_A_IPROPI_UA_PER_A);
+  uint32_t r    = (uint32_t)config_get(CFG_R_IPROPI_OHM);
+
+  /* Ranges in the key table keep both factors well clear of zero, but this is
+     a divisor in the path that sets a CURRENT LIMIT, and a config module that
+     fails open is worse than no config module. */
+  if ((a_ua == 0u) || (r == 0u))
+  {
+    return 0u;
+  }
+
+  return (uint16_t)(((uint64_t)config_get(CFG_VDDA_MV) * 1000000ull) /
+                    ((uint64_t)a_ua * r));
+}
+
+uint32_t isense_raw_to_ma(uint16_t raw)
+{
+  return ((uint32_t)raw * isense_full_scale_ma()) / 4096u;
+}
+
+uint32_t isense_ma_to_vref_mv(uint32_t ma)
+{
+  return (ma * (uint32_t)config_get(CFG_A_IPROPI_UA_PER_A)
+             * (uint32_t)config_get(CFG_R_IPROPI_OHM)) / 1000000u;
+}
+
+uint32_t isense_vref_mv_to_ma(uint32_t mv)
+{
+  uint32_t denom = (uint32_t)config_get(CFG_A_IPROPI_UA_PER_A)
+                 * (uint32_t)config_get(CFG_R_IPROPI_OHM);
+
+  return (denom == 0u) ? 0u : ((mv * 1000000u) / denom);
+}
 
 /* --- measurement --------------------------------------------------------- */
 
@@ -41,7 +85,7 @@ uint16_t isense_read_raw(void)
 
   (void)HAL_ADC_Stop(&hadc1);
 
-  was_saturated = (raw >= ISENSE_SATURATED_RAW);
+  was_saturated = (raw >= (uint16_t)config_get(CFG_ISENSE_SAT_RAW));
   return raw;
 }
 
@@ -52,7 +96,7 @@ uint16_t isense_read_avg(uint16_t samples)
   uint16_t n;
   uint16_t i;
 
-  n = (samples == 0u) ? (uint16_t)ISENSE_AVG_DEFAULT : samples;
+  n = (samples == 0u) ? (uint16_t)config_get(CFG_ISENSE_AVG) : samples;
   if (n > 1024u)
   {
     n = 1024u;
@@ -120,8 +164,8 @@ static uint16_t vref_floor_mv(void)
 static uint16_t vref_ceiling_mv(void)
 {
   return vref_buffered
-           ? (uint16_t)(ISENSE_VDDA_MV - ISENSE_VREF_BUF_MARGIN_MV)
-           : (uint16_t)ISENSE_VDDA_MV;
+           ? (uint16_t)(config_get(CFG_VDDA_MV) - ISENSE_VREF_BUF_MARGIN_MV)
+           : (uint16_t)config_get(CFG_VDDA_MV);
 }
 
 /* The DAC divides by 4095, not 4096 — Vout = VDDA x DOR / 4095. The ADC uses
@@ -129,13 +173,14 @@ static uint16_t vref_ceiling_mv(void)
    discrepancy is not worth hiding behind a shared constant. */
 static uint16_t mv_to_code(uint32_t mv)
 {
-  uint32_t code = (mv * 4095u + (ISENSE_VDDA_MV / 2u)) / ISENSE_VDDA_MV;
+  uint32_t vdda = (uint32_t)config_get(CFG_VDDA_MV);
+  uint32_t code = (mv * 4095u + (vdda / 2u)) / vdda;
   return (code > 4095u) ? 4095u : (uint16_t)code;
 }
 
 static uint16_t code_to_mv(uint16_t code)
 {
-  return (uint16_t)(((uint32_t)code * ISENSE_VDDA_MV) / 4095u);
+  return (uint16_t)(((uint32_t)code * (uint32_t)config_get(CFG_VDDA_MV)) / 4095u);
 }
 
 /** @brief Push vref_code to the hardware. */
@@ -231,5 +276,5 @@ void isense_init(void)
   /* The trip is armed HERE, before main() can call anything that raises
      nSLEEP. On the modified carrier VREF no longer follows nSLEEP, so a
      driver woken with VREF still at reset would regulate at 0 A. */
-  (void)isense_set_trip_ma(ISENSE_TRIP_DEFAULT_MA);
+  (void)isense_set_trip_ma((uint32_t)config_get(CFG_TRIP_BOOT_MA));
 }

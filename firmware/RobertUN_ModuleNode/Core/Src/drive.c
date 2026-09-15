@@ -9,6 +9,7 @@
   */
 #include "drive.h"
 
+#include "config.h"
 #include "main.h"
 
 extern TIM_HandleTypeDef htim4;
@@ -40,6 +41,12 @@ void drive_init(void)
 {
   duty    = 0;
   enabled = false;
+
+  /* The boot cap comes from FLASH, so a board that has been told to stay under
+     40% stays under 40% across a power cycle - which is the whole point of a
+     cap during bring-up. Requires config_init() to have run first. */
+  limit = (uint16_t)config_get(CFG_DUTY_LIMIT);
+  if (limit > DRIVE_DUTY_MAX) { limit = (uint16_t)DRIVE_DUTY_MAX; }
 
   apply(0u, 0u);
   HAL_GPIO_WritePin(DRV_nSLEEP_GPIO_Port, DRV_nSLEEP_Pin, GPIO_PIN_RESET);

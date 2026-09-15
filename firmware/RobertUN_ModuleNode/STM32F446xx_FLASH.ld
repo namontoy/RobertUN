@@ -53,10 +53,15 @@
 ENTRY(Reset_Handler)
 
 /* Specify the memory areas */
+/* FLASH stops at 384K rather than the part's full 512K. The last 128K is
+   sector 7 (0x08060000), reserved for the persistent configuration log - see
+   Core/Inc/config.h. Nothing may be linked there: config.c erases it.
+   The image is around 77K, so the reservation costs nothing real. */
 MEMORY
 {
 RAM (xrw)      : ORIGIN = 0x20000000, LENGTH = 128K
-FLASH (rx)      : ORIGIN = 0x8000000, LENGTH = 512K
+FLASH (rx)      : ORIGIN = 0x8000000, LENGTH = 384K
+CONFIG (r)      : ORIGIN = 0x8060000, LENGTH = 128K
 }
 
 /* Highest address of the user mode stack */

@@ -42,9 +42,10 @@
   * A_IPROPI is 1000 uA/A on the DRV8876 second source, so a swap changes this
   * constant by 2.22x. It is not a transparent substitution.
   *
-  * ISENSE_R_IPROPI_OHM below is the NOMINAL parallel value. If the pair reads
-  * differently on a meter, change that one number — everything else derives
-  * from it, and a 1% error there is a 1% error in every current ever logged.
+  * The R_IPROPI default below is the NOMINAL parallel value. If the pair reads
+  * differently on a meter, change that one number — `cfg r_ipropi <ohms>` on a
+  * live board, no rebuild — because everything else derives from it, and a 1%
+  * error there is a 1% error in every current ever logged.
   *
   *
   * WHAT REMOVING THE 10 kOhm BOUGHT, AND WHAT IT COST
@@ -137,8 +138,7 @@
   * A 5x discriminator landing within 4% of the supply prediction. The residual
   * is the bridge's own RDS(on) - about 0.16 ohm across the two conducting FETs,
   * so ~0.15 V of the rail never reaches the motor - plus the ~1.4% this module
-  * currently reads low from ISENSE_VDDA_MV and ISENSE_R_IPROPI_OHM both being
-  * uncorrected. Together those close the gap to ~2.5%.
+  * currently reads low from vdda_mv and r_ipropi both being uncorrected. Together those close the gap to ~2.5%.
   *
   * TWO CONSEQUENCES, AND THE SECOND ONE BITES
   *
@@ -197,33 +197,43 @@ extern "C" {
 #include <stdbool.h>
 #include <stdint.h>
 
-/** @brief ADC and DAC reference, mV. VDDA on this board. */
-#define ISENSE_VDDA_MV            3300u
+/* ---------------------------------------------------------------------------
+   THESE ARE DEFAULTS, NOT CONSTANTS
+   ---------------------------------------------------------------------------
+   Each of the four below describes a specific soldered board, not the design,
+   and each now lives in FLASH as a config key (see config.h) that the console
+   can change without a rebuild. What remains here is the value a blank board
+   boots with and what `cfg default` restores — so the REASONING stays next to
+   the hardware it is about, which is why they were not simply moved.
+
+   The _DEFAULT suffix is deliberate: it makes reading one of these at runtime,
+   where config_get() was meant, read wrong at the call site.
+   --------------------------------------------------------------------------- */
+
+/** @brief ADC and DAC reference, mV. VDDA on this board. Live: CFG_VDDA_MV. */
+#define ISENSE_VDDA_MV_DEFAULT           3300u
 
 /** @brief IPROPI sense resistor, ohms. MODIFIED CARRIER: 2.0k || 5.6k, the
   *        stock 2.48k having been removed. Nominal parallel value — measure
-  *        the pair and correct this if the meter disagrees. */
-#define ISENSE_R_IPROPI_OHM       1474u
+  *        the pair and set CFG_R_IPROPI_OHM if the meter disagrees, which on
+  *        the first board it does: 1465 measured. */
+#define ISENSE_R_IPROPI_OHM_DEFAULT      1474u
 
 /** @brief A_IPROPI in uA per A. 450 on the DRV8874, 1000 on the DRV8876 —
-  *        changing the part means changing this, and the scale moves 2.22x. */
-#define ISENSE_A_IPROPI_UA_PER_A  450u
-
-/** @brief Current at raw 4095, mA — 4975 as fitted. The ADC ceiling, and the
-  *        highest trip the DAC can ask for. No longer the same as the trip
-  *        point: the 10k that made them equal has been removed. */
-#define ISENSE_FULL_SCALE_MA \
-  ((uint16_t)(((uint64_t)ISENSE_VDDA_MV * 1000000ull) / \
-              ((uint64_t)ISENSE_A_IPROPI_UA_PER_A * ISENSE_R_IPROPI_OHM)))
+  *        changing the part means changing this, and the scale moves 2.22x.
+  *        Live: CFG_A_IPROPI_UA_PER_A. */
+#define ISENSE_A_IPROPI_UA_PER_A_DEFAULT 450u
 
 /** @brief Raw counts at or above which the ADC itself is clipping. Distinct
   *        from regulating — the bridge regulates at the TRIP, which is now
-  *        usually well below this. See isense_saturated(). */
-#define ISENSE_SATURATED_RAW      4050u
+  *        usually well below this. Live: CFG_ISENSE_SAT_RAW.
+  *        See isense_saturated(). */
+#define ISENSE_SATURATED_RAW_DEFAULT     4050u
 
 /** @brief Trip set at boot, mA. Matches what the stock carrier enforced, so
-  *        lifting the 10k did not quietly make anything more dangerous. */
-#define ISENSE_TRIP_DEFAULT_MA    3000u
+  *        lifting the 10k did not quietly make anything more dangerous.
+  *        Live: CFG_TRIP_BOOT_MA. */
+#define ISENSE_TRIP_DEFAULT_MA           3000u
 
 /** @brief Buffered DAC headroom from each rail, mV. F446 datasheet figure. */
 #define ISENSE_VREF_BUF_MARGIN_MV 200u
@@ -268,10 +278,17 @@ uint32_t isense_read_ma(uint16_t samples);
   * @note   Exact integer form of raw x 3.3 / 4096 / 0.6632. The multiply peaks
   *         at 4095 x 4975 = 20.4e6, comfortably inside uint32.
   */
-static inline uint32_t isense_raw_to_ma(uint16_t raw)
-{
-  return ((uint32_t)raw * ISENSE_FULL_SCALE_MA) / 4096u;
-}
+uint32_t isense_raw_to_ma(uint16_t raw);
+
+/**
+  * @brief  Current at raw 4095, mA — 4975 with the resistor as fitted. The ADC
+  *         ceiling, and the highest trip the DAC can ask for. No longer the
+  *         same as the trip point: the 10k that made them equal is gone.
+  * @note   A function rather than the #define it used to be, because it is
+  *         computed from three config keys now and must follow them when they
+  *         change at runtime.
+  */
+uint16_t isense_full_scale_ma(void);
 
 /**
   * @brief  Measure and store the zero offset.
@@ -285,7 +302,7 @@ uint16_t isense_zero(void);
 uint16_t isense_offset(void);
 
 /**
-  * @brief  Whether the last reading reached ISENSE_SATURATED_RAW.
+  * @brief  Whether the last reading reached the saturation threshold.
   * @note   This is the ADC clipping near 4.98 A, which after the carrier
   *         modification is a DIFFERENT event from the bridge regulating.
   *         Regulation shows up as a plateau at isense_trip_ma(); clipping
@@ -343,21 +360,17 @@ bool isense_vref_buffered(void);
   * @brief  Convert a trip current to the VREF voltage that produces it.
   * @param  ma  milliamps
   * @return millivolts. Unclamped — the callers do the clamping.
+  * @note   Was inline; now a function, because A_IPROPI and R_IPROPI are
+  *         config keys and an inline would have baked in the defaults.
   */
-static inline uint32_t isense_ma_to_vref_mv(uint32_t ma)
-{
-  return (ma * ISENSE_A_IPROPI_UA_PER_A * ISENSE_R_IPROPI_OHM) / 1000000u;
-}
+uint32_t isense_ma_to_vref_mv(uint32_t ma);
 
 /**
   * @brief  Convert a VREF voltage to the trip current it produces.
   * @param  mv  millivolts
   * @return milliamps.
   */
-static inline uint32_t isense_vref_mv_to_ma(uint32_t mv)
-{
-  return (mv * 1000000u) / (ISENSE_A_IPROPI_UA_PER_A * ISENSE_R_IPROPI_OHM);
-}
+uint32_t isense_vref_mv_to_ma(uint32_t mv);
 
 #ifdef __cplusplus
 }

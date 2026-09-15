@@ -28,6 +28,7 @@
 #include "encoder.h"
 #include "drive.h"
 #include "isense.h"
+#include "config.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -738,7 +739,7 @@ static void cmd_drv(int argc, char **argv)
                       (unsigned)isense_vref_mv(),
                       (unsigned)isense_vref_code(),
                       isense_vref_buffered() ? "on" : "off",
-                      (unsigned)ISENSE_FULL_SCALE_MA);
+                      (unsigned)isense_full_scale_ma());
     debug_uart_puts(
       "  sub: enable | disable | duty <+/-pct> | brake | coast\r\n"
       "       decay slow|fast | limit <pct> | current [n] | zero\r\n"
@@ -835,7 +836,7 @@ static void cmd_drv(int argc, char **argv)
         "  regulating: regulation shows up as a plateau at the trip"
         " (%lu mA).\r\n"
         "  Both at once just means the trip is sitting at the ceiling.\r\n",
-        (unsigned)ISENSE_FULL_SCALE_MA,
+        (unsigned)isense_full_scale_ma(),
         (unsigned long)isense_trip_ma());
     }
     else if (raw > 0u)
@@ -918,11 +919,19 @@ static void cmd_drv(int argc, char **argv)
                       " LSB\r\n",
                       (unsigned long)isense_trip_min_ma(),
                       (unsigned long)isense_trip_max_ma(),
-                      (unsigned)ISENSE_FULL_SCALE_MA);
+                      (unsigned)isense_full_scale_ma());
 
     if (drive_is_enabled())
     {
       debug_uart_puts("  (applied live - the driver follows VREF immediately)\r\n");
+    }
+
+    /* This command is the volatile one. Said only when the two have actually
+       diverged, so it stays a useful signal instead of noise on every call. */
+    if ((argc >= 3) && (isense_trip_ma() != (uint32_t)config_get(CFG_TRIP_BOOT_MA)))
+    {
+      debug_uart_puts("  (not persistent - 'cfg trip_ma <mA>' then 'cfg save'"
+                      " to survive a reset)\r\n");
     }
   }
   else if (strcmp(argv[1], "limit") == 0)
@@ -935,6 +944,12 @@ static void cmd_drv(int argc, char **argv)
     }
 
     debug_uart_printf("limit %u%%\r\n", (unsigned)(drive_limit() / 10u));
+
+    if ((argc >= 3) && (drive_limit() != (uint16_t)config_get(CFG_DUTY_LIMIT)))
+    {
+      debug_uart_puts("  (not persistent - 'cfg duty_limit <permille>' then"
+                      " 'cfg save' to survive a reset)\r\n");
+    }
   }
   else
   {
@@ -952,6 +967,206 @@ static void cmd_reset(int argc, char **argv)
   NVIC_SystemReset();
 }
 
+/* --- cfg ------------------------------------------------------------------ *
+ * The console half of config.c. Everything here is deliberately explicit: a
+ * value typed here can end up setting a current limit, so nothing is guessed,
+ * nothing is silently clamped, and the difference between "changed" and
+ * "changed AND saved" is printed every time rather than assumed.
+ * -------------------------------------------------------------------------- */
+
+/** @brief One table row. * marks unsaved, so a forgotten 'cfg save' is visible
+  *        without having to remember what was typed. */
+static void cfg_print_key(config_key_t k)
+{
+  int32_t now = config_get(k);
+
+  debug_uart_printf("  %c %-11s %8ld %-5s (default %ld, %ld..%ld)\r\n",
+                    (now == config_default(k)) ? ' ' : '*',
+                    config_name(k),
+                    (long)now,
+                    config_units(k),
+                    (long)config_default(k),
+                    (long)config_min(k),
+                    (long)config_max(k));
+}
+
+static void cfg_report_save(config_save_t r)
+{
+  switch (r)
+  {
+    case CONFIG_SAVE_OK:
+    {
+      uint16_t used, total;
+      config_usage(&used, &total);
+      debug_uart_printf("saved - slot %u of %u used\r\n",
+                        (unsigned)used, (unsigned)total);
+      break;
+    }
+
+    case CONFIG_SAVE_BUSY:
+      /* Refusing, not queueing. Programming flash stalls the core for up to
+         3 s on this part: the control loop stops and a turning motor keeps
+         turning through all of it, unsupervised. */
+      debug_uart_puts("refusing - 'drv disable' first. Writing flash halts the"
+                      " core for up to 3 s,\r\n"
+                      "  and a motor already turning keeps turning open-loop"
+                      " for the whole stall\r\n");
+      break;
+
+    case CONFIG_SAVE_UNCHANGED:
+      debug_uart_puts("nothing to save - flash already matches\r\n");
+      break;
+
+    case CONFIG_SAVE_FLASH_ERROR:
+    default:
+      debug_uart_puts("FLASH ERROR - nothing was written. The stored"
+                      " configuration is unchanged\r\n");
+      break;
+  }
+}
+
+static void cmd_cfg(int argc, char **argv)
+{
+  if (argc < 2)
+  {
+    uint16_t used, total;
+    config_usage(&used, &total);
+
+    debug_uart_printf("config v%u, %u keys, slot %u/%u used%s\r\n",
+                      (unsigned)CONFIG_VERSION,
+                      (unsigned)CFG_KEY_COUNT,
+                      (unsigned)used, (unsigned)total,
+                      config_dirty() ? "  -- UNSAVED CHANGES" : "");
+
+    for (uint16_t i = 0u; i < (uint16_t)CFG_KEY_COUNT; i++)
+    {
+      cfg_print_key((config_key_t)i);
+    }
+
+    debug_uart_puts(
+      "  (* = differs from the compiled default)\r\n"
+      "  sub: <key> [value] | save | revert | default [<key>] | help\r\n");
+    return;
+  }
+
+  if (strcmp(argv[1], "save") == 0)
+  {
+    cfg_report_save(config_save());
+    return;
+  }
+
+  if (strcmp(argv[1], "revert") == 0)
+  {
+    config_load_t r = config_revert();
+    debug_uart_printf("reverted to stored values - %s\r\n", config_load_str(r));
+    return;
+  }
+
+  if (strcmp(argv[1], "default") == 0)
+  {
+    if (argc >= 3)
+    {
+      config_key_t k = config_find(argv[2]);
+      if (k == CFG_KEY_COUNT)
+      {
+        debug_uart_printf("unknown key '%s' - try 'cfg'\r\n", argv[2]);
+        return;
+      }
+
+      config_reset_key(k);
+      cfg_print_key(k);
+    }
+    else
+    {
+      config_reset_all();
+      debug_uart_puts("all keys back to compiled defaults\r\n");
+    }
+
+    debug_uart_puts("  (in RAM only - 'cfg save' to make it stick)\r\n");
+    return;
+  }
+
+  if (strcmp(argv[1], "help") == 0)
+  {
+    for (uint16_t i = 0u; i < (uint16_t)CFG_KEY_COUNT; i++)
+    {
+      debug_uart_printf("  %-11s %s\r\n",
+                        config_name((config_key_t)i),
+                        config_help((config_key_t)i));
+    }
+    return;
+  }
+
+  /* Anything else is a key name. */
+  config_key_t k = config_find(argv[1]);
+
+  if (k == CFG_KEY_COUNT)
+  {
+    debug_uart_printf("unknown key '%s' - try 'cfg'\r\n", argv[1]);
+    return;
+  }
+
+  if (argc < 3)
+  {
+    cfg_print_key(k);
+    debug_uart_printf("  %s\r\n", config_help(k));
+    return;
+  }
+
+  int32_t want = (int32_t)strtol(argv[2], NULL, 10);
+
+  /* Rejected rather than clamped on purpose - see config_set(). A typo that
+     silently becomes the nearest legal value is a typo nobody finds. */
+  if (!config_set(k, want))
+  {
+    debug_uart_printf("out of range - %s accepts %ld..%ld %s\r\n",
+                      config_name(k),
+                      (long)config_min(k),
+                      (long)config_max(k),
+                      config_units(k));
+    return;
+  }
+
+  cfg_print_key(k);
+
+  /* Two of these keys have a live counterpart under 'drv'. Setting one here
+     and not applying it would leave 'cfg' and 'drv' disagreeing about the same
+     number until the next reset, which is the sort of discrepancy that gets
+     debugged as a hardware fault. So they take effect immediately as well. */
+  if (k == CFG_TRIP_BOOT_MA)
+  {
+    (void)isense_set_trip_ma((uint32_t)want);
+    debug_uart_printf("  applied now: trip %lu mA\r\n",
+                      (unsigned long)isense_trip_ma());
+  }
+  else if (k == CFG_DUTY_LIMIT)
+  {
+    drive_set_limit((uint16_t)want);
+    debug_uart_printf("  applied now: limit %u%%\r\n",
+                      (unsigned)(drive_limit() / 10u));
+  }
+
+  /* Three keys change the meaning of every current number the board reports,
+     so say so at the point of change rather than leaving it to be rediscovered
+     when a log stops matching a meter. The trip is re-applied because it was
+     computed with the old scale and would otherwise regulate at the wrong
+     current while reporting the right one. */
+  if ((k == CFG_R_IPROPI_OHM) || (k == CFG_A_IPROPI_UA_PER_A) ||
+      (k == CFG_VDDA_MV))
+  {
+    uint32_t trip = isense_trip_ma();
+    (void)isense_set_trip_ma(trip);
+
+    debug_uart_printf("  current scale is now %u mA full-scale;"
+                      " trip re-applied at %lu mA\r\n",
+                      (unsigned)isense_full_scale_ma(),
+                      (unsigned long)isense_trip_ma());
+  }
+
+  debug_uart_puts("  (live now, but in RAM - 'cfg save' to keep it across a"
+                  " reset)\r\n");
+}
+
 static const command_t commands[] =
 {
   { "help",      "",             "list these commands",                       cmd_help      },
@@ -966,6 +1181,7 @@ static const command_t commands[] =
   { "mks",       "<sub> [args]", "MKS SERVO42C on UART4 - 'mks' for subcommands", cmd_mks   },
   { "enc",       "[sub]",        "drive encoder - 'enc' for position and speed", cmd_enc   },
   { "drv",       "[sub]",        "drive H-bridge - 'drv' for state",          cmd_drv       },
+  { "cfg",       "[key] [val]",  "stored tunables - 'cfg' to list",           cmd_cfg       },
   { "reset",     "",             "reboot the MCU",                            cmd_reset     },
 };
 

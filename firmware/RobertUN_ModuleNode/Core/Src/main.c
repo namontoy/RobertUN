@@ -29,6 +29,7 @@
 #include "encoder.h"
 #include "drive.h"
 #include "isense.h"
+#include "config.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -131,6 +132,11 @@ int main(void)
   MX_ADC1_Init();
   MX_DAC_Init();
   /* USER CODE BEGIN 2 */
+  /* FIRST. drive_init() takes its duty cap from here and isense_init() takes
+     the trip and the whole current scale, so anything that reads a config key
+     must start after this line. Reported below, once the console is up. */
+  config_load_t cfg_status = config_init();
+
   /* Assert the off state by name, rather than depending on a reader noticing
      that Pulse = 0 in generated code. */
   drive_init();
@@ -156,6 +162,25 @@ int main(void)
     debug_uart_puts("ERROR: MKS link not running - check UART4_RX DMA is Circular\r\n");
   }
 
+  {
+    uint16_t used, total;
+    config_usage(&used, &total);
+
+    debug_uart_printf("config: %s (slot %u/%u)\r\n",
+                      config_load_str(cfg_status), (unsigned)used, (unsigned)total);
+  }
+
+  /* Said twice on purpose. A board silently running on defaults because its
+     stored record failed a CRC looks exactly like one deliberately left at
+     defaults, and the difference matters when the numbers stop adding up. */
+  if ((cfg_status == CONFIG_LOAD_CORRUPT) ||
+      (cfg_status == CONFIG_LOAD_VERSION) ||
+      (cfg_status == CONFIG_LOAD_CLAMPED))
+  {
+    debug_uart_puts("WARNING: stored configuration was not usable as-is."
+                    " Check 'cfg', then 'cfg save' to rewrite it.\r\n");
+  }
+
   debug_uart_printf("drive: disabled (nSLEEP low, PWM 0%%, %u kHz), nFAULT=%s\r\n",
                     (unsigned)(DRIVE_PWM_HZ / 1000u),
                     drive_faulted() ? "ASSERTED" : "clear");
@@ -165,9 +190,9 @@ int main(void)
      tied to nSLEEP — so the ceiling and the trip are independent and a log
      that records only one of them cannot be interpreted later. */
   debug_uart_printf("isense: ADC1_IN2 on PA2, ceiling %u mA"
-                    " (R_IPROPI %u ohm, MODIFIED carrier)\r\n",
-                    (unsigned)ISENSE_FULL_SCALE_MA,
-                    (unsigned)ISENSE_R_IPROPI_OHM);
+                    " (R_IPROPI %ld ohm, MODIFIED carrier)\r\n",
+                    (unsigned)isense_full_scale_ma(),
+                    (long)config_get(CFG_R_IPROPI_OHM));
   debug_uart_printf("vref:   DAC1_OUT1 on PA4, trip armed at %lu mA"
                     " (%u mV, buffer %s)\r\n",
                     (unsigned long)isense_trip_ma(),

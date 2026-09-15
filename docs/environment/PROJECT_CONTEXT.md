@@ -1,8 +1,24 @@
 # Robotics Development Environment — Project Context Document
-**Last updated:** September 14, 2026 (`config` module verified on hardware — eight bench checks, two bugs found and fixed, and a reflash confirmed not to erase sector 7 so per-node calibration survives firmware updates)
+**Last updated:** September 14, 2026 (module identity live — `dipsw.c` latches the 3-bit DIP switch at boot, all eight codes verified on hardware, and the heartbeat now uses `0x500 + module_id` with identity gating the transmit)
 *Paste this at the start of a new Claude session to restore full context.*
 
 ## Progress log (most recent first)
+- **Sep 14 (later)** — **Module identity implemented and verified; W7's
+  firmware dependency is closed.** `dipsw.c` reads PB13/PB14/PB15 once at boot
+  and latches. All eight codes swept on a board with a real switch block: every
+  bit maps correctly with PB13 as LSB, every role boundary lands where the
+  design says, and the CAN ID tracks `0x500 + id` across the range. The latch
+  held at ID 0 while the pins read 1, reporting the divergence instead of
+  acting on it — which is the invariant that stops two boards sharing an
+  address mid-run. The heartbeat now uses the module ID, and identity gates the
+  *transmit* as well: at code 7 it reports `NO ID` with `lec none`, proving
+  nothing reached a mailbox. PB14/PB15 are configured by `dipsw_init()` rather
+  than CubeMX, for the same reason `drive_init()` starts its own PWM. The
+  documented halt-on-invalid is deferred to W7 — it would remove the console to
+  prevent a collision the transmit gate already prevents. Also established that
+  `NO MAILBOX` after exactly three frames is the lone-node signature of
+  `AutoRetransmission = ENABLE`, not a fault.
+
 - **Sep 14** — **`config` module verified on hardware; two bugs found and
   fixed.** Eight bench checks, all passing: boot scan on a blank sector, the
   save/reset/read-back round trip, range rejection, unchanged-detection with no
@@ -1759,12 +1775,34 @@ which is the most expensive place to meet it.
   address `0xE0` (see MKS SERVO42C section). Module identity lives **only** in
   the CAN ID and this DIP switch.
 
-**Pins (Aug 25, 2026): `DIP_SW_0` = PB13, fitted and in the `.ioc`.
-`DIP_SW_1` = PB14 and `DIP_SW_2` = PB15 planned but not yet added** — they keep
-the switch block contiguous on the header and are both still free. Until all
-three exist the ID cannot be read at all, so the latch-once-in `main()` step is
-still unwritten. Note that PB3 is now the encoder's TIM2_CH2 and is no longer
-available, which is why the block sits at PB13–PB15.
+**Pins: `DIP_SW_0` = PB13, `DIP_SW_1` = PB14, `DIP_SW_2` = PB15. Implemented
+and verified on hardware Sep 14, 2026** (`Core/Src/dipsw.c`). PB13 as the LSB.
+PB3 is now the encoder's TIM2_CH2 and is no longer available, which is why the
+block sits at PB13–PB15.
+
+**PB13 is in the `.ioc`; PB14/PB15 are configured by `dipsw_init()` instead.**
+Same reasoning as `drive_init()` starting its own PWM: a CubeMX regeneration has
+already silently emptied a USER CODE block on this project once, and the `.ioc`
+is the one file we cannot defend. The pin macros are `#ifndef`-guarded, so
+adding those pins in CubeMX later changes nothing.
+
+**Verified Sep 14 on a board with a real switch block** — all eight codes swept,
+every bit mapping correctly and every role boundary landing where this table
+says; the latch holding at ID 0 while the pins read 1, with the divergence
+*reported* rather than acted on; and the transmit gate proven in both
+directions (`NO ID` with `lec none` at code 7, `queued` at `0x500` with
+`lec ack` at code 0). `lec none` is the strong evidence in the first case: with
+no second node, a frame that had actually been attempted would have come back
+`lec ack`, so the gate held before the frame ever reached a mailbox.
+
+**The invalid code does not halt — deferred, not dropped.** The table above says
+`0b111` halts and blinks. Taken literally that would have bricked every board on
+the bench, since the switch block is an HW1 part and until Sep 14 every board
+read `0b111`; halting removes the console, which is the only way to bring a
+board up. What carries the safety is the transmit gate, and that is implemented:
+`dipsw_valid()` is false, the boot banner says so loudly, and nothing goes on
+the bus. Revisit the halt in W7, when a board with no identity is a real
+assembly error rather than the normal state.
 
 ### Debug probes
 
@@ -1936,7 +1974,9 @@ wired.
 | PB8 | CAN1_RX | bxCAN1 @ 250 kbps | AF9 | rover CAN bus |
 | PB9 | CAN1_TX | bxCAN1 | AF9 | rover CAN bus |
 | PB12 | DRV_nFAULT | GPIO in, pull-up | — | DRV8874 nFAULT, open-drain, active low |
-| PB13 | DIP_SW_0 | GPIO in, pull-up | — | module ID bit 0 |
+| PB13 | DIP_SW_0 | GPIO in, pull-up | — | module ID bit 0 (LSB) |
+| PB14 | DIP_SW_1 | GPIO in, pull-up | — | module ID bit 1 — **configured by `dipsw_init()`, not the `.ioc`** |
+| PB15 | DIP_SW_2 | GPIO in, pull-up | — | module ID bit 2 (MSB) — **configured by `dipsw_init()`, not the `.ioc`** |
 | PH0/PH1 | HSE | 8 MHz crystal | — | → 180 MHz PLL (M=4, N=180, P=2) |
 | PC14/PC15 | LSE | 32.768 kHz | — | in the `.ioc`, **not enabled** in code |
 
@@ -2077,7 +2117,12 @@ can_bus_get_timing                       can_bus_stats/clear_stats
   TIM3 rate, so the LED blink and the CAN frame share a cadence. Payload is
   self-describing in `candump`: bytes 0-3 big-endian sequence, then TEC, REC,
   LEC, and a status bitfield (bit0 warning, bit1 passive, bit2 bus-off).
-  Becomes `0x500 + module_id` once the DIP switch exists.
+  **Now `0x500 + module_id` (Sep 14, 2026)** — the DIP switch supplies it, and
+  identity gates the *transmit*, not just the address: a board reading `0b111`
+  sends nothing at all, and the per-frame line says `NO ID`. Without that gate
+  an unconfigured board would heartbeat at the base address and collide with
+  module 0, which on a six-node bus does not present as "wrong ID" — it
+  presents as arbitration chaos.
 
 **Reading `lec` during bring-up:** `lec ack` means the frame went out correctly
 but nothing acknowledged it. A transmitter cannot ACK itself, so this says "no
@@ -2215,6 +2260,20 @@ Reading notes that generalise:
   and `BOFF` set is `AutoBusOff` recovery in progress, not a receive problem.
 - **TEC/REC survive `HAL_CAN_Stop()` + `HAL_CAN_Init()`.** Only a peripheral or
   system reset clears them, so counters seen after a mode change may predate it.
+- **`NO MAILBOX` after exactly three frames is the lone-node signature, not a
+  fault** (observed Sep 14, 2026). `AutoRetransmission = ENABLE`, so a frame
+  that is never acknowledged is retried *forever* and its mailbox is never
+  released. Three mailboxes, three frames, then every subsequent send fails to
+  find one. Read it together with `lec ack` and `tec 128`: all three are the
+  same single fact, which is that nobody else is on the bus. It disappears the
+  moment a second node acknowledges.
+  - **Open question for W6:** whether the heartbeat should be one-shot (`NART`)
+    instead. A heartbeat retried for seconds is stale by the time it lands, and
+    the retry jams the mailboxes that real traffic needs. The counter-argument
+    is that auto-retransmit is right for commands. Likely answer: per-frame
+    choice, which bxCAN does not offer — so it becomes "which matters more on
+    this bus". Do not change it mid-bring-up; the current behaviour is now a
+    known-good reference signature.
 
 **Operational rule: do not debug CAN error counters on a node whose transceiver
 is not connected and powered.** The numbers are not merely unhelpful, they are
@@ -3586,7 +3645,10 @@ gearbox is the difference between a note and a broken bench setup.
       motor (six wheels plus the spare) had its encoder verified and its cable
       extension **re-terminated with crimped joints per NASA-STD-8739.4A**.
       The Aug 25 broken-VCC failure is closed fleet-wide, not sampled.
-    - ⬜ `DIP_SW_1`/`DIP_SW_2` on PB14/PB15, then the latch-once ID read
+    - ✅ **`DIP_SW_1`/`DIP_SW_2` on PB14/PB15 and the latch-once ID read —
+      done and verified Sep 14**, all eight codes. The heartbeat now goes to
+      `0x500 + module_id`, and identity gates the transmit. W7 no longer
+      depends on anything unwritten in firmware
     - ✅ **First powered motion Aug 26** — free shaft, both directions, full
       duty range, coast and brake all correct. See the plant model below.
     - ✅ **Motor-terminal voltage confirmed Aug 26: 9.45 V supply → 9.35 V at

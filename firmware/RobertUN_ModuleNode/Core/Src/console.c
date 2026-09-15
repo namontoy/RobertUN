@@ -927,8 +927,14 @@ static void cmd_drv(int argc, char **argv)
     }
 
     /* This command is the volatile one. Said only when the two have actually
-       diverged, so it stays a useful signal instead of noise on every call. */
-    if ((argc >= 3) && (isense_trip_ma() != (uint32_t)config_get(CFG_TRIP_BOOT_MA)))
+       diverged, so it stays a useful signal instead of noise on every call.
+       Compared as DAC CODES, not milliamps: isense_trip_ma() has been through
+       quantisation and the stored value has not, so an mA comparison differs
+       by a count or two even when the two mean the same thing - which would
+       make this fire on every call and render the gate useless. */
+    if ((argc >= 3) &&
+        (isense_vref_code() !=
+         isense_code_for_trip_ma((uint32_t)config_get(CFG_TRIP_BOOT_MA))))
     {
       debug_uart_puts("  (not persistent - 'cfg trip_ma <mA>' then 'cfg save'"
                       " to survive a reset)\r\n");

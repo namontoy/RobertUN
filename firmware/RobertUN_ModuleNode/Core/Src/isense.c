@@ -190,18 +190,40 @@ static void vref_apply(void)
   (void)HAL_DAC_Start(&hdac, DAC_CHANNEL_1);
 }
 
+/**
+  * @brief  The DAC code a trip request maps to, and whether the range had to
+  *         clamp it. Single-sourced so the "what would this do" and the "do it"
+  *         paths cannot drift apart.
+  */
+static uint16_t trip_code(uint32_t ma, bool *clamped)
+{
+  uint32_t mv = isense_ma_to_vref_mv(ma);
+  bool     c  = false;
+
+  if (mv < vref_floor_mv())   { mv = vref_floor_mv();   c = true; }
+  if (mv > vref_ceiling_mv()) { mv = vref_ceiling_mv(); c = true; }
+
+  if (clamped != NULL)
+  {
+    *clamped = c;
+  }
+
+  return mv_to_code(mv);
+}
+
 bool isense_set_trip_ma(uint32_t ma)
 {
-  uint32_t mv      = isense_ma_to_vref_mv(ma);
-  bool     clamped = false;
+  bool clamped;
 
-  if (mv < vref_floor_mv())   { mv = vref_floor_mv();   clamped = true; }
-  if (mv > vref_ceiling_mv()) { mv = vref_ceiling_mv(); clamped = true; }
-
-  vref_code = mv_to_code(mv);
+  vref_code = trip_code(ma, &clamped);
   vref_apply();
 
   return !clamped;
+}
+
+uint16_t isense_code_for_trip_ma(uint32_t ma)
+{
+  return trip_code(ma, NULL);
 }
 
 uint32_t isense_trip_ma(void)

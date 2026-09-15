@@ -357,6 +357,17 @@ void isense_set_vref_buffered(bool on);
 bool isense_vref_buffered(void);
 
 /**
+  * @brief  The DAC code a given trip request would end up writing.
+  * @note   Exists so a caller can ask "would a reset change the trip?" exactly.
+  *         Comparing milliamps cannot answer it: isense_trip_ma() is derived
+  *         back from the code and is therefore always quantised, while a stored
+  *         config value is not, so the two are almost never equal even when
+  *         they mean the same thing. Codes are the only space where the
+  *         question has a yes/no answer.
+  */
+uint16_t isense_code_for_trip_ma(uint32_t ma);
+
+/**
   * @brief  Convert a trip current to the VREF voltage that produces it.
   * @param  ma  milliamps
   * @return millivolts. Unclamped — the callers do the clamping.

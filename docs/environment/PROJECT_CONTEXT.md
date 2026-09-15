@@ -3200,10 +3200,15 @@ open items from the selection doc:
 2. ~~Whether the carrier already populates R_IPROPI, and at what value.~~
    **ANSWERED Sep 12, 2026: 2.48 kΩ, fitted.** The selection doc's 2.2 kΩ was
    an assumption and is superseded — see the scaling block below.
-3. **Whether the carrier populates the nFAULT pull-up.** The DRV8833 carrier
-   did not and one had to be added. Do not assume this one does — a nFAULT pin
-   that has only ever read high proves nothing. Short it to GND once and
-   confirm the boot line reports `ASSERTED`.
+3. ~~Whether the carrier populates the nFAULT pull-up.~~ **ANSWERED Sep 14,
+   2026: fitted and working.** Shorted to GND, the boot line reported
+   `nFAULT=ASSERTED`; released, it reported `clear`. A clean high on release is
+   the part that proves the pull-up exists — a missing one gives an
+   inconsistent float, not a steady high.
+   **Still unproven: that the driver itself pulls nFAULT low on a real fault.**
+   This test exercised the MCU side only. Cheapest honest check is UVLO — with
+   nSLEEP high, drop VM below ~4.5 V and the driver should assert. Fold it into
+   the 12 V rail work, when the bench supply is already in hand.
 
 **What does NOT change:** `drive.c` needs no edit. nSLEEP polarity, the 1 ms
 wake, the IN1/IN2 truth table and the open-drain active-low nFAULT are the same
@@ -3701,12 +3706,16 @@ gearbox is the difference between a note and a broken bench setup.
       currently sit ~1.4% low
     - ✅ **`config` module verified on hardware Sep 14** — eight checks, plus
       the finding that a reflash preserves sector 7. See NEXT TASKS item 18
-    - ⬜ Confirm the PMODE strap selects PWM (IN1/IN2) mode, and that the nFAULT
-      pull-up is fitted. **Already strongly indicated by the Sep 12 data:** at
-      20% duty the DRV8874 gave 11.07 rpm against the DRV8833's 11.78 rpm at
-      the same command. Under either PH/EN pin assignment `drive.c`'s
-      slow-decay output would have produced roughly 50-55 rpm at that command,
-      because one input is held constantly high. A second duty point closes it
+    - ✅ **nFAULT pull-up confirmed fitted Sep 14** — `ASSERTED` when shorted to
+      GND, clean `clear` when released. MCU side only; that the driver asserts
+      on a real fault is still unproven, and UVLO during the rail work is the
+      cheap way to close it
+    - ⚠️ **Nothing polls nFAULT at runtime.** It is read at boot and by `drv`,
+      nowhere else, so a fault that occurs and clears mid-run is invisible.
+      `drive.h` defers the policy to W5 deliberately and that is right — but a
+      *sticky latch* in the 1 kHz tick is not policy, it is observation, and
+      without one the loaded-wheel current measurement could trip a transient
+      OCP that leaves no trace. Do this before the rig work
 
 **Superseded Sep 11 — the DRV8874 arrived, so none of this is live any more.** It is kept because the reasoning held: nothing in W4 or W5 was blocked by the wait. W4's
 acceptance needs no motor power at all, and W5's PID tuning runs at bench loads

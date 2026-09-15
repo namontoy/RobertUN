@@ -996,6 +996,25 @@ static void cfg_print_key(config_key_t k)
                     (long)config_max(k));
 }
 
+/**
+  * @brief Push the two keys that have live hardware counterparts back into the
+  *        hardware.
+  *
+  * Needed after revert and default, which replace the stored values underneath
+  * a board that is still running on the old ones. Without this, `cfg` can claim
+  * a duty cap of 40% while the bridge is still enforcing 100% — and that is the
+  * dangerous direction of the mismatch, not the harmless one.
+  *
+  * Applied unconditionally rather than only for the two keys: both calls are
+  * idempotent, and a list of "which keys need re-applying" maintained by hand
+  * at each call site is exactly the thing that goes stale when a key is added.
+  */
+static void cfg_apply_live(void)
+{
+  (void)isense_set_trip_ma((uint32_t)config_get(CFG_TRIP_BOOT_MA));
+  drive_set_limit((uint16_t)config_get(CFG_DUTY_LIMIT));
+}
+
 static void cfg_report_save(config_save_t r)
 {
   switch (r)
@@ -1064,7 +1083,12 @@ static void cmd_cfg(int argc, char **argv)
   if (strcmp(argv[1], "revert") == 0)
   {
     config_load_t r = config_revert();
+    cfg_apply_live();
+
     debug_uart_printf("reverted to stored values - %s\r\n", config_load_str(r));
+    debug_uart_printf("  trip %lu mA, limit %u%% - both re-applied\r\n",
+                      (unsigned long)isense_trip_ma(),
+                      (unsigned)(drive_limit() / 10u));
     return;
   }
 
@@ -1080,14 +1104,19 @@ static void cmd_cfg(int argc, char **argv)
       }
 
       config_reset_key(k);
+      cfg_apply_live();
       cfg_print_key(k);
     }
     else
     {
       config_reset_all();
+      cfg_apply_live();
       debug_uart_puts("all keys back to compiled defaults\r\n");
     }
 
+    debug_uart_printf("  trip %lu mA, limit %u%% - both re-applied\r\n",
+                      (unsigned long)isense_trip_ma(),
+                      (unsigned)(drive_limit() / 10u));
     debug_uart_puts("  (in RAM only - 'cfg save' to make it stick)\r\n");
     return;
   }

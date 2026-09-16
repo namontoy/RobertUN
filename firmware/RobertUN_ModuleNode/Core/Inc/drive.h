@@ -276,6 +276,68 @@ int16_t drive_fault_duty(void);
   *        itself is a fault record nobody reads. */
 void drive_clear_fault(void);
 
+/* --- PWM phase, for synchronised current sampling ------------------------ *
+ *
+ * The bridge draws from VM for only part of each 50 us period, and with the
+ * carrier's 20 kOhm IMODE strap IPROPI is BLANKED for the rest of it. A sampler
+ * that free-runs across the period therefore measures I_motor x D at best - and
+ * at worst aliases against the carrier and measures nothing at all. That is not
+ * hypothetical: on 2026-09-14 a 1024-sample average at 13% duty returned raw 1
+ * while the wheel was visibly turning under load, with raw 16 and raw 12 either
+ * side of it. Averaging harder cannot fix it, because every sample lands at the
+ * same wrong phase.
+ *
+ * The fix is to sample at a KNOWN phase instead of hoping an average covers the
+ * period. This module places that trigger, because this module owns TIM4 and is
+ * the only thing that knows where the drive phase sits: it moves with the duty
+ * AND with the decay mode, which put it at opposite ends of the period. Slow
+ * decay holds one input high and inverts the other, so the drive phase is the
+ * TAIL of the period; fast decay drives from the start, so it is the HEAD.
+ * isense.c owns the ADC and consumes the trigger - see isense.h.
+ *
+ * TIM4_CH4 raises the event. It maps to PB9, which is CAN1_TX on this board, so
+ * the channel is configured and enabled but never routed to a pin: the compare
+ * event is internal and the CAN pin is untouched. isense.h called this door
+ * when the 28-cycle sampling time was chosen; this is it being opened.
+ * -------------------------------------------------------------------------- */
+
+/**
+  * @brief  Width of the drive phase, in TIM4 ticks (11.11 ns each, 4500 to the
+  *         period).
+  * @return 0 when there is no drive phase at all - duty 0, or braking.
+  *
+  * The ADC's 28-cycle sampling aperture is 1.24 us, or 112 ticks, and has to
+  * fit inside this with margin at both ends. Callers compare against
+  * ISENSE_SYNC_MIN_TICKS rather than assuming: at 20 kHz a 4% duty is only
+  * 2 us wide, and a sample that straddles the edge reads the blanked phase.
+  */
+uint16_t drive_phase_ticks(void);
+
+/**
+  * @brief  TIM4 count at which the ADC trigger is armed - the middle of the
+  *         drive phase, or CCR_FULL when the phase is too narrow to sample.
+  * @note   Diagnostic. `drv current` prints it, so a reading taken at the wrong
+  *         phase shows up as a number rather than being inferred from nonsense
+  *         further down the line.
+  */
+uint16_t drive_phase_trigger(void);
+
+/**
+  * @brief  Park the ADC trigger at an arbitrary tick, ignoring the drive phase.
+  * @param  tick  0..CCR_FULL; CCR_FULL means "never fire"
+  *
+  * DIAGNOSTIC ONLY. This deliberately breaks the invariant the rest of this
+  * module exists to hold - that the trigger is inside the driven window - so
+  * that the IPROPI waveform can be mapped across the whole period instead of
+  * guessed at. Every ordinary CCR write reasserts the correct placement, so an
+  * override survives only until the next duty, brake or coast command; call
+  * drive_trigger_restore() to end it deliberately.
+  */
+void drive_trigger_override(uint16_t tick);
+
+/** @brief Put the trigger back where the current duty says it belongs. */
+void drive_trigger_restore(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -12,6 +12,7 @@
 #include "isense.h"
 
 #include "config.h"
+#include "drive.h"
 #include "main.h"
 
 extern ADC_HandleTypeDef hadc1;
@@ -121,6 +122,175 @@ uint16_t isense_read_avg(uint16_t samples)
 uint32_t isense_read_ma(uint16_t samples)
 {
   return isense_raw_to_ma(isense_read_avg(samples));
+}
+
+/* --- synchronised measurement -------------------------------------------- *
+ * Why this exists rather than "average harder" is in isense.h. drive.c parks
+ * TIM4_CH4's compare in the middle of the drive phase; all this end does is
+ * point the ADC at that event, take what arrives, and put the trigger back.
+ * -------------------------------------------------------------------------- */
+
+/**
+  * @brief  Point the ADC at TIM4_CH4, or back at software start.
+  *
+  * Register level on purpose. Re-running HAL_ADC_Init() to flip two bitfields
+  * would re-check and rewrite the entire configuration - including the 28-cycle
+  * sampling time that the whole scheme depends on - to change EXTSEL and EXTEN.
+  * Two bitfields in CR2 is the actual change, so that is what is written.
+  *
+  * The handle's Init fields are kept in step with the register. Nothing calls
+  * HAL_ADC_Init() again after boot, so it makes no functional difference; it
+  * means the handle does not quietly describe a configuration the peripheral is
+  * not in, which is the kind of discrepancy that costs an afternoon later.
+  */
+static void adc_trigger_set(bool hardware)
+{
+  if (hardware)
+  {
+    MODIFY_REG(hadc1.Instance->CR2,
+               ADC_CR2_EXTSEL | ADC_CR2_EXTEN,
+               ADC_EXTERNALTRIGCONV_T4_CC4 | ADC_EXTERNALTRIGCONVEDGE_RISING);
+
+    hadc1.Init.ExternalTrigConv     = ADC_EXTERNALTRIGCONV_T4_CC4;
+    hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_RISING;
+  }
+  else
+  {
+    CLEAR_BIT(hadc1.Instance->CR2, ADC_CR2_EXTSEL | ADC_CR2_EXTEN);
+
+    hadc1.Init.ExternalTrigConv     = ADC_SOFTWARE_START;
+    hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  }
+}
+
+/**
+  * @brief  Spin until the next triggered conversion lands.
+  * @retval false  nothing arrived within the guard - treated as "no sample"
+  *
+  * A trigger arrives every 50 us, which is 9000 core cycles at 180 MHz. This
+  * loop is a few cycles per pass, so the bound is several periods of patience
+  * and still far short of anything a console user would notice. Returning
+  * false rather than spinning forever is the point: if the PWM stops while this
+  * is sampling - a fault, a duty of 0 racing in from another path - the
+  * alternative is a dead console with no way to ask why.
+  */
+static bool adc_wait_eoc(void)
+{
+  uint32_t guard = 200000u;
+
+  while (!__HAL_ADC_GET_FLAG(&hadc1, ADC_FLAG_EOC))
+  {
+    if (--guard == 0u)
+    {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+bool isense_sync_ready(void)
+{
+  return drive_phase_ticks() >= (uint16_t)ISENSE_SYNC_MIN_TICKS;
+}
+
+/**
+  * @brief  Take n trigger-driven conversions and return their mean, raw.
+  *
+  * No phase gate and no offset subtraction - both belong to the callers, which
+  * disagree about them. Whoever calls this is responsible for having put the
+  * trigger somewhere meaningful first.
+  */
+static uint16_t sync_burst(uint16_t samples)
+{
+  uint32_t sum       = 0u;
+  uint16_t taken     = 0u;
+  bool     saturated = false;
+  uint16_t n;
+  uint16_t i;
+
+  n = (samples == 0u) ? (uint16_t)ISENSE_SYNC_AVG_DEFAULT : samples;
+  if (n > 1024u)
+  {
+    n = 1024u;
+  }
+
+  adc_trigger_set(true);
+
+  /* Started ONCE, not once per sample. With an external trigger armed, every
+     compare event converts on its own; HAL_ADC_Start() only enables the ADC and
+     skips SWSTART. Wrapping each conversion in Start/Stop would disable and
+     re-enable the peripheral n times and pay the stabilisation delay for every
+     one of them. */
+  if (HAL_ADC_Start(&hadc1) != HAL_OK)
+  {
+    adc_trigger_set(false);
+    return 0u;
+  }
+
+  for (i = 0u; i < n; i++)
+  {
+    uint16_t raw;
+
+    if (!adc_wait_eoc())
+    {
+      break;
+    }
+
+    raw = (uint16_t)hadc1.Instance->DR;   /* the read is what clears EOC */
+
+    /* An interrupt landing between two triggers can delay the read past the
+       next conversion, which sets OVR and leaves DR holding the older sample.
+       That sample is still a legitimate reading at the same phase, one period
+       earlier, so it is kept and the flag is cleared. Left uncleared, DR would
+       stop updating and the rest of the average would be n copies of one
+       number. */
+    __HAL_ADC_CLEAR_FLAG(&hadc1, ADC_FLAG_OVR);
+
+    sum += raw;
+    taken++;
+    saturated = saturated || (raw >= (uint16_t)config_get(CFG_ISENSE_SAT_RAW));
+  }
+
+  (void)HAL_ADC_Stop(&hadc1);
+  adc_trigger_set(false);
+
+  was_saturated = saturated;
+
+  return (taken == 0u) ? 0u : (uint16_t)(sum / taken);
+}
+
+uint16_t isense_read_sync_avg(uint16_t samples)
+{
+  uint16_t mean;
+
+  /* Refuse rather than return a number from the wrong phase. A caller that
+     cannot tell 0 mA from "not measurable" would record the first as the
+     second, and at these currents that is a plausible-looking lie. */
+  if (!isense_sync_ready())
+  {
+    return 0u;
+  }
+
+  mean = sync_burst(samples);
+
+  return (mean > zero_offset) ? (uint16_t)(mean - zero_offset) : 0u;
+}
+
+uint16_t isense_read_sync_at(uint16_t tick, uint16_t samples)
+{
+  uint16_t mean;
+
+  drive_trigger_override(tick);
+  mean = sync_burst(samples);
+  drive_trigger_restore();
+
+  return mean;
+}
+
+uint32_t isense_read_motor_ma(uint16_t samples)
+{
+  return isense_raw_to_ma(isense_read_sync_avg(samples));
 }
 
 uint16_t isense_zero(void)

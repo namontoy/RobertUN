@@ -732,6 +732,39 @@ static void cmd_enc(int argc, char **argv)
   }
 }
 
+/* --- TEMPORARY DIAGNOSTIC, 2026-09-15 ------------------------------------ *
+ * PB7 sits at a fixed 3.3 V while PB6 follows every command, and every line
+ * that configures or writes the two pins writes them TOGETHER - same MSP call,
+ * same apply(), same CCER. So the firmware cannot be the asymmetry, and the
+ * question is now what the silicon actually has in its registers and whether
+ * the pad can still pull down at all. `drv pin` answers both. Delete once the
+ * fault is found; nothing else depends on it.
+ * -------------------------------------------------------------------------- */
+static void pin_report(void)
+{
+  uint32_t moder = GPIOB->MODER,  afr   = GPIOB->AFR[0];
+  uint32_t idr   = GPIOB->IDR,    odr   = GPIOB->ODR;
+  uint32_t pupd  = GPIOB->PUPDR,  otype = GPIOB->OTYPER;
+
+  debug_uart_printf("PB6 mode %u af %u pupd %u od %u  ODR %u IDR %u\r\n",
+                    (unsigned)((moder >> 12) & 3u), (unsigned)((afr >> 24) & 0xFu),
+                    (unsigned)((pupd  >> 12) & 3u), (unsigned)((otype >> 6) & 1u),
+                    (unsigned)((odr >> 6) & 1u),    (unsigned)((idr >> 6) & 1u));
+  debug_uart_printf("PB7 mode %u af %u pupd %u od %u  ODR %u IDR %u\r\n",
+                    (unsigned)((moder >> 14) & 3u), (unsigned)((afr >> 28) & 0xFu),
+                    (unsigned)((pupd  >> 14) & 3u), (unsigned)((otype >> 7) & 1u),
+                    (unsigned)((odr >> 7) & 1u),    (unsigned)((idr >> 7) & 1u));
+  debug_uart_printf("  mode 0=in 1=out 2=AF 3=analog; both must read mode 2 af 2\r\n");
+
+  debug_uart_printf("TIM4 CR1 %04lX CCER %04lX CCMR1 %04lX\r\n",
+                    (unsigned long)TIM4->CR1, (unsigned long)TIM4->CCER,
+                    (unsigned long)TIM4->CCMR1);
+  debug_uart_printf("  CC1E %u CC2E %u  CCR1 %lu CCR2 %lu ARR %lu\r\n",
+                    (unsigned)(TIM4->CCER & 1u), (unsigned)((TIM4->CCER >> 4) & 1u),
+                    (unsigned long)TIM4->CCR1, (unsigned long)TIM4->CCR2,
+                    (unsigned long)TIM4->ARR);
+}
+
 static void cmd_drv(int argc, char **argv)
 {
   if (argc < 2)
@@ -765,7 +798,10 @@ static void cmd_drv(int argc, char **argv)
     debug_uart_puts(
       "  sub: enable | disable | duty <+/-pct> | brake | coast\r\n"
       "       decay slow|fast | limit <pct> | current [n] | zero\r\n"
-      "       trip [<mA> | buf on|off] | clearfault\r\n");
+      "       iscan [n] [from] [to] [step]"
+      "  (diagnostic: IPROPI vs PWM phase)\r\n"
+      "       trip [<mA> | buf on|off] | clearfault\r\n"
+      "       pin [0|1|pd|af]  (TEMP: PB7 pad/register check)\r\n");
     return;
   }
 
@@ -814,6 +850,58 @@ static void cmd_drv(int argc, char **argv)
     drive_coast();
     debug_uart_puts("both inputs low - coast\r\n");
   }
+  else if (strcmp(argv[1], "pin") == 0)
+  {
+    /* TEMPORARY - see the note above pin_report(). */
+    GPIO_InitTypeDef init = {0};
+
+    if (argc < 3)
+    {
+      pin_report();
+      return;
+    }
+
+    /* Forcing an input by hand while the driver is awake is a 100% duty
+       command to one half of the bridge. Take nSLEEP down first. */
+    drive_disable();
+
+    init.Pin   = DRV_PWM_B_Pin;
+    init.Speed = GPIO_SPEED_FREQ_LOW;
+
+    if ((strcmp(argv[2], "0") == 0) || (strcmp(argv[2], "1") == 0))
+    {
+      /* ODR before MODER, so the pad never presents an undefined level. */
+      HAL_GPIO_WritePin(DRV_PWM_B_GPIO_Port, DRV_PWM_B_Pin,
+                        (argv[2][0] == '1') ? GPIO_PIN_SET : GPIO_PIN_RESET);
+      init.Mode = GPIO_MODE_OUTPUT_PP;
+      init.Pull = GPIO_NOPULL;
+      HAL_GPIO_Init(DRV_PWM_B_GPIO_Port, &init);
+      debug_uart_printf("PB7 forced: push-pull output, driving %s\r\n", argv[2]);
+    }
+    else if (strcmp(argv[2], "pd") == 0)
+    {
+      init.Mode = GPIO_MODE_INPUT;
+      init.Pull = GPIO_PULLDOWN;
+      HAL_GPIO_Init(DRV_PWM_B_GPIO_Port, &init);
+      debug_uart_puts("PB7 input, internal pull-down (~40k) - IDR is the verdict\r\n");
+    }
+    else if (strcmp(argv[2], "af") == 0)
+    {
+      init.Mode      = GPIO_MODE_AF_PP;
+      init.Pull      = GPIO_NOPULL;
+      init.Alternate = GPIO_AF2_TIM4;
+      HAL_GPIO_Init(DRV_PWM_B_GPIO_Port, &init);
+      debug_uart_puts("PB7 back to AF2/TIM4_CH2\r\n");
+    }
+    else
+    {
+      debug_uart_puts("usage: drv pin [0|1|pd|af]\r\n");
+      return;
+    }
+
+    HAL_Delay(2u);
+    pin_report();
+  }
   else if (strcmp(argv[1], "decay") == 0)
   {
     if (argc >= 3)
@@ -830,32 +918,84 @@ static void cmd_drv(int argc, char **argv)
   }
   else if (strcmp(argv[1], "current") == 0)
   {
-    uint16_t n   = (argc >= 3) ? (uint16_t)strtoul(argv[2], NULL, 10) : 0u;
-    uint16_t raw = isense_read_avg(n);
-
-    uint32_t ma    = isense_raw_to_ma(raw);
+    uint16_t n     = (argc >= 3) ? (uint16_t)strtoul(argv[2], NULL, 10) : 0u;
     int16_t  dperm = drive_duty();
     uint16_t dmag  = (uint16_t)((dperm < 0) ? -dperm : dperm);
 
-    /* The carrier's 20 kOhm IMODE strap blanks IPROPI during slow-decay
-       recirculation, so what the ADC averages is SUPPLY current - I_motor x D.
-       Measured on the bench, not read off the datasheet; the stalled-shaft test
-       that settled it is written up in isense.h. The quantity is named here
-       because the trip regulates MOTOR current: the two are in different units
-       and a log line that just said "I" invited reading them as one number. */
-    debug_uart_printf("Isup %lu mA  (raw %u, offset %u)  at duty %+d%%  decay %s\r\n",
-                      (unsigned long)ma,
-                      (unsigned)raw,
-                      (unsigned)isense_offset(),
-                      dperm / 10,
-                      (drive_decay() == DRIVE_DECAY_SLOW) ? "slow" : "fast");
+    /* Asked before reading, not inferred from the result: isense_read_sync_avg
+       returns 0 both for "no current" and for "could not measure", and those
+       two must not print the same line. */
+    bool     sync  = isense_sync_ready();
+    uint16_t raw   = sync ? isense_read_sync_avg(n) : isense_read_avg(n);
+    uint32_t ma    = isense_raw_to_ma(raw);
 
-    /* Below ~1% the division blows the estimate up into nonsense, so it is
-       simply not offered rather than printed with a caveat nobody will read. */
-    if (dmag >= 10u)
+    if (sync)
     {
-      debug_uart_printf("  implies Imotor %lu mA  (Isup / D)\r\n",
-                        (unsigned long)((ma * (uint32_t)DRIVE_DUTY_MAX) / dmag));
+      /* Sampled at a known point inside the drive phase, where IPROPI is live.
+         So this is MOTOR current, measured - no divide by D, and the same units
+         the DRV8874's trip regulates in. The aliasing that made the old
+         free-running average unusable at low duty is written up in isense.h. */
+      debug_uart_printf("Imotor %lu mA  (raw %u, offset %u)  at duty %+d%%"
+                        "  decay %s\r\n",
+                        (unsigned long)ma,
+                        (unsigned)raw,
+                        (unsigned)isense_offset(),
+                        dperm / 10,
+                        (drive_decay() == DRIVE_DECAY_SLOW) ? "slow" : "fast");
+
+      /* The phase geometry is printed rather than trusted. A sample taken at
+         the wrong tick is the one failure this path can still have, and it is
+         invisible in the current figure alone. */
+      {
+        uint16_t ticks = drive_phase_ticks();
+
+        debug_uart_printf("  sync: %u samples at tick %u, drive phase %u ticks"
+                          " = %u.%01u us of 50.0\r\n",
+                          (unsigned)((n == 0u) ? ISENSE_SYNC_AVG_DEFAULT
+                                               : ((n > 1024u) ? 1024u : n)),
+                          (unsigned)drive_phase_trigger(),
+                          (unsigned)ticks,
+                          (unsigned)(ticks / 90u),
+                          (unsigned)(((ticks % 90u) * 10u) / 90u));
+      }
+
+      debug_uart_printf("  implies Isup %lu mA  (Imotor x D)\r\n",
+                        (unsigned long)((ma * dmag) / (uint32_t)DRIVE_DUTY_MAX));
+    }
+    else
+    {
+      /* Fallback. The carrier's 20 kOhm IMODE strap blanks IPROPI during
+         slow-decay recirculation, so what a free-running average sees is SUPPLY
+         current - I_motor x D - when it sees anything at all. Named explicitly
+         because the trip regulates MOTOR current: the two are in different
+         units and a line that just said "I" invited reading them as one. */
+      debug_uart_printf("Isup %lu mA  (raw %u, offset %u)  at duty %+d%%"
+                        "  decay %s\r\n",
+                        (unsigned long)ma,
+                        (unsigned)raw,
+                        (unsigned)isense_offset(),
+                        dperm / 10,
+                        (drive_decay() == DRIVE_DECAY_SLOW) ? "slow" : "fast");
+
+      debug_uart_printf("  NOT SYNCHRONISED - drive phase is %u ticks, under the"
+                        " %u a\r\n"
+                        "  synchronised sample needs. This average runs free"
+                        " across the PWM\r\n"
+                        "  period and can alias against it; treat it as an order"
+                        " of magnitude,\r\n"
+                        "  not a measurement. Raise duty above ~5%% for a real"
+                        " number.\r\n",
+                        (unsigned)drive_phase_ticks(),
+                        (unsigned)ISENSE_SYNC_MIN_TICKS);
+
+      /* Below ~1% the division blows the estimate up into nonsense, so it is
+         simply not offered rather than printed with a caveat nobody will read. */
+      if (dmag >= 10u)
+      {
+        debug_uart_printf("  implies Imotor %lu mA  (Isup / D - and 1/D"
+                          " multiplies the error too)\r\n",
+                          (unsigned long)((ma * (uint32_t)DRIVE_DUTY_MAX) / dmag));
+      }
     }
 
     if (isense_saturated())
@@ -869,18 +1009,19 @@ static void cmd_drv(int argc, char **argv)
         (unsigned)isense_full_scale_ma(),
         (unsigned long)isense_trip_ma());
     }
-    else if (raw > 0u)
+    else if (sync && (raw > 0u))
     {
-      uint32_t ma = isense_raw_to_ma(raw);
-      /* Within 5% of the trip and not clipping is the signature of the driver
-         doing its own limiting. Worth naming, because a plateau that is not
-         recognised gets debugged as a bad sensor. */
+      /* Only offered on the synchronised path, where it is a fair comparison:
+         both sides are motor current. Against a free-running supply reading it
+         would be the units mismatch isense.h warns about, and the plateau would
+         land at trip^2 x R / Vm rather than at the trip. */
       if ((ma * 20u) >= (isense_trip_ma() * 19u))
       {
         debug_uart_printf(
           "  at the TRIP (%lu mA) - if this number stops rising while duty\r\n"
           "  climbs, the bridge is regulating. Where it plateaus against the\r\n"
-          "  commanded trip is the VREF divider test in isense.h\r\n",
+          "  commanded trip is the VREF divider test in isense.h - and it is\r\n"
+          "  now a direct comparison, with no quadratic correction needed.\r\n",
           (unsigned long)isense_trip_ma());
       }
     }
@@ -890,6 +1031,71 @@ static void cmd_drv(int argc, char **argv)
       debug_uart_puts("  (driver disabled - no bridge current, so this is an"
                       " offset reading, not a current)\r\n");
     }
+  }
+  else if (strcmp(argv[1], "iscan") == 0)
+  {
+    /* Map IPROPI across the whole PWM period instead of arguing about it. A
+       mis-placed trigger, a mirror too slow to settle in the drive window and a
+       signal that was never there all look identical from one sample; they look
+       nothing alike across 36 of them. */
+    uint16_t n     = (argc >= 3) ? (uint16_t)strtoul(argv[2], NULL, 10) : 64u;
+    uint16_t ticks = drive_phase_ticks();
+    uint16_t trig  = drive_phase_trigger();
+    uint16_t start = (ticks == 0u) ? 0u : (uint16_t)(trig - (ticks / 2u));
+    int16_t  dperm = drive_duty();
+    uint16_t peak  = 0u;
+    uint16_t peak_t = 0u;
+    uint16_t t;
+
+    /* Optional window, so the drive phase can be examined at a resolution the
+       full-period sweep cannot reach: at 13% duty it is 585 ticks wide, which a
+       125-tick step samples exactly four times. */
+    uint16_t from  = (argc >= 4) ? (uint16_t)strtoul(argv[3], NULL, 10) : 0u;
+    uint16_t to    = (argc >= 5) ? (uint16_t)strtoul(argv[4], NULL, 10) : 4500u;
+    uint16_t step  = (argc >= 6) ? (uint16_t)strtoul(argv[5], NULL, 10) : 125u;
+
+    if (n == 0u)    { n = 64u; }
+    if (step == 0u) { step = 1u; }
+    if (to > 4500u) { to = 4500u; }
+    if (from >= to) { from = 0u; to = 4500u; }
+
+    debug_uart_printf("iscan: duty %+d%%  decay %s  %u samples/point\r\n",
+                      (int)(dperm / 10), (drive_decay() == DRIVE_DECAY_SLOW) ? "slow" : "fast",
+                      (unsigned)n);
+
+    if (ticks == 0u)
+    {
+      debug_uart_puts("  no drive phase at this duty - scanning anyway, every"
+                      " point should read the same\r\n");
+    }
+    else
+    {
+      debug_uart_printf("  drive phase = ticks %u..%u (marked *)\r\n",
+                        (unsigned)start, (unsigned)(start + ticks));
+    }
+
+    if (!drive_is_enabled())
+    {
+      debug_uart_puts("  WARNING: driver disabled - this scans the offset,"
+                      " not a current\r\n");
+    }
+
+    for (t = from; t < to; t = (uint16_t)(t + step))
+    {
+      uint16_t raw = isense_read_sync_at(t, n);
+      bool     in  = (ticks != 0u) && (t >= start) && (t < (uint16_t)(start + ticks));
+
+      if (raw > peak) { peak = raw; peak_t = t; }
+
+      debug_uart_printf("  t %4u  %2u.%01u us  raw %4u  %s\r\n",
+                        (unsigned)t,
+                        (unsigned)(t / 90u), (unsigned)((t / 9u) % 10u),
+                        (unsigned)raw,
+                        in ? "*" : "");
+    }
+
+    debug_uart_printf("  peak raw %u at tick %u; trigger currently sits at %u\r\n",
+                      (unsigned)peak, (unsigned)peak_t, (unsigned)trig);
   }
   else if (strcmp(argv[1], "zero") == 0)
   {

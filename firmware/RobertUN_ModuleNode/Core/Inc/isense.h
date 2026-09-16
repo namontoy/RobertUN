@@ -161,6 +161,80 @@
   * drive_duty() is right there, and `drv current` already prints both.
   *
   *
+  * AND THE FREE-RUNNING AVERAGE TURNED OUT TO ALIAS - 2026-09-14
+  *
+  * >> PARTLY RETRACTED 2026-09-15. Read this whole section with that in mind.
+  * >> The aliasing story was built on three low-count readings and does not
+  * >> survive the Sep 12 stall test, where this same free-running sampler
+  * >> returned 189 and 190 mA on repeat - 0.5%, which a badly-aliasing sampler
+  * >> cannot do. The real pattern is steady at high signal, scattered at low
+  * >> signal. What IS now established, by sweeping the ADC trigger across the
+  * >> period with `drv iscan`: IPROPI reads exactly 0 everywhere outside the
+  * >> drive phase, and inside it has reproducible structure - three bumps
+  * >> separated by hard zeros within 6.5 us at 13% duty, peaking near 1.1 A.
+  * >> So single-point synchronised sampling cannot work here either, and the
+  * >> cause of that structure is UNKNOWN pending a scope on PA2. Do not build
+  * >> on either story until that measurement exists.
+  * -------------------------------------------------------------
+  * Everything above is still true of isense_read_avg(). What it missed is that a
+  * software loop is not a random sampler. isense_read_raw() runs the same
+  * instruction path every call - Start, poll, Stop - so it samples at a very
+  * nearly FIXED period, against a PWM carrier that is exactly periodic. That is
+  * the textbook aliasing condition: the samples visit a handful of phases of the
+  * 50 us period and stay there, however many of them you take.
+  *
+  * It showed up on the loaded-wheel rig as readings that were not merely noisy but
+  * impossible:
+  *
+  *     12% duty   raw 16     Isup  19 mA     plausible
+  *     13% duty   raw  1     Isup   1 mA     while turning a 1 kg wheel
+  *     14% duty   raw 12     Isup  14 mA     plausible
+  *
+  * raw 16 at 12% is exactly 0.12 x 133, the drive-phase peak - so when the samples
+  * DO spread across the period, the supply-current model above holds precisely.
+  * raw 1 at 13% means essentially no sample landed in the 6.5 us driven window at
+  * all. The single stray count is most likely one iteration displaced by the
+  * SysTick or TIM6 interrupt.
+  *
+  * THE DIAGNOSTIC TRAP IS THAT AVERAGING HARDER LOOKS LIKE IT SHOULD HELP AND
+  * CANNOT. Immunity to averaging was briefly read as evidence that the scatter was
+  * real load modulation. It is the opposite: it is the signature of a sampler
+  * locked to the waveform. Anything concluded from free-running current readings
+  * before this date should be re-taken.
+  *
+  *
+  * SO THERE ARE TWO READING PATHS, AND THEY RETURN DIFFERENT QUANTITIES
+  * --------------------------------------------------------------------
+  *   isense_read_avg()      free-running. SUPPLY current, I_motor x D, and aliases
+  *                          as described. Kept for isense_zero(), which runs with
+  *                          the bridge off and no carrier to alias against, and as
+  *                          the fallback below ~4% duty.
+  *
+  *   isense_read_sync_avg() triggered from TIM4_CH4 at the middle of the drive
+  *                          phase. IPROPI is live there, so this is MOTOR current,
+  *                          measured directly.
+  *
+  * The synchronised path is better than the old one by more than it removes the
+  * aliasing:
+  *
+  *   - No divide by D. Recovering motor current from a supply reading amplifies
+  *     every error by 1/D, which at 10% duty is a factor of ten. That is why the
+  *     inferred figures wandered between 50 and 390 mA at neighbouring duties.
+  *   - Eight times the resolution where it is needed. At 12% duty the free average
+  *     reads 16 counts of 4096; the synchronised sample reads ~133. The rover
+  *     operates near its stiction floor, which is exactly where the old path was
+  *     weakest.
+  *   - The trip and the reading finally share units. The DRV8874 regulates on
+  *     instantaneous IPROPI against VREF - motor current - so a plateau in a
+  *     synchronised reading can be compared with the commanded trip directly,
+  *     instead of through the quadratic correction two sections above.
+  *
+  * The cost is time: each sample waits for the next compare event, so one
+  * conversion costs a whole 50 us period rather than ~7 us. 64 samples is 3.2 ms.
+  * That is why the sync default is 64 and not 1024 - past a point the extra
+  * samples are averaging the wheel, not the converter.
+  *
+  *
   * SAMPLING TIME IS 28 CYCLES ON PURPOSE
   * --------------------------------------
   * At PCLK2/4 = 22.5 MHz a 28-cycle sample plus 12 cycles of conversion is
@@ -170,11 +244,16 @@
   * 28 cycles is still about 4x what a 1.47 kOhm source needs to settle to
   * 12 bits, so nothing was given up to keep that door open.
   *
-  * The door leads here, when W5 wants it: trigger the ADC from TIM4_CH4's
-  * compare event. TIM4 already generates the PWM, and a compare channel raises
-  * its event with no pin configured - TIM4_CH3/CH4 land on PB8/PB9, which are
-  * the CAN pins, but the internal event does not need them. That puts the
-  * sample at a chosen point in the on-phase and retires the question above.
+  * The door was opened on 2026-09-14, a phase earlier than planned, because the
+  * aliasing above forced it: the ADC is triggered from TIM4_CH4's compare event.
+  * TIM4 already generates the PWM, and a compare channel raises its event with no
+  * pin configured - TIM4_CH3/CH4 land on PB8/PB9, which are the CAN pins, but the
+  * internal event does not need them, and PB9 stays on AF9 throughout. drive.c
+  * places the trigger, because drive.c owns the timer and is the only thing that
+  * knows which END of the period is the driven one; this module arms the ADC and
+  * reads it. Had the sampling time been left at CubeMX's default the aperture
+  * would have been 21.9 us against a 6.5 us window, and none of this would have
+  * been reachable without returning to the .ioc.
   *
   *
   * THERMAL, BECAUSE 5 A IS THE POINT OF ALL THIS
@@ -243,6 +322,19 @@ extern "C" {
   *        free-running average covers the whole cycle rather than a slice. */
 #define ISENSE_AVG_DEFAULT        32u
 
+/** @brief Narrowest drive phase, in TIM4 ticks, that a synchronised sample will
+  *        be taken inside. The 28-cycle aperture is 1.24 us = 112 ticks at
+  *        90 MHz; 192 leaves ~40 ticks of clearance at each edge and still
+  *        admits any duty at or above 4.3%. The loaded rig stalls below 10%, so
+  *        nothing it can actually sustain comes near this floor. */
+#define ISENSE_SYNC_MIN_TICKS    192u
+
+/** @brief Conversions averaged by the synchronised path when the caller does
+  *        not say. Each costs a whole PWM period because it waits for the next
+  *        trigger, so 64 is 3.2 ms - long enough to average commutation ripple,
+  *        short enough to feel instant at the console. */
+#define ISENSE_SYNC_AVG_DEFAULT   64u
+
 /**
   * @brief  Prepare the module, start the DAC, and apply the default trip.
   * @note   Call after MX_ADC1_Init() and MX_DAC_Init(), and BEFORE anything
@@ -272,6 +364,52 @@ uint16_t isense_read_avg(uint16_t samples);
   *         in the header — record drive_duty() alongside it.
   */
 uint32_t isense_read_ma(uint16_t samples);
+
+/**
+  * @brief  Whether a synchronised sample can be taken right now.
+  * @retval true   the drive phase is at least ISENSE_SYNC_MIN_TICKS wide
+  * @retval false  duty is 0, the bridge is braking, or the phase is too narrow
+  *                for the sampling aperture to sit inside it
+  * @note   Ask before reading rather than interpreting a 0 afterwards - a
+  *         genuine 0 mA and a refusal are the same number.
+  */
+bool isense_sync_ready(void);
+
+/**
+  * @brief  Average of @p samples conversions taken at the middle of the PWM
+  *         drive phase, offset-corrected.
+  * @param  samples  1..1024; 0 selects ISENSE_SYNC_AVG_DEFAULT.
+  * @return Raw counts, or 0 if isense_sync_ready() is false.
+  * @note   Costs one PWM period (50 us) per sample, not 1.78 us - it waits for
+  *         a trigger rather than starting one.
+  */
+uint16_t isense_read_sync_avg(uint16_t samples);
+
+/**
+  * @brief  MOTOR current in milliamps, measured rather than inferred.
+  * @param  samples  averaging depth; 0 selects ISENSE_SYNC_AVG_DEFAULT.
+  * @return mA, or 0 if no synchronised sample was possible.
+  * @note   This is the quantity the DRV8874's trip regulates, so the two are
+  *         finally in the same units. Supply current, if a power budget wants
+  *         it, is this times the duty - a multiply, not the 1/D divide the old
+  *         path needed.
+  */
+uint32_t isense_read_motor_ma(uint16_t samples);
+
+/**
+  * @brief  Average n conversions taken at one fixed tick of the PWM period.
+  * @param  tick     where in the 0..4499 period to sample
+  * @param  samples  how many periods to average over
+  * @retval raw ADC counts, NO offset subtracted
+  *
+  * DIAGNOSTIC ONLY - the instrument for mapping what IPROPI actually does
+  * across a period, rather than reasoning about what it ought to do. Sweeping
+  * tick across the whole period plots the waveform the synchronised reader is
+  * trying to sample, which is the only way to tell a mis-placed trigger from a
+  * mirror that cannot settle inside the drive window from a signal that was
+  * never there. Restores the normal trigger placement before returning.
+  */
+uint16_t isense_read_sync_at(uint16_t tick, uint16_t samples);
 
 /**
   * @brief  Convert a raw count to milliamps.

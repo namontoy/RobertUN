@@ -29,6 +29,13 @@ static volatile bool     fault_latched;
 static volatile uint32_t fault_ticks;
 static volatile int16_t  fault_duty;
 
+/* Where the bridge is actually driving, in TIM4 ticks. Maintained alongside
+   every CCR write so it can never describe a different duty than the one the
+   timer is running - which is the failure mode that would put an ADC sample
+   in the blanked phase and look like a real reading. See drive.h. */
+static uint16_t phase_ticks;
+static uint16_t phase_trigger;
+
 /** @brief Compare value for 100% output. CCR > ARR never matches, so the
   *        channel stays active for the whole period — a true 100%, not
   *        4499/4500. */
@@ -47,6 +54,33 @@ static void apply(uint32_t ccr1, uint32_t ccr2)
   __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_2, ccr2);
 }
 
+/**
+  * @brief  Record where the drive phase is and point TIM4_CH4 at its middle.
+  * @param  start  first tick of the drive phase
+  * @param  ticks  its width; 0 means there is no drive phase
+  *
+  * CH4 is in PWM mode 2, so OC4REF is low below CCR4 and high at or above it:
+  * the RISING edge - the one the ADC triggers on - lands exactly on the
+  * compare. PWM mode 1 would put that edge at the counter wrap instead, which
+  * is the same instant for every duty and therefore useless for this.
+  *
+  * A CCR4 of 0 would leave the channel permanently high and never produce an
+  * edge at all, so a phase with no width is parked at CCR_FULL: the compare
+  * never matches, no trigger is generated, and isense falls back to its
+  * free-running path rather than sampling somewhere outside the drive window.
+  * Failing to sample is recoverable; sampling at the wrong phase is the bug
+  * this whole mechanism exists to remove.
+  */
+static void place_trigger(uint32_t start, uint32_t ticks)
+{
+  phase_ticks = (uint16_t)ticks;
+
+  phase_trigger = (ticks == 0u) ? (uint16_t)DRIVE_CCR_FULL
+                                : (uint16_t)(start + (ticks / 2u));
+
+  __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_4, (uint32_t)phase_trigger);
+}
+
 void drive_init(void)
 {
   duty    = 0;
@@ -61,6 +95,25 @@ void drive_init(void)
   apply(0u, 0u);
   HAL_GPIO_WritePin(DRV_nSLEEP_GPIO_Port, DRV_nSLEEP_Pin, GPIO_PIN_RESET);
 
+  /* CH4 exists only to raise a compare event for the ADC - see drive.h. It is
+     configured HERE and not in the .ioc for the same reason the PWM is started
+     here: a CubeMX regeneration must not be able to take it away silently, and
+     this one would fail quietly - current readings would simply go back to
+     being averaged across the blanked phase, which still looks like a number.
+     PWM mode 2 puts the edge on the compare rather than at the wrap. */
+  {
+    TIM_OC_InitTypeDef oc = {0};
+
+    oc.OCMode     = TIM_OCMODE_PWM2;
+    oc.Pulse      = DRIVE_CCR_FULL;   /* never matches: armed, not yet firing */
+    oc.OCPolarity = TIM_OCPOLARITY_HIGH;
+    oc.OCFastMode = TIM_OCFAST_DISABLE;
+
+    (void)HAL_TIM_PWM_ConfigChannel(&htim4, &oc, TIM_CHANNEL_4);
+  }
+
+  place_trigger(0u, 0u);
+
   /* Start the outputs from here, not from a USER CODE block inside
      MX_TIM4_Init(). A CubeMX regeneration silently dropped that block once and
      the bridge went dead with no fault flag and no error - the timer simply was
@@ -68,6 +121,11 @@ void drive_init(void)
      Both channels are already at 0% and nSLEEP is low, so starting is inert. */
   HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_1);
   HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_2);
+
+  /* Enabling CC4 routes nothing to a pin: TIM4_CH4 is PB9, which is configured
+     as CAN1_TX (AF9), so the alternate function never selects the timer. The
+     compare event still reaches the ADC, which is all it is for. */
+  HAL_TIM_PWM_Start(&htim4, TIM_CHANNEL_4);
 
   /* Halt the PWM when the core halts. Without this, stopping at a breakpoint
      leaves the motor driven while the control loop is frozen - the wheel keeps
@@ -115,6 +173,7 @@ void drive_set_duty(int16_t permille)
     /* Coast, not brake — see drive.h. Slow decay taken literally would hold
        the wheel at zero duty, which is not what "stop" should mean here. */
     apply(0u, 0u);
+    place_trigger(0u, 0u);
     return;
   }
 
@@ -127,6 +186,9 @@ void drive_set_duty(int16_t permille)
     uint32_t ccr = ccr_from_permille(magnitude);
     apply(forward ? ccr : 0u,
           forward ? 0u  : ccr);
+
+    /* Fast decay drives from the start of the period: [0, ccr). */
+    place_trigger(0u, ccr);
   }
   else
   {
@@ -135,6 +197,12 @@ void drive_set_duty(int16_t permille)
     uint32_t ccr = ccr_from_permille((uint16_t)(DRIVE_DUTY_MAX - magnitude));
     apply(forward ? DRIVE_CCR_FULL : ccr,
           forward ? ccr            : DRIVE_CCR_FULL);
+
+    /* Slow decay holds one input high and PWMs the other inverted, so the
+       driven window is the TAIL of the period: [ccr, ARR]. Its width is the
+       duty magnitude, which is the point - the same 12% duty puts the sample
+       at tick 270 in fast decay and tick 4230 in slow. */
+    place_trigger(ccr, DRIVE_CCR_FULL - ccr);
   }
 }
 
@@ -147,12 +215,17 @@ void drive_brake(void)
 {
   duty = 0;
   apply(DRIVE_CCR_FULL, DRIVE_CCR_FULL);
+
+  /* Braking draws nothing from VM - the current recirculates - so there is no
+     drive phase to sample and no honest synchronised reading to take. */
+  place_trigger(0u, 0u);
 }
 
 void drive_coast(void)
 {
   duty = 0;
   apply(0u, 0u);
+  place_trigger(0u, 0u);
 }
 
 bool drive_faulted(void)
@@ -230,4 +303,24 @@ void drive_set_limit(uint16_t permille)
 uint16_t drive_limit(void)
 {
   return limit;
+}
+
+uint16_t drive_phase_ticks(void)
+{
+  return phase_ticks;
+}
+
+uint16_t drive_phase_trigger(void)
+{
+  return phase_trigger;
+}
+
+void drive_trigger_override(uint16_t tick)
+{
+  __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_4, (uint32_t)tick);
+}
+
+void drive_trigger_restore(void)
+{
+  __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_4, (uint32_t)phase_trigger);
 }

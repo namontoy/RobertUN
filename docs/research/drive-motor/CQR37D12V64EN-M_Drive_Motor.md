@@ -126,6 +126,12 @@ R = 12 V / 5.5 A = 2.18 Ω
 R =  6 V / 2.8 A = 2.14 Ω     ← consistent, so the linear model holds
 ```
 
+> **Superseded by measurement, Aug 25: R ≈ 1.90 Ω**, taken on two units at
+> stall with the supply sag corrected out, agreeing to under 2%. The 2.18 Ω
+> above is derived from the datasheet's stall points and is the figure much
+> of this document was written against; prefer 1.90 Ω for anything
+> quantitative. Also measured: **L ≈ 1.70 mH**, giving L/R = 0.90 ms.
+
 At the planned 9 V rail:
 
 ```

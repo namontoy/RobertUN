@@ -204,11 +204,56 @@ what value** — the 2.2 kΩ figure above only holds if the value is ours to cho
 
 ## Open items
 
-- Which **PMODE** tri-level selects PWM (IN1/IN2) mode — determines whether the
-  W4 firmware truly drops in unchanged
+- ~~Which **PMODE** tri-level selects PWM (IN1/IN2) mode~~ — **ANSWERED Sep 16,
+  2026 from the datasheet (SLVSF66A, Table 2):**
+
+  | PMODE | Control mode |
+  |---|---|
+  | Logic LOW (0–0.65 V) | PH/EN |
+  | **Logic HIGH (1.5–5.5 V)** | **PWM (IN1/IN2)** — what the W4 firmware assumes |
+  | Hi-Z (0.9–1.2 V) | Independent half-bridge |
+
+  So the W4 firmware does drop in unchanged, **but only with PMODE strapped
+  high** — fit **10 kΩ to 3V3** on every board. 100 kΩ is not enough: the pin
+  has an internal 156 kΩ to an internal 5 V over 44 kΩ to GND, so 100 kΩ reaches
+  only ≈1.66 V against a 1.5 V `V_TIH` minimum, while 10 kΩ gives ≈2.8 V.
+
+  **An open pin is not "unset".** That same divider self-biases an unconnected
+  PMODE to ≈1.1 V — the Hi-Z band — which selects independent half-bridge. In
+  that mode each output follows its own input and **internal current regulation
+  is disabled**. Under slow decay it produces the same average motor voltage as
+  PWM mode, so it looks correct on an rpm measurement and is not detectable that
+  way.
+
+  **It does corrupt current sensing, though — that is the tell.** The two truth
+  tables differ in one state, `IN1 = IN2 = 1`: PWM mode gives **low-side** slow
+  decay (OUT1 L, OUT2 L), independent gives **high-side** slow decay (OUT1 H,
+  OUT2 H). IPROPI mirrors only the low-side FETs and only drain→source
+  (§7.3.3.1), so low-side decay keeps the recirculating current visible —
+  *"continuous current monitoring"* — while high-side decay makes IPROPI read
+  **exactly zero for the whole decay phase**. The 1.6 µs `tDELAY` also stops
+  being free: it is waived only while the sensed low-side FET stays continuously
+  on, which high-side decay breaks every cycle. Two further consequences worth
+  knowing: IPROPI reports the *sum* of both currents only when both low-side
+  FETs conduct **simultaneously** (a drive/low-side-decay pattern never does),
+  and a fast-decay pattern that idles both inputs low gets Hi-Z coast in PWM
+  mode but a **low-side brake** in independent mode — not the same motor
+  behaviour at all.
+
+  **The mode is latched when the device is enabled via nSLEEP** (§7.3.2), not
+  sampled continuously: change the strap, then take nSLEEP low, wait
+  t<sub>SLEEP</sub>, and bring it high again.
+
+  ⚠️ This was left unstrapped on the bench from Sep 11 to Sep 16, 2026. It
+  latched PH/EN on one power-up, a 13% duty command drove the motor at ~74% of
+  the rail, and the resulting return current destroyed PB7 on the MCU. Full
+  account in `PROJECT_CONTEXT.md`, Sep 16 log entry and task 19.
 - The exact **I<sub>TRIP</sub> vs VREF** formula (Current Regulation section)
 - Whether the **carrier populates IPROPI**, and its value
-- **Measure the motor's winding resistance directly** to validate the 2.18 Ω
-  that this entire analysis rests on — a multimeter across the terminals,
-  rotating the shaft between readings to average brush position. Needs no
-  driver and can be done before the parts arrive.
+- ~~Measure the motor's winding resistance directly~~ — **DONE Aug 25:
+  R ≈ 1.90 Ω** bench-measured on two units (stall, supply-sag corrected),
+  matching each other to under 2%. Lower than the 2.18 Ω this analysis was
+  written against, which makes stall *higher* than assumed — the DRV8874
+  margin argument only gets stronger. Winding resistance is a property of
+  the motor, so this number stands regardless of what is bolted to the
+  shaft; it does not need re-taking when the load changes.

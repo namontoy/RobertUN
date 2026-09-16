@@ -1,8 +1,213 @@
 # Robotics Development Environment — Project Context Document
-**Last updated:** September 14, 2026 (module identity live — `dipsw.c` latches the 3-bit DIP switch at boot, all eight codes verified on hardware, and the heartbeat now uses `0x500 + module_id` with identity gating the transmit)
+**Last updated:** September 16, 2026 (PMODE was never strapped — a floating tri-level pin latched the DRV8874 into PH/EN, a 13% duty command drove the motor at ~74% of the rail, and the return current destroyed PB7; the MCU board is being replaced and bench work is stopped until it is. The Sep 15 IPROPI anomalies trace to the same mis-latch: the decay phase was HIGH-side, which IPROPI cannot see at all)
 *Paste this at the start of a new Claude session to restore full context.*
 
 ## Progress log (most recent first)
+
+- **Sep 16 — PMODE was never strapped, and it cost the MCU. PB7 is destroyed,
+  the board is being replaced, and the session STOPPED at the damage by bench
+  rule.** The pin that selects the DRV8874's control mode has been physically
+  unconnected since the driver was wired on Sep 11. It is a **tri-level** input
+  with an internal 156 kΩ to an internal 5 V over 44 kΩ to GND, so an open pin
+  self-biases to ≈1.1 V — dead centre of the Hi-Z band. **Floating is a
+  selected mode, not an absent one.**
+  - **The authoritative table (SLVSF66A, Table 2)** — this closes the open item
+    carried in `Motor_Driver_Selection.md` since Aug 25: **PMODE logic LOW →
+    PH/EN; logic HIGH → PWM (IN1/IN2); Hi-Z → independent half-bridge.**
+    Thresholds `V_TIL` 0–0.65 V, `V_TIZ` 0.9–1.2 V, `V_TIH` 1.5–5.5 V, so 3.3 V
+    is a valid high. **10 kΩ to 3V3** lands the pin at ≈2.8 V against the
+    internal divider; **100 kΩ reaches only ≈1.66 V** — 160 mV of margin over
+    `V_TIH`, which is not enough.
+  - **The mode is LATCHED at nSLEEP rising** (§7.3.2), not sampled continuously.
+    Changing the strap does nothing until `drv disable` → `drv enable` or a
+    power cycle, which makes "I changed it and nothing happened" a false
+    negative.
+  - **Why five days of correct-looking results hid it.** In independent
+    half-bridge mode each output simply follows its own input (Table 5). Slow
+    decay holds IN1 high and PWMs IN2 inverted, so the motor sees OUT1−OUT2 =
+    0 V for (1−D) and +VM for D — **the same average as PWM mode**. The Sep 12
+    figure of 11.07 rpm at 20% duty is therefore consistent with *both*, and the
+    Sep 14 conclusion that PMODE was confirmed in PWM mode is **wrong**: it
+    correctly ruled out PH/EN and then treated the remainder as proven, never
+    excluding Hi-Z. Corrected in task 6b below.
+  - **This also explains the Sep 15 current-sense anomalies — the decay phase
+    was on the wrong side of the bridge.** The two truth tables differ in
+    exactly one state, and it is the one slow decay spends most of its time in:
+
+    | IN1, IN2 | PWM mode (Table 4) | Independent half-bridge (Table 5) |
+    |---|---|---|
+    | 1, 0 | OUT1 H, OUT2 L — forward drive | OUT1 H, OUT2 L — forward drive |
+    | 1, 1 | OUT1 L, OUT2 L — **low-side** slow decay | OUT1 H, OUT2 H — **high-side** slow decay |
+
+    The drive phase is identical, which is why the rpm looked right. The
+    recirculation path is not: it moved from the bottom of the bridge to the
+    top. **IPROPI mirrors only the low-side FETs, and only drain→source**
+    (§7.3.3.1), so in the intended low-side decay the recirculating current
+    still passes through a sensed FET — TI sells this as *"continuous current
+    monitoring"* across both drive and brake. In high-side decay nothing
+    touches a low-side FET, and **IPROPI reads exactly zero for the whole decay
+    phase**. The Sep 15 `drv iscan` result — *"all 32 points outside the drive
+    phase read exactly 0"* — was therefore not only a clean confirmation that
+    the TIM4_CH4 trigger was aimed correctly; it was **also the signature of the
+    wrong control mode**. In PWM mode those points should have been non-zero and
+    decaying.
+  - **The leading dead zone inside the drive window has a candidate: `tDELAY`.**
+    Current sense delay is **1.6 µs typical**, and §7.3.3.1 says it has no
+    impact *provided* "the low-side MOSFET sensing the current is continuously
+    on" — true in low-side decay, false in high-side decay, where the sensed FET
+    switches off every period and the mirror restarts each cycle. At 13% duty
+    the drive window is ticks 3915..4500 (585 ticks, 6.5 µs) and 1.6 µs is 144
+    ticks, i.e. settling until ≈4059. The measurement has the reading still at
+    raw 8 at tick 4080 and at 771 by 4110 — **a good match for the first dead
+    stretch**. It does *not* explain the later two bumps or the dead valley at
+    4200-4260 where the geometric-centre trigger lands; that remains open, and
+    must be re-measured in PWM mode before any more effort goes into it.
+  - **One correction to the "sum of both currents" concern:** IPROPI reports the
+    sum only when both low-side FETs conduct *simultaneously*, which this slow-
+    decay pattern never does (its decay phase has both HIGH sides on). Summing
+    was not a factor in the Sep 15 readings.
+  - **"Fast decay" was not fast decay either.** `drive.c` idles the undriven
+    input at 0 and PWMs the other, so the off phase is IN1 = IN2 = 0 — Hi-Z
+    **coast** in PWM mode, but **both low-sides on, a brake**, in independent
+    half-bridge. Fast decay therefore never coasted, and because its brake phase
+    *is* on the low side, IPROPI could see it. Fast and slow decay had their
+    sensing behaviour inverted relative to what the firmware assumed. Every
+    fast-decay result is suspect on top of the regulation ones.
+  - **A floating tri-level input does not latch the same way every time.** This
+    session opened with `drv enable` then `drv duty 13`, and the wheel went to
+    full speed. That is the **PH/EN signature** — EN held permanently enabled,
+    PH toggling at 20 kHz, giving |2D−1| ≈ 74% of the rail instead of 13%.
+    Earlier power-ups behaved as Hi-Z. One unconnected pin latching differently
+    across power-ups is the only thing that explains both.
+  - **PB7 is dead — pad shorted to VDD, proven by register readback rather than
+    inference.** A temporary **`drv pin`** console command dumps GPIOB
+    MODER/AFR/PUPDR/IDR for PB6+PB7 alongside TIM4 `CR1`/`CCER`/`CCMR1`/`CCR1`/
+    `CCR2`, and can force PB7 out of AF to a plain GPIO or to an input with the
+    internal pull-down. The chain that settled it: both channels at `mode 2
+    af 2`, `CCER 0x1011` (CC1E+CC2E+CC4E set, no polarity bits), `CCMR1 0x6868`
+    — **byte-identical halves**, OC1M = OC2M = PWM1, both preloaded — and
+    CCR1 = CCR2 = 0, yet PB6 read `IDR 0` and PB7 read `IDR 1`. Reconfigured as
+    an input with the internal ~40 kΩ pull-down, **and with every wire removed
+    from the pin**, PB7 still read 1. No register difference, nothing external,
+    pad will not go low. The MCU also ran hot, which is the 3V3 rail feeding
+    that clamp back out through the pin's own low-side transistor every time the
+    timer drove it low.
+  - **The likely killer is the ground return, not PMODE itself.** `PH/IN2` is an
+    *input* with a 100 kΩ internal pulldown in **all three** PMODE modes
+    (datasheet pin table: *"PH/IN2 pins have an internal pulldown resistor to
+    ensure the outputs are Hi-Z if no inputs are present"*), so no mode
+    selection can source current back into PB7. What the mis-latch did was turn
+    a 13% command into ~74% of the rail — roughly a sevenfold step in return
+    current through a **single DuPont wire** between breadboard PGND and MCU
+    ground. When the power-ground path is worse than the signal path, return
+    current comes home through the signal wires, and current *into* a GPIO pad
+    forward-biases its clamp into VDD. The DRV8874's logic pins are rated to
+    5.75 V while the STM32 clamps at VDD+0.3, so the MCU always dies first —
+    consistent with the driver appearing to have survived.
+  - **Found in the cheapest possible place.** One bench MCU, rather than six
+    assembled boards each missing a pull-up resistor. The strap is now a
+    per-board schematic item, not a bench workaround — see task 19.
+  - **Not done, deliberately:** nothing was rewired after the fault was
+    confirmed. The Sep 15 scope-on-PA2 plan is untouched and still queued behind
+    the board swap.
+
+- **Sep 15** — **PWM-synchronised current sampling: the trigger works, the
+  signal does not cooperate. STOPPED HERE; next session starts with a scope on
+  PA2.** TIM4_CH4 now raises a compare event at the middle of the drive phase
+  and the ADC converts on it. `drive.c` owns the placement because it is the
+  only module that knows which end of the period is driven — in slow decay the
+  driven window is the TAIL, `[ccr, ARR]`, so at 13% duty it is ticks
+  3915..4500 and the trigger sits at 4207. CH4 is configured in `drive_init()`
+  rather than the `.ioc`, for the same reason the PWM is started there. CH4 is
+  PB9 = CAN1_TX (AF9), so enabling CC4E routes nothing to the pin; the event is
+  internal.
+  - **The trigger is verified correct.** A new diagnostic, **`drv iscan
+    [n] [from] [to] [step]`**, sweeps the sample point across the PWM period
+    and prints the ADC reading at each tick. Across the full period at 13%
+    duty, **all 32 points outside the drive phase read exactly 0 and every
+    point inside it is non-zero** — placement, blanking and phase geometry all
+    confirmed in one measurement. ⚠️ **Re-read Sep 16:** the trigger placement
+    conclusion stands, but the zeros were *also* the mis-latched control mode —
+    a high-side decay phase is invisible to IPROPI. In PWM mode those points
+    should read non-zero. See the Sep 16 entry.
+  - **But IPROPI is not flat inside the drive window.** A 20-point sweep across
+    ticks 3900..4500, repeated three times, reproduces the same shape every
+    time: three bumps separated by hard zeros, peaking at **raw ~730-770 (≈1.1 A)
+    around ticks 4110-4140**, with a dead valley at 4200-4260 — which is
+    precisely where the geometric-centre trigger lands. That is why `drv
+    current` reported raw 1-22 while the peak nearby was 40× higher. Between
+    ticks 4080 and 4110, 0.33 µs apart, the reading goes 8 → 771.
+  - **A current that returns to zero three times in 6.5 µs is not the motor's
+    current** — L/R is 0.90 ms, so the real ripple at 13% should be ~31 mA on a
+    near-DC level. The structure is reproducible and PWM-phase-locked, so it is
+    neither noise nor a firmware defect, but whether it is mirror blanking, a
+    regulation retry, or ringing on the net is **not yet known**. ⚠️ **Partly
+    answered Sep 16:** a regulation retry is ruled out — regulation was disabled
+    the whole time — and the leading dead stretch matches the 1.6 µs `tDELAY`,
+    which only applies because the decay phase was high-side. The remaining
+    structure must be re-measured with PMODE strapped before it is worth
+    chasing.
+  - **The mean over the drive window is physically sensible**: averaging the
+    in-window points gives raw 100/138/149 across the three sweeps, i.e.
+    ~120-180 mA of motor current, consistent with August's 154 mA no-load
+    figure. So the information is present and it is the single-point sampling
+    strategy that is wrong. Swept-phase averaging is the obvious candidate, but
+    it should not be built until the waveform is understood — averaging over an
+    unexplained artifact would produce a plant model that fits the artifact.
+  - **NEXT SESSION, FIRST STEP** — ⚠️ **BLOCKED Sep 16: PB7 is destroyed and
+    cannot be used as a trigger on this board; and every reading below was taken
+    with the driver in independent half-bridge mode, so the waveform itself may
+    not reproduce once PMODE is strapped. Re-run this only after task 19.**
+    Scope **PA2 (IPROPI)** with **PB7 (IN2)** as
+    trigger (IN2 falling = start of drive phase), ~1 µs/div, wheel at 13% duty
+    slow decay. Flat level → the structure is a sampling artifact after all;
+    spikes with hard zeros → the mirror genuinely does this; decaying ringing →
+    layout, and an RC on IPROPI is the fix.
+
+- **Sep 15 — RETRACTION: the "free-running sampler aliases" diagnosis does not
+  hold.** It was raised on the strength of three low-count readings (raw 16/1/12
+  at 12/13/14% duty) and does not survive the Sep 12 stall test, where the same
+  free-running sampler returned **189 and 190 mA on repeat** — 0.5%
+  repeatability, which a badly-aliasing sampler cannot produce. The real pattern
+  is **steady at high signal, scattered at low signal**, which is a different
+  problem with a different cause. The `isense.h` note written under the aliasing
+  hypothesis overstates the case and should be read with this entry beside it.
+  Nothing measured before Sep 14 needs re-taking on aliasing grounds; the low-
+  current readings are still suspect, but for the reason above.
+
+- **Sep 15 — the free motor and the wheeled motor are different mechanical
+  systems, and August's dynamics do not transfer.** Standing rule, after
+  repeatedly comparing the two: what carries over is **motor-owned and
+  electrical** — R = 1.90 Ω, L = 1.70 mH, Kt, Ke, 8403.2 counts/output-rev, and
+  the under-2% match between units. What does **not** carry over is
+  **system-owned and mechanical** — breakaway duty, dropout duty, the speed
+  floor, friction and its Stribeck shape, inertia, and the 154 mA no-load
+  current, all of which were measured on a free shaft and now have a kilogram of
+  wheel on them. The subtlety that catches this out: in
+  `ω = k·(V·D) − (R/(Kt·Ke))·τ` **both coefficients are motor constants**, so the
+  wheel does not tilt the speed-torque line, it moves where you sit on it. That
+  is the actual justification for characterising the bare wheel first.
+  - **R_motor does not need re-measuring** — it was bench-measured Aug 25 on two
+    units at 1.90 Ω and winding resistance is a property of the motor whatever
+    is bolted to the shaft. Two stale "measure the winding resistance" open
+    items that prompted asking again have been closed in
+    `Motor_Driver_Selection.md`, and `CQR37D12V64EN-M_Drive_Motor.md` now
+    carries the measured 1.90 Ω beside the datasheet-derived 2.18 Ω it was
+    written against. A stall-derived estimate of ~4.1 Ω computed this session is
+    **withdrawn** — it was built on the same suspect low-current readings.
+
+- **Sep 15 — loaded-rig mechanical characterisation (encoder data, trustworthy;
+  the current readings from the same sweep are not).** With the wheel mounted:
+  **breakaway 12-14% duty**, position-dependent between runs minutes apart (the
+  131:1 gearbox means the wheel's resting angle does not pin the rotor's);
+  **dropout ~10.5%** on the descending sweep. Speeds fall linearly 20%→12% at
+  ~0.68 rpm/%, then bend hard and cliff: 11% → 4.86 rpm, 10% → dead. **Minimum
+  sustainable speed ≈ 4.9 rpm** — no duty produces 2, 3 or 4 rpm. That is the
+  Stribeck signature, and it is a **W4-time discovery that constrains the
+  demo's slowest manoeuvre**; the fix is mechanical or gearing, not control.
+  The 1-3 point hysteresis band is narrow enough that a conventional PID
+  suffices without dither or breakaway kicks. **Wheel diameter still needed** to
+  convert 4.9 rpm to a linear speed.
 - **Sep 14 (later)** — **Module identity implemented and verified; W7's
   firmware dependency is closed.** `dipsw.c` reads PB13/PB14/PB15 once at boot
   and latches. All eight codes swept on a board with a real switch block: every
@@ -1980,6 +2185,15 @@ wired.
 | PH0/PH1 | HSE | 8 MHz crystal | — | → 180 MHz PLL (M=4, N=180, P=2) |
 | PC14/PC15 | LSE | 32.768 kHz | — | in the `.ioc`, **not enabled** in code |
 
+⚠️ **PB7 was destroyed on the bench board on Sep 16, 2026** (pad shorted to
+VDD — see the log entry). The *allocation* is unchanged and correct; the board
+is being replaced. If a future failure ever forces the PWM off PB6/PB7, the
+replacement is **TIM3 on PC6/PC7 (AF2)**: PORTC is completely unused, TIM3 is
+free, it is on APB1 at 90 MHz like TIM4 so **PSC 0 / ARR 4499 and every tick
+constant in `drive.h` survive unchanged**, and TIM3's TRGO can be driven from
+OC4REF to replace the TIM4_CH4 ADC trigger (`T3_TRGO` is a valid ADC1 source).
+Do **not** take PA6/PA7 — they are reserved for SPI1 below.
+
 **Off-limits, and why:** PA13/PA14 are SWDIO/SWCLK and the board has no other
 debug access. PA11/PA12 are the USB-C connector (this is why CAN1 lives on
 PB8/PB9). PB4 is NJTRST — avoided deliberately; PA15/PB3 are the other two
@@ -3181,7 +3395,7 @@ leftover jumper that parallels inputs is now wrong.
 | PB12 | DRV_nFAULT | **4 — nFAULT** | driver → MCU | open-drain, active low, **needs a 10 kΩ pull-up to 3V3** |
 | **PA2** | **DRV_IPROPI** | **6 — IPROPI** | driver → MCU | **new.** ADC1_IN2; **R_IPROPI now 1.474 kΩ** (2.0k∥5.6k) → 0.6632 V/A |
 | **PA4** | **DRV_VREF** | **5 — VREF** | MCU → driver | **new.** DAC1_OUT1. Carrier's 10 kΩ to nSLEEP **removed Sep 12** |
-| — | PMODE | 16 — PMODE | strap | **must select PWM (IN1/IN2) mode — verify first** |
+| — | PMODE | 16 — PMODE | strap | **PWM mode = logic HIGH. Fit 10 kΩ to 3V3.** Open = Hi-Z = independent half-bridge, NOT "unset" (Sep 16) |
 | — | IMODE | 7 — IMODE | strap | **carrier fits 20 kΩ to GND** — decode against the datasheet table |
 | GND | common | 9 PGND / 15 GND | — | one ground reference, star point at the supply |
 
@@ -3193,10 +3407,14 @@ driver at all; they go to the MCU side as before.
 **Three things to confirm on the physical carrier before wiring**, all of them
 open items from the selection doc:
 
-1. **Which PMODE strap selects PWM (IN1/IN2) mode.** This is the one that
-   decides whether the W4 firmware drops in unchanged. In PWM mode IN1/IN2
-   carry the same truth table as the DRV8833; in PH/EN mode they do not, and
-   `drive.c`'s two-channel scheme would be driving the wrong thing.
+1. ~~Which PMODE strap selects PWM (IN1/IN2) mode.~~ **ANSWERED Sep 16, 2026
+   from SLVSF66A Table 2: PWM mode is PMODE = logic HIGH.** Fit 10 kΩ to 3V3
+   (not 100 kΩ — see the Sep 16 log). Logic low is PH/EN and **Hi-Z, which is
+   what an open pin self-biases to, is independent half-bridge**. The pin was
+   left open from Sep 11 to Sep 16 and the driver therefore ran in independent
+   half-bridge with internal current regulation disabled. The mode is latched
+   on nSLEEP rising, so the strap takes effect only after `drv disable` →
+   `drv enable` or a power cycle.
 2. ~~Whether the carrier already populates R_IPROPI, and at what value.~~
    **ANSWERED Sep 12, 2026: 2.48 kΩ, fitted.** The selection doc's 2.2 kΩ was
    an assumption and is superseded — see the scaling block below.
@@ -3224,6 +3442,7 @@ same day**. Seven spare carriers remain stock.
 
 | Strap | As shipped | On the bench carrier now |
 |---|---|---|
+| **PMODE** | **not populated — pin left OPEN** | **10 kΩ to 3V3 required** (fitted Sep 16, unverified) |
 | nSLEEP → VREF | 10 kΩ | **REMOVED** — VREF driven by PA4/DAC1_OUT1 |
 | IMODE → GND | 20 kΩ | unchanged — **still not decoded** |
 | R_IPROPI → GND | 2.48 kΩ | **1.474 kΩ** (2.0 kΩ ∥ 5.6 kΩ) |
@@ -3674,14 +3893,18 @@ gearbox is the difference between a note and a broken bench setup.
     - ✅ **DRV8874 arrived Sep 11 and is wired and running** — IPROPI on PA2
       (`ADC1_IN2`), VREF on PA4 (`DAC1_OUT1`), carrier modified, R_IPROPI
       measured at 1465 Ω. `drive.c` needed no change for the swap, as designed.
-    - ✅ **PMODE confirmed to select PWM (IN1/IN2) mode — Sep 14, from data
-      already on record.** No separate test was needed. At 20% duty `drive.c`
-      emits IN1 constantly high and IN2 PWM'd at 80% (slow decay). Under
-      *either* PH/EN pin assignment one of those two pins would be EN, sitting
-      at 100% or 80%, so a 20% command would have produced roughly 50–55 rpm.
-      The Sep 12 measurement was **11.07 rpm**, within 6% of the DRV8833's
-      11.78 rpm at the same command. No PH/EN interpretation lands near 11 rpm.
-      A second duty point comes free with the 12 V rail work in task 17
+    - ❌ **SUPERSEDED Sep 16 — "PMODE confirmed to select PWM mode" was wrong.**
+      The Sep 14 reasoning still holds as far as it goes: at 20% duty `drive.c`
+      emits IN1 constantly high and IN2 PWM'd at 80% (slow decay), under either
+      PH/EN pin assignment one of those is EN and a 20% command would have given
+      roughly 50–55 rpm, and the Sep 12 measurement was **11.07 rpm**. That
+      rules out PH/EN. **It does not confirm PWM mode**, because the third
+      option was never enumerated: in independent half-bridge each output
+      follows its own input, so slow decay produces the *same* average motor
+      voltage and the *same* 11.07 rpm. PMODE was in fact unconnected — Hi-Z,
+      independent half-bridge — the whole time, and internal current regulation
+      was therefore disabled, meaning **every `drv trip` / PA4 VREF result taken
+      before Sep 16 was inert and must be re-taken**. See the Sep 16 log entry
     - ✅ **`.ioc` root cause found and fixed Sep 12** — the file used signal
       names absent from the CubeMX device DB (`S_TIM2_CH1` for what must be
       **`S_TIM2_CH1_ETR`**; bare `TIM4_CH1`/`CH2` for **`S_TIM4_CH1`/`S_TIM4_CH2`**)
@@ -3954,10 +4177,91 @@ rework session, not a week.
       of the module. Tuning a velocity loop without a reflash between trials is
       the difference between an afternoon and a week.
 
+19. **⛔ BLOCKER — MCU board replacement, PMODE strap, ground return
+    (opened Sep 16, 2026).** Nothing else on the bench runs until this is done.
+    PB7 on the current board is destroyed and the conditions that destroyed it
+    are still wired up.
+
+    - ⬜ **Fit the PMODE pull-up first: 10 kΩ from PMODE (pin 16) to 3V3.**
+      Not 100 kΩ — against the internal 156 kΩ/44 kΩ divider that reaches only
+      ≈1.66 V, 160 mV over the 1.5 V `V_TIH` minimum. **This is a per-board
+      schematic item for all six nodes and for HW1, not a bench workaround.**
+    - ⬜ **Replace the single DuPont between breadboard PGND and MCU ground**
+      with a short, thick, dedicated conductor, separate from the logic ground
+      link, sized for stall rather than for the working point.
+    - ⬜ **Check the new WeAct board bare, before any wiring to the driver.**
+      `drv pin` must show PB6 and PB7 both `mode 2 af 2` with **both** IDR
+      reading 0 after a coast.
+    - ⬜ **Confirm the mode actually latched**: `drv disable` → `drv enable`
+      (PMODE latches on nSLEEP rising), then `drv duty 10` and scope IN1/IN2.
+      Slow-decay forward is IN1 constantly high, IN2 PWM'd at 90%. Cross-check
+      with `drv duty 50`: a near-stationary wheel there means PMODE is still
+      reading low (PH/EN, speed ∝ |2D−1|) and the strap has not taken.
+    - ⬜ **Verify the DRV8874 survived.** The MCU clamps first so the driver
+      is probably intact, but it took the same event.
+    - ⬜ **Re-take every current-regulation result.** Independent half-bridge
+      disables internal current regulation, so all `drv trip` / PA4 VREF work
+      from Sep 11–16 was inert. The plateau sweep in task 17 is the first thing
+      that becomes meaningful again.
+    - ⬜ **Re-run `drv iscan` in PWM mode and expect a DIFFERENT shape.** With
+      low-side slow decay restored, the samples outside the drive window should
+      read **non-zero and decaying**, not the exact zeros seen on Sep 15 — those
+      zeros were a high-side decay phase that IPROPI cannot see. The 1.6 µs
+      `tDELAY` should also stop biting, since it is waived while the sensed
+      low-side FET stays continuously on. Only if structure *survives* this is
+      the scope-on-PA2 plan worth running.
+    - ⬜ **Remove the temporary `drv pin` command from `console.c`** once the
+      new board is verified. It is marked TEMPORARY and nothing depends on it.
+
 ## KEY LEARNINGS & GOTCHAS
 
 Short, generalised rules. Machine-specific detail belongs in that machine's
 section; this is for things that will bite again somewhere else.
+
+- **A mode-select pin left floating is a selected mode, not an absent one — and
+  a tri-level one may not select the same mode twice.** Multi-level config
+  inputs self-bias through an internal divider (the DRV8874's PMODE: 156 kΩ to
+  an internal 5 V over 44 kΩ to GND → ≈1.1 V, the middle band). Leaving it open
+  therefore *picks* the middle option, and sits close enough to a threshold that
+  a different power-up can latch a different mode — which turns one bug into an
+  intermittent one. Strap every mode pin explicitly, including the one whose
+  default you believe you want. This cost an MCU on Sep 16, 2026.
+- **Find out what a config pin is LATCHED on.** Many drivers sample mode pins
+  once, at enable, rather than continuously — the DRV8874 latches PMODE on
+  nSLEEP rising. A strap changed on a live board does nothing until the part is
+  slept and woken, so "I changed it and nothing happened" is a false negative.
+- **Ruling out one alternative does not confirm the remaining one unless the
+  alternatives were enumerated first.** An rpm figure was used on Sep 14 to
+  "confirm" PMODE was in PWM mode; it ruled out PH/EN and treated the rest as
+  proven. Independent half-bridge gives the *same* average voltage under slow
+  decay and was never on the list. When a measurement is used as proof, write
+  down every state it has to discriminate, then check it against each.
+- **Know which part of the circuit a current sensor can physically see.**
+  IPROPI mirrors only the low-side FETs, drain→source, so whether a reading
+  exists at all depends on which side of the bridge the recirculation uses —
+  low-side decay is sensed, high-side decay reads a clean, convincing zero. A
+  plausible zero from a sensor that is blind to that path looks exactly like a
+  real zero. Before trusting a current waveform, check the conduction path for
+  every phase of the switching pattern, not just the driven one.
+- **A GPIO that still reads high with its own internal pull-down enabled and
+  every wire removed is a dead pad, not a wiring fault.** The order that proves
+  it: confirm the peripheral registers are identical to a working sibling
+  channel; drive the pin low and read IDR; reconfigure as an input with the
+  internal pull-down and read IDR; then remove every external connection and
+  repeat. Only the last step separates an external short from a blown ESD clamp
+  to VDD. A hot MCU beside it is the 3V3 rail pouring through that clamp and out
+  through the pin's own low-side transistor.
+- **Size the ground return for the fault current, not the working current.** A
+  single DuPont from breadboard PGND to MCU ground carried months of correct
+  bench work, then failed the first time a control-mode fault turned a 13% duty
+  command into ~74% of the rail. When the power-ground path is worse than the
+  signal path, motor return current comes home through the *signal* wires and
+  destroys GPIO pads. Motor-driver logic pins are typically rated to 5.75 V
+  while a 3.3 V MCU clamps at VDD+0.3 — in that contest the MCU always loses.
+- **When something is damaged, stop for the session.** Standing bench rule: the
+  conditions that destroyed one part are still set up on the bench, and the next
+  thing to go in is exposed to all of them. Diagnose and document, but do not
+  rewire.
 
 - **Crimp harness joints, never solder them.** Solder wicks up the strands and
   creates a hard-to-soft transition; all subsequent bending concentrates there

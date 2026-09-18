@@ -466,3 +466,222 @@
   characterization from the June 8, 2026 bench session (previously
   undocumented here).
 
+
+## Verification & characterisation logs
+
+Moved out of `PROJECT_CONTEXT_WHEEL_FW.md` on Sep 18, 2026. These are session
+records — the bench runs that established results now summarised in that file.
+Nothing here is current state; read it to see *how* something was established.
+
+### Verification log — Aug 9, 2026 (daedalus + WeAct F446 board)
+
+Each step verified before proceeding to the next (W1 method).
+
+```
+1. PATH after logout/login
+   /opt/st/stm32cubeclt_1.22.0/{STM32CubeProgrammer,STLink-gdb-server,CMake,
+   Make,Ninja,st-arm-clang,GNU-tools-for-STM32}/bin   OK all present
+
+2. Tool versions
+   gcc 14.3.1 · gdb 15.2.90 · CubeProgrammer 2.23.0 · cmake 4.3.1 · ninja 1.13.2  OK
+
+3. Cortex-M4F compile+link (trivial main, nosys.specs)
+   linked against thumb/v7e-m+fp/hard/libc.a   OK hard-float multilib confirmed
+   text 5260 · data 1372 · bss 840
+
+4. SVD present · probe enumerated · SWD connect
+   STM32F446.svd found                                                    OK
+   ST-LINK SN 37FF71064E573436D7331B43, FW V2J46S7, no VCP -> V2 not V2-1  OK
+   Device ID 0x421 · Rev A · STM32F446xx · 512 KB · Cortex-M4 · 3.28 V     OK
+
+5. GDB chain (ST-LINK_gdbserver -p 61234 + arm-none-eabi-gdb)
+   attach halts core                                                      OK
+   sp = 0x20020000  (= 0x20000000 + 128 KB, top of SRAM)                  OK
+   xpsr = 0x01000000 (Thumb bit set)                                      OK
+
+6. monitor reset -> "Successfully completed reset operation (System reset)"
+   pc = 0x08000b48 after reset
+   x/2xw 0x08000000 -> 0x20020000  0x08000b49
+   i.e. vector[0] = initial MSP (matches sp), vector[1] = reset handler with
+   Thumb bit -> handler at 0x08000b48 = pc.   OK reset-and-halt confirmed
+   (Handler sits ~2.8 KB into flash because the vector table reserves ~97
+   interrupt entries first. Normal.)
+
+7. Full VS Code round trip: build -> flash -> halt at main               OK
+
+8. Application-level confirmation under the new toolchain:
+   MCO1 = 8 MHz HSE at the pin; MCO2 sources the 180 MHz PLL but runs
+   through a /5 prescaler, so **PC9 carries 36 MHz** — that reading is
+   correct, not a fault. Both scope-verified previously under CubeIDE and
+   reproduced identically here, plus TIM3 interrupt-driven
+   blinky on PB2.                                                        OK
+   -> TIM3 firing at the expected rate validates the APB1 timer clock, and
+   **APB1 at 45 MHz is the clock that feeds bxCAN** — so the bit-timing
+   divisor chain above is validated on hardware, not only on paper.
+```
+
+**Conclusion: the toolchain is no longer a suspect.** Any subsequent failure
+belongs to firmware or wiring. Same position W1 left `can0` in, and it is what
+makes W3–W5 debugging tractable.
+
+### Verification log — Aug 10, 2026 (W2 acceptance criterion)
+
+**Three independent views of the same 17 frames:**
+
+| Source | Frames |
+|---|---|
+| STM32 console | `hb 354` … `hb 370` (17) |
+| Orion `candump -tz can0` | seq `0x161` … `0x171` (17) |
+| daedalus / CANable `candump -tz can0` | seq `0x161` … `0x171` (17) |
+
+No gaps, no duplicates, sequence numbers matching across all three. (The console
+prints `seq` after incrementing, so `hb 354` carries payload `0x161` = 353.)
+
+- STM32: `tec 0 rec 0 lec none` throughout
+- Orion: `can state ERROR-ACTIVE (berr-counter tx 0 rx 0)`, bitrate 250000,
+  sample-point 0.875, `tq 20 prop-seg 87 phase-seg1 87 phase-seg2 25 sjw 16`
+- Not one retransmission across the run. **A zero TEC is the proof the ACK came
+  back** — a receiver must assert a dominant bit in the ACK slot of the
+  transmitter's frame, so the link is bidirectional even though traffic only
+  went one way.
+
+**Two clocks, one bus.** Orion runs 200 tq of 20 ns from 50 MHz; the STM32 runs
+15 tq of 266.67 ns from 45 MHz. Both land on exactly 250 000 bps, sample points
+87.5% and 86.7%.
+
+**Inter-frame timing confirmed the divisor chain a third time.** Predicted TIM3
+period: 90 MHz / (1800+1) / (25000+1) = 1.99881 Hz = 500.298 ms. Orion
+timestamped the frames 500.297 / 500.295 / 500.304 ms apart. After the
+oscilloscope (MCO1/MCO2) and the blinky, APB1 = 45 MHz is now also confirmed by
+a stopwatch on the far side of the bus.
+
+### The floating CAN_RX lesson (Aug 10, 2026) — do not skip this
+
+Before the transceiver was wired, PB8 was left floating. **Three consecutive
+bench runs of identical firmware failed three different ways:**
+
+| Run | TEC | REC | LEC | What it looked like |
+|---|---|---|---|---|
+| 1 | 128 | 0 | `ack` | transmitted fine, nothing acknowledged |
+| 2 | 0 | 255 | `form` | never transmitted, receiver drowning in garbage |
+| 3 | 0 | counting down | `bit-dominant` | cycling in and out of BUS-OFF |
+
+All three are the same root cause: an undriven CMOS input settling differently
+each power-up. Floating high looks like an unacknowledged bus; floating low or
+noisy looks like a corrupted one.
+
+**The non-determinism was the diagnosis.** A driven input cannot behave
+differently run to run — that alone ruled out firmware before any register was
+examined.
+
+### Bus-load ramp — Aug 11, 2026
+
+`cangen can0 -g <gap> -I i -L 8` from daedalus, heartbeat running on the STM32,
+`monitor off`, counters cleared between steps. Run durations were derived from
+the heartbeat count (1.99881 Hz), which makes the STM32 its own stopwatch.
+
+| `-g` | duration | measured rate | bus load | frames RX | FIFO-full | overruns |
+|---|---|---|---|---|---|---|
+| 5 | 87.1 s | 206 f/s | ~11% | 17,959 | 0 | 0 |
+| 2 | 68.5 s | 509 f/s | ~27% | 34,891 | 0 | 0 |
+| 1 | 68.0 s | 970 f/s | ~52% | 65,993 | 0 | 0 |
+| 0.5 | 68.5 s | **1,858 f/s** | **~100%** | 127,343 | 0 | 0 |
+
+`TEC 0 / REC 0 / lec none / error-active` at every step, including saturation.
+
+**The ramp topped out on the wire, not on the MCU.** At `-g 0.5` cangen asked
+for 2,000 f/s and got 1,858 — that is 538 us/frame, about 134 bits, exactly an
+8-byte standard frame plus typical stuffing at 250 kbps. Every derived figure
+agrees with theory independently, which is what makes the measurement
+trustworthy.
+
+**What it bounds.** `FULL0` sets when FIFO0 holds 3 messages. It never
+incremented across 127,343 frames at saturation, so the main loop always drained
+before three frames could accumulate:
+
+```
+worst-case main-loop period < 3 x 538 us = 1.6 ms
+```
+
+Not an average — a bound, held for 68 s with no outlier.
+
+**Arbitration held too:** `can tx 137 frames, 0 dropped` at ~100% load. With
+`-I i` sweeping the whole ID range, roughly five-eighths of cangen's frames
+outrank 0x500, yet the heartbeat never missed a mailbox. At 2 Hz it has 500 ms
+to win one arbitration, which is ample even on a saturated bus.
+
+**What it does NOT prove — read this before citing the table.** The ramp
+measured *throughput*: whether frames are lost. It measured neither **latency**
+(how long a frame waits in the FIFO before being handled) nor **coupling** (that
+the result is a property of a nearly empty main loop). Do not cite it as
+evidence that polling is the right architecture — see below.
+
+### Verification log — Aug 13, 2026 (W3 first motion)
+
+Encoder position is `carry x 65536 + value`; the SERVO42C encoder is 16-bit per
+**motor** revolution.
+
+| Step | `pulses` (`33`) | encoder raw | position | predicted |
+|---|---|---|---|---|
+| start | — | carry 0, 42 | +42 | — |
+| 3 x `move 16` CW (48 pulses) | −48 | carry −1, 63614 | −1,922 | −1,924 |
+| `deg 5` (+422 pulses) | −470 | carry −1, 46329 | −19,207 | −19,209 |
+| `deg −5` (−422 pulses) | — | carry −1, 63610 | −1,926 | −1,922 |
+
+**Mstep = 8 confirmed by measurement, not by menu.** Predictions use
+`pulses / 1600 x 65536`. Both forward steps land within **2 counts**, and the
+offset is constant rather than growing — an artifact, not a scale error. At
+Mstep 16 the first row would have read −941, so the result is decisive. This is
+the reliable way to check Mstep: it measures what the mechanism did.
+
+**Round-trip repeatability: 4 counts.** Out 5 deg and back landed −1,926
+against −1,922. One microstep at Mstep 8 is 65536/1600 = **41 counts**, so the
+error is about **one tenth of a single microstep** — 0.022 deg at the motor,
+**0.0012 deg at the output**. No measurable backlash contribution at this
+amplitude. Useful baseline for W9 precision calibration.
+
+**Angle conversion is exact to quantisation.** `deg 5` issued 422 pulses =
+4.9974 deg at the output; the 0.0026 deg residual is one-pulse quantisation
+(0.0118 deg), i.e. the mechanism's floor.
+
+**`33` counts UART-commanded pulses**, not just hardware STEP input: −470 is
+exactly 48 + 422. That makes it usable as the feedback path for absolute
+positioning, which `FD` alone cannot provide since it is a relative move.
+
+**Direction convention:** positive degrees / `ccw = false` **decrements** both
+the encoder position and the `33` pulse counter. Pin this down before Ackermann
+sign conventions are written.
+
+### Torque characterization — June 8, 2026
+
+**Rig:** AMF-300 digital force gauge (300 N max) rigidly frame-mounted at exactly
+**10 cm** from the rotation axis. A 20×20 aluminium profile on the gearbox output
+shaft presses against it. `Torque (N·m) = Force (N) × 0.10`. If the gauge reads
+kgf: `Torque = kgf × 9.81 × 0.10`.
+
+**Method:** enable, advance in 16-pulse steps (`E0 FD 02 00 00 00 10 EF`), and at
+each step record force, angle error (`E0 39 19`), and supply current.
+
+**Run 1 — default MaxT:**
+| Force (N) | Torque (N·m) | Angle error (°) |
+|---|---|---|
+| 7.3 | 0.73 | −0.566 |
+| 9.4 | 0.94 | −0.697 |
+| 11.6 | 1.16 | −0.900 |
+| 13.7 | 1.37 | −1.038 |
+| 15.7 | 1.57 | −1.170 |
+| 17.7 | 1.77 | −1.312 |
+| 19.7 | 1.97 | −1.471 |
+| 21.7 | 2.17 | −1.602 |
+| 23.7 | 2.37 | −1.794 |
+| 25.8 | 2.58 | −1.971 |
+| 27.5 | 2.75 | −2.234 |
+| 29.6 | 2.96 | −2.393 |
+| 31.6 | 3.16 | −2.658 |
+| 33.6 | 3.36 | −2.850 |
+| 35.7 | 3.57 | −3.091 |
+
+Run 1 peaked at **4.95 N·m** before the driver stopped.
+
+**Run 2 — MaxT raised to maximum (`E0 A5 04 B0 39`):** pushed to a true stall
+boundary at **5.57 N·m**, drawing **1550 mA** = **18.66 W** at 12.04 V.

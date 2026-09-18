@@ -8,9 +8,9 @@ all three.**
 
 | Working on | Read | Lines |
 |---|---|---|
-| **Wheel-node STM32 firmware** — CAN peripheral, pin allocation, firmware modules, SERVO42C, drive motor / DRV8874 / encoder | **`PROJECT_CONTEXT_WHEEL_FW.md`** | ~2340 |
+| **Wheel-node STM32 firmware** — CAN peripheral, pin allocation, firmware modules, SERVO42C, drive motor / DRV8874 / encoder | **`PROJECT_CONTEXT_WHEEL_FW.md`** | ~1960 |
 | Machines, network, SSH, ROS 2 / Jetson / Isaac Sim, bus-wide CAN architecture, power distribution, tooling | `PROJECT_CONTEXT_REST.md` | ~1820 |
-| The exact numbers, register values or reasoning behind one past wheel-firmware session | `PROJECT_CONTEXT_WHEEL_FW_LOG.md` — **on demand only** | ~470 |
+| The exact numbers, register values or reasoning behind one past wheel-firmware session, the superseded DRV8833, or a completed task | `PROJECT_CONTEXT_WHEEL_FW_LOG.md` — **on demand only** | ~1050 |
 
 `PROJECT_CONTEXT_WHEEL_FW.md` carries a one-line-per-session brief log; the
 `_LOG` file carries the full entry behind each line. Open the log only when a

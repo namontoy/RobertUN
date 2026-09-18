@@ -1,5 +1,5 @@
 # RobertUN — Wheel Controller Firmware: Full Progress Log
-**Last updated:** September 17, 2026 (split out of `PROJECT_CONTEXT.md`; this file now carries the detailed session log for the wheel-firmware track)
+**Last updated:** September 18, 2026 (took in the DRV8833 history and the completed NEXT TASKS items from the context file)
 
 **Referenced from:** `PROJECT_CONTEXT_WHEEL_FW.md`, which carries a one-line-per-entry version of this log. This file is the verbatim, unedited detail behind each entry — pull it in when you need the exact numbers, register values, or reasoning chain, not for routine session start.
 
@@ -467,6 +467,240 @@
   undocumented here).
 
 
+## NEXT TASKS — completed items, moved out of the context file Sep 18, 2026
+
+These were finished. They live here so the context file's NEXT TASKS list holds
+only work that is actually still open. Original numbering kept.
+
+### 6. CAN Bus — STM32 firmware (COMPLETED August 10, 2026)
+
+6. **CAN Bus — STM32 firmware:** ✅ **COMPLETED August 10, 2026** — this is
+   roadmap W2. Full log in the Aug 10 verification section above.
+   - ✅ bxCAN at 250 kbps (BRP 12, BS1 12, BS2 2, SJW 2, 86.7% sample point)
+   - ✅ Accept-all mask filter on bank 0, `HAL_CAN_Start()`, heartbeat on 0x500
+   - ✅ DMA console + command interpreter for bench work (see FIRMWARE MODULES)
+   - ✅ `loopback on` + `send 123 DEADBEEF` self-test round-tripped with nothing
+     attached — proves bit timing, filter and FIFO independently of any wiring
+   - ✅ Termination measured 59.79R with all three nodes connected
+   - ✅ Three-way verification: STM32 → Orion `candump`, confirmed independently
+     on the CANable, 17 frames, zero error counters on both ends
+   - Open, non-blocking: `cmd_errors` ESR snapshot (see Known issue above)
+   - **Open decision:** polled vs interrupt-driven CAN RX — the Aug 11 load ramp
+     bounds throughput only, not latency. Hybrid ISR-to-ring is the leading
+     candidate. Settle before W6.
+
+### 6b. W4 — drive motor + encoder closed loop, the completed part
+
+The task itself is still in progress; this is the full ✅ history as it stood on
+Sep 18, 2026, with the open items left behind in the context file.
+
+6b. **W4 — drive motor + encoder closed loop (IN PROGRESS, opened Aug 24):**
+    Acceptance criterion: encoder counts are read correctly and match physical
+    rotation. Note this needs **no motor power at all** — turning the wheel by
+    hand is enough, and it also settles the 11 PPR question W5 depends on.
+    - ✅ Pin allocation settled, `.ioc` and generated code building clean
+    - ✅ Heartbeat moved TIM3 → TIM7; TIM2 chosen for the 32-bit encoder
+    - ✅ DRV8833 carrier characterised; J1 cut, nFAULT pull-up fitted, all
+      four DRV pins verified at their off levels on the bench
+    - ✅ TIM6 control-loop tick at 1 kHz (PSC 89 / ARR 999, own ISR)
+    - ✅ Encoder read + `int32_t` delta accumulate, `enc` console commands
+      including `enc probe`, which watches the raw A/B pins and TIM2 together
+      and localises a fault to either side of the MCU pin
+    - ✅ **ACCEPTANCE MET Aug 26** — 8394.9 counts/rev measured over ten hand
+      turns, 0.1% from predicted. Sign convention recorded on the bench
+    - ✅ PWM helpers, both decay modes reachable. **Drive-scheme choice CLOSED
+      Aug 26: slow decay (drive-brake).** Measured deadband ~2.6% duty against
+      fast decay's >20% — fast decay would not move the free shaft at all at
+      20% duty, because the current collapses to zero each off phase and
+      average torque never breaks static friction
+    - ✅ **`drv` console commands**, mirroring the existing `mks <sub>` pattern
+      in `console.c`'s command table: `drv duty <±pct>`, `drv enable|disable`,
+      `drv coast|brake`, `drv status` (duty, nSLEEP level, nFAULT state).
+      These exist so the driver can be exercised by hand from the bench
+      without a debugger or a reflash, the same way `send` and `mks` do.
+    - ✅ **PASSED Aug 26 — PWM scoped with the motor disconnected**, the gate
+      between "the code compiles" and "power touches an actuator". 20.000 kHz
+      by cursor, duty exact to within one cursor step, all four
+      direction/decay quadrants correct, brake and coast confirmed. The
+      original checklist follows, kept because it is the right list to re-run
+      after any timer change:
+      - 20.0 kHz on both channels, and the measured frequency actually matches
+        (this is the check that catches a wrong APB1 timer-clock assumption —
+        a ×2 error here would show as 10 or 40 kHz)
+      - duty tracks the commanded value across 0 / 25 / 50 / 75 / 100 %
+      - the two channels are edge-aligned (same timer, same ARR)
+      - the commanded drive scheme produces the expected waveform *pair* —
+        for drive-brake, one pin sits high while the other is PWM'd; for
+        sign-magnitude, one pin is PWM'd while the other sits low
+      - direction reversal swaps which pin carries what, with no shoot-through
+        window where both go high unintentionally
+      - `drv disable` returns both pins to 0 V and drops nSLEEP
+      - nSLEEP rises only on a non-zero command and falls again at zero
+      Only after all of that passes does a motor get connected.
+    - ✅ **DONE Sep 11 — all seven motors checked and re-harnessed.** Every
+      motor (six wheels plus the spare) had its encoder verified and its cable
+      extension **re-terminated with crimped joints per NASA-STD-8739.4A**.
+      The Aug 25 broken-VCC failure is closed fleet-wide, not sampled.
+    - ✅ **`DIP_SW_1`/`DIP_SW_2` on PB14/PB15 and the latch-once ID read —
+      done and verified Sep 14**, all eight codes. The heartbeat now goes to
+      `0x500 + module_id`, and identity gates the transmit. W7 no longer
+      depends on anything unwritten in firmware
+    - ✅ **First powered motion Aug 26** — free shaft, both directions, full
+      duty range, coast and brake all correct. See the plant model below.
+    - ✅ **Motor-terminal voltage confirmed Aug 26: 9.45 V supply → 9.35 V at
+      the motor**, ~1% drop. The rail is not near the DRV8833's 10.8 V ceiling;
+      the motor is simply ~11% faster than its datasheet (7.01 rpm/V measured
+      against the spec's 6.33). Ordinary spec conservatism
+    - ⬜ Measure real drive current — the input HW4's PDB branch sizing has
+      been waiting on. **Two ways in, and neither waits for the DRV8874:**
+      (a) measure the motor's winding resistance with a multimeter, rotating
+      the shaft between readings to average brush position — if it lands near
+      2.18 Ω the whole current analysis is validated; (b) stall the motor from
+      a current-limited bench supply with no driver in the loop and read the
+      current directly (spec says 2.8 A at 6 V). **Now a third and better
+      path exists: measure it on the loaded wheel rig at real weight**, which
+      gives the actual duty cycle of operation rather than a bounding figure.
+      The DRV8874's IPROPI output makes this a firmware reading, not a
+      multimeter session.
+    - ✅ **DRV8874 arrived Sep 11 and is wired and running** — IPROPI on PA2
+      (`ADC1_IN2`), VREF on PA4 (`DAC1_OUT1`), carrier modified, R_IPROPI
+      measured at 1465 Ω. `drive.c` needed no change for the swap, as designed.
+    - ❌ **SUPERSEDED Sep 16 — "PMODE confirmed to select PWM mode" was wrong.**
+      The Sep 14 reasoning still holds as far as it goes: at 20% duty `drive.c`
+      emits IN1 constantly high and IN2 PWM'd at 80% (slow decay), under either
+      PH/EN pin assignment one of those is EN and a 20% command would have given
+      roughly 50–55 rpm, and the Sep 12 measurement was **11.07 rpm**. That
+      rules out PH/EN. **It does not confirm PWM mode**, because the third
+      option was never enumerated: in independent half-bridge each output
+      follows its own input, so slow decay produces the *same* average motor
+      voltage and the *same* 11.07 rpm. PMODE was in fact unconnected — Hi-Z,
+      independent half-bridge — the whole time, and internal current regulation
+      was therefore disabled, meaning **every `drv trip` / PA4 VREF result taken
+      before Sep 16 was inert and must be re-taken**. See the Sep 16 log entry
+    - ✅ **`.ioc` root cause found and fixed Sep 12** — the file used signal
+      names absent from the CubeMX device DB (`S_TIM2_CH1` for what must be
+      **`S_TIM2_CH1_ETR`**; bare `TIM4_CH1`/`CH2` for **`S_TIM4_CH1`/`S_TIM4_CH2`**)
+      with the `SH.*` shared-signal blocks missing. CubeMX had been silently
+      dropping TIM2 and TIM4 on load since commit `30944da`. ADC1 + DAC now
+      generate and the project builds clean
+    - ✅ **First motion on the DRV8874 Sep 12** — 20% duty, +11557 counts for
+      positive duty (sign convention holds), 11.07 rpm, extrapolating to ~55 rpm
+      at the full 9.35 V rail. ADC1/PA2 confirmed live in the same test
+    - ✅ **IPROPI decoded Sep 12 — the reading is SUPPLY current**, `I_motor × D`.
+      Stalled-shaft test: predicted 984 mA (continuous) vs 197 mA (supply),
+      measured **189/190 mA**. See the IPROPI section above for the consequence
+      that a plateau sweep plateaus at `trip² × R_motor / Vm`, not at the trip
+    - ⬜ **Plateau sweep** — `drv trip 1000 / 2000 / 3000`, stall, step duty up,
+      record where the reported current flattens, to settle the internal VREF
+      divider (k = 1 / 2 / 3). Immune to both pending constant corrections,
+      because measured current and commanded trip pass through the same
+      R_IPROPI and the same VDDA and the ratio cancels them
+    - ⬜ **Apply the two measured constants after the sweep** (held until then so
+      nothing changes mid-experiment): `ISENSE_VDDA_MV` 3300 → **3325**,
+      `ISENSE_R_IPROPI_OHM` 1474 → **1465**. Net effect is that readings
+      currently sit ~1.4% low
+    - ✅ **`config` module verified on hardware Sep 14** — eight checks, plus
+      the finding that a reflash preserves sector 7. See NEXT TASKS item 18
+    - ✅ **nFAULT pull-up confirmed fitted Sep 14** — `ASSERTED` when shorted to
+      GND, clean `clear` when released. MCU side only; that the driver asserts
+      on a real fault is still unproven, and UVLO during the rail work is the
+      cheap way to close it
+    - ⚠️ **Nothing polls nFAULT at runtime.** It is read at boot and by `drv`,
+      nowhere else, so a fault that occurs and clears mid-run is invisible.
+      `drive.h` defers the policy to W5 deliberately and that is right — but a
+      *sticky latch* in the 1 kHz tick is not policy, it is observation, and
+      without one the loaded-wheel current measurement could trip a transient
+      OCP that leaves no trace. Do this before the rig work
+
+**Superseded Sep 11 — the DRV8874 arrived, so none of this is live any more.** It is kept because the reasoning held: nothing in W4 or W5 was blocked by the wait. W4's
+acceptance needs no motor power at all, and W5's PID tuning runs at bench loads
+far below the DRV8833's ~1.7 A. The only real collision is HW3 (Sep 7–13),
+which mills and populates one reference board — populate everything except the
+driver and fit it on arrival. Boards are milled in-house, so this costs a
+rework session, not a week.
+
+### 18. `config` module — the full build and verification record
+
+18. **`config` module — BUILT Sep 13, VERIFIED ON HARDWARE Sep 14, 2026**
+
+    Eight checks on the bench, all passing; two bugs found and fixed in the
+    process (below).
+    `Core/Inc/config.h` + `Core/Src/config.c`, plus a `cfg` console command.
+    What exists:
+
+    - **Eight keys**: `vdda_mv`, `r_ipropi`, `a_ipropi`, `trip_ma`,
+      `duty_limit`, `rail_mv`, `isense_avg`, `sat_raw`. Each carries name,
+      units, min, max, default and one line of help in a single table in
+      `config.c`; adding a key is one enum entry plus one row.
+    - **Defaults stay in the owning header.** `isense.h` keeps the numbers and
+      the reasoning, renamed with a `_DEFAULT` suffix so that reading one at
+      runtime — where `config_get()` was meant — reads wrong at the call site.
+    - **Sector 7** (`0x08060000`, 128 KB) reserved; `FLASH` in
+      `STM32F446xx_FLASH.ld` shortened to 384 KB, with a named `CONFIG` region
+      so the map file shows the reservation. Image now 84 KB of 384 KB, and
+      objdump confirms nothing is linked above `0x08014818`.
+    - **Append-only log**: 48-byte record at a fixed 128-byte stride → 1024
+      saves per erase, so the 10k-cycle endurance becomes ~10M saves. CRC is
+      the last field and is programmed last, so a save interrupted by a power
+      loss fails its own checksum and the previous record stays live. Boot
+      scans all 1024 slots (a corrupt magic mid-log therefore cannot hide the
+      records after it) and takes the highest `seq` that validates.
+    - **Hardware CRC unit driven at register level**, deliberately not through
+      CubeMX — adding a peripheral to the `.ioc` means a regeneration, and this
+      project has already lost USER CODE blocks to one.
+    - **Fails to defaults, loudly.** Corrupt / version-mismatched / out-of-range
+      each print on the boot line *and* raise a second WARNING line, so a board
+      silently on defaults cannot be mistaken for one deliberately at defaults.
+      Out-of-range is per-key: a valid CRC is not a reason to trust a number.
+    - **`cfg save` refuses while the bridge is enabled**, mirroring `drv zero`,
+      with the reason printed: flash writes stall instruction fetch for up to
+      3 s and a turning motor keeps turning open-loop through all of it.
+    - **Out-of-range values are rejected, not clamped** — a clamp accepts
+      `trip 9000`, silently gives 6000, and hides the typo where it is most
+      expensive.
+    - **`cfg trip_ma` and `cfg duty_limit` apply live as well as at boot**, and
+      `drv trip` / `drv limit` now say "not persistent" *only when* they have
+      actually diverged from the stored value. Without this the two commands
+      would disagree about the same number until the next reset.
+
+    **Verified Sep 14** — boot scan on a blank sector; the save/reset/read-back
+    round trip; range rejection; unchanged-detection (no slot burned);
+    `revert` and `default`; the `cfg save` refusal while the bridge is enabled;
+    and the live-apply coupling in both directions. The post-refactor ceiling
+    and trip came back byte-identical to the pre-refactor values (4975 mA,
+    2997 mA), which is what proved the macro-to-function move was transparent.
+
+    **A firmware reflash does NOT erase sector 7** — confirmed Sep 14 by
+    flashing and finding the stored record intact. The toolchain sector-erases
+    only the regions it writes. This is load-bearing for W7: without it, every
+    firmware update would silently wipe each node's calibration.
+
+    **Two bugs found by the verification, both the same class** — a consistency
+    check compared in a space where the two sides were not comparable:
+    - The `drv trip` "not persistent" hint compared milliamps.
+      `isense_trip_ma()` derives back from the DAC code and is therefore always
+      quantised; a stored config value is not. It fired on every call, gate
+      useless. Fixed by comparing DAC codes, the only space where "would a
+      reset change this?" has a yes/no answer.
+    - `cfg revert` and `cfg default` replaced the stored values without
+      re-applying them, so `cfg` could report a 40% duty cap while the bridge
+      still enforced 100% — the dangerous direction. Fixed with
+      `cfg_apply_live()`.
+
+    **Still to do:**
+    - Two paths remain untested and are known to be so: the corrupt-record
+      fallback (needs garbage deliberately written into sector 7), and the
+      sector-full erase and wrap at save 1025, which contains the only
+      `HAL_FLASHEx_Erase` call. Cheap way to reach the second: build with
+      `CONFIG_SLOTS` forced to 4 and wrap it in seconds.
+    - Apply the two measured constants through `cfg` rather than a rebuild:
+      `cfg vdda_mv 3325`, `cfg r_ipropi 1465` (after the plateau sweep).
+    - Set `cfg rail_mv` once task 17's 12 V is metered at the motor terminals.
+    - **Add W5's PID gains as keys before tuning starts** — the biggest payoff
+      of the module. Tuning a velocity loop without a reflash between trials is
+      the difference between an afternoon and a week.
+
+
 ## Verification & characterisation logs
 
 Moved out of `PROJECT_CONTEXT_WHEEL_FW.md` on Sep 18, 2026. These are session
@@ -685,3 +919,128 @@ Run 1 peaked at **4.95 N·m** before the driver stopped.
 
 **Run 2 — MaxT raised to maximum (`E0 A5 04 B0 39`):** pushed to a true stall
 boundary at **5.57 N·m**, drawing **1550 mA** = **18.66 W** at 12.04 V.
+
+
+## DRV8833 — superseded driver (moved out of the context file Sep 18, 2026)
+
+The project ran on a DRV8833 breakout from Aug 16 until the driver was changed to
+the DRV8874 on Aug 25, 2026. None of this is current state; it is kept because
+seven DRV8833 carriers are still in the parts box and the reasoning is correct
+*for a DRV8833*. The one live consequence — the second buck, now 12 V for the
+motor's sake, fed independently of the logic buck — was left in
+`PROJECT_CONTEXT_WHEEL_FW.md`.
+
+### Driver
+**Commercial DRV8833 breakout PCB**, already designed and in hand. The intent is
+to **parallel both H-bridges per motor** for higher current.
+
+TI documents parallel mode explicitly (DRV8833 datasheet, Figure 7): the two
+bridges may be tied together, and the device's internal dead time prevents
+cross-conduction between them, so no external protection is needed. Inputs are
+tied in pairs (IN1=IN3, IN2=IN4) and outputs joined (OUT1+OUT3, OUT2+OUT4). On a
+breakout the outputs are usually separate screw terminals, so joining them is
+external wiring.
+
+### ⚠️ Supply-voltage conflict with the PDB — resolve before HW1 layout
+
+| | Voltage |
+|---|---|
+| DRV8833 operating VM range | **2.7 – 10.8 V** |
+| Planned PDB branch rail | **13.0 – 13.5 V** |
+
+**The DRV8833 cannot be fed from the branch rail.** The PDB was deliberately set
+to 13–13.5 V to pre-compensate branch-wire drop against the SERVO42C's 12 V
+floor — that decision is sound and should not change, because the steering
+driver needs it. But it puts the rail roughly 2.2 – 2.7 V above the DRV8833's
+operating maximum, and above its absolute-maximum rating too.
+
+This is not a derating margin question. It is over the limit.
+
+**Options, in order of preference given the parts are already bought:**
+
+1. **Second buck on the node PCB: 13–13.5 V → ~9 V motor rail.** Keeps every
+   part already purchased. The motor is a 6 V/12 V unit, so ~9 V costs some top
+   speed but nothing else. The node PCB already carries one buck for 3.3 V logic;
+   this adds a second, sized for the motor current. **Recommended.**
+   Keep the two bucks fed independently from the 13 V rail rather than cascading
+   3.3 V off the motor rail — motor noise should not sit upstream of the MCU.
+2. **Swap the driver for a higher-voltage part** (e.g. one rated for the full
+   12–24 V range). Removes a buck, but discards drivers already in hand and
+   restarts the driver-selection work.
+3. **Lower the PDB rail.** Rejected — it breaks the SERVO42C drop budget, which
+   is the reason 13–13.5 V was chosen.
+
+**RESOLVED Sep 11, 2026 by option 2 — the driver was swapped.** The DRV8874
+runs to 37 V, so the conflict that created this section no longer exists: the
+branch rail is inside the driver's range with enormous margin. Option 1's buck
+stays anyway, because the **motor** is a 6 V/12 V unit and the rail is
+13.5 V — the regulator now exists to protect the motor, not the driver, and its
+output is **12 V** as of Sep 12. This section is kept because the DRV8833
+reasoning is still the correct reasoning for a DRV8833, and seven stock
+carriers remain in the parts box.
+
+### The carrier in hand — characterised Aug 25, 2026
+
+Vendor documentation: https://lastminuteengineers.com/drv8833-arduino-tutorial/
+
+Terminals are `IN1 IN2 IN3 IN4` / `OUT1 OUT2 OUT3 OUT4`, `VCC`, `GND`, plus two
+control pins whose **silkscreen labels are truncated and confusing**: `EEP` is
+nSLEEP, `ULT` is nFAULT. Do not read them as anything else.
+
+No onboard regulator — the DRV8833 runs its logic off VM, so the carrier takes a
+single supply. Logic inputs are 3 V/5 V compatible, so 3.3 V PWM drives it
+directly.
+
+**Paralleling is external wiring on this board.** All four outputs are separate
+terminals, so tie IN1+IN3 to one MCU pin, IN2+IN4 to the other, and join
+OUT1+OUT3 / OUT2+OUT4. Costs no extra MCU pins — one STM32 pin drives two
+carrier inputs.
+
+**J1 ships CLOSED, which pulls nSLEEP up and leaves the driver ENABLED with no
+MCU involved.** Cut it. With J1 open the chip's on-chip pull-down holds nSLEEP
+low and "MCU not running ⇒ bridge disabled" becomes a property of the hardware
+rather than a firmware promise. **Done on the bench board Aug 25; must be
+repeated on all seven carriers.** Also: with J1 closed the EEP pin may sit at
+VM, so measure it before connecting to a 5 V-tolerant STM32 pin.
+
+**nFAULT floats by default — there is no pull-up on the carrier.** An external
+10 kΩ is fitted on the bench build and belongs on the HW1 schematic. Keep the
+STM32 internal pull-up enabled as well: on a production board with the resistor
+unpopulated it stops the input floating and inventing faults.
+
+**nFAULT high does NOT prove the driver is alive.** With VM absent the DRV8833
+is unpowered, its open-drain output is off, and the pull-up reads 3.3 V anyway.
+A clear nFAULT means "nothing is pulling this low", not "the motor rail is good".
+
+### ⚠️ No current sensing and no current limit (DRV8833 only)
+
+**AISEN/BISEN are tied directly to GND on this carrier**, which disables the
+DRV8833's current-limiting feature entirely. Two consequences:
+
+1. **Nothing limits stall current except the chip's own OCP.** A jammed wheel
+   pulls whatever the motor pulls until OCP trips and asserts nFAULT. Firmware
+   must monitor nFAULT, implement a stall timeout, and latch off rather than
+   retrying into a stuck wheel. **This rule survives the driver change** — it is
+   good practice on the DRV8874 too, which simply regulates instead of tripping.
+2. **There is no current feedback available at all** on this carrier.
+   ~~W5's PID is therefore velocity-only~~ — **superseded Aug 25, 2026.** The
+   DRV8874's IPROPI output restores current feedback, so a torque/current inner
+   loop is reachable again. Until the parts arrive (~Sep 15) the bench remains
+   velocity-only, which is fine: W4 and W5 both run at loads far below the
+   DRV8833's limits.
+
+### Current: ~2 A RMS paralleled — DRV8833 interim figure only
+
+An earlier revision of this section recorded **3 A RMS / 4 A peak**, taken from
+TI's 1.5 A RMS per-bridge silicon figure. That is too optimistic for this
+carrier. The vendor rates the board at **1.2 A continuous / 2 A peak per
+channel** — a board-level thermal rating below the silicon's.
+
+Paralleling halves R<sub>DS(on)</sub>, so for the same dissipation the current
+scales by √2, not 2: about **1.7 A continuous**, perhaps up to ~2.4 A if the
+carrier's copper is generous. **Design the PDB branch around ~2 A RMS / 4 A
+peak**, and treat the real number as something W4 measures.
+
+**Answered Aug 25:** stall is **4.1 A at 9 V**, well past the ~2 A figure — the
+reason the driver changed. **For PDB branch sizing use the DRV8874's numbers,
+not these**: ~3 A continuous with regulation set below that, 6 A peak.

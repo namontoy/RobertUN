@@ -67,8 +67,9 @@ survive regeneration.
 
 ## Gotchas worth knowing before you touch this
 
-Fully written up in `docs/environment/PROJECT_CONTEXT.md`. The three that cost
-real bench time:
+Fully written up in `docs/environment/PROJECT_CONTEXT_WHEEL_FW.md` — that is the
+context file to read for anything in this firmware. The three that cost real
+bench time:
 
 1. The SERVO42C **echoes every request** before replying. Strip it, or checksum
    validation silently fails.

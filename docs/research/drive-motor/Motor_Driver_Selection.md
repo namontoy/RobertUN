@@ -247,7 +247,8 @@ what value** — the 2.2 kΩ figure above only holds if the value is ours to cho
   ⚠️ This was left unstrapped on the bench from Sep 11 to Sep 16, 2026. It
   latched PH/EN on one power-up, a 13% duty command drove the motor at ~74% of
   the rail, and the resulting return current destroyed PB7 on the MCU. Full
-  account in `PROJECT_CONTEXT.md`, Sep 16 log entry and task 19.
+  account in `PROJECT_CONTEXT_WHEEL_FW_LOG.md`, Sep 16 entry; the blocker it
+  created is task 19 in `PROJECT_CONTEXT_WHEEL_FW.md`.
 - The exact **I<sub>TRIP</sub> vs VREF** formula (Current Regulation section)
 - Whether the **carrier populates IPROPI**, and its value
 - ~~Measure the motor's winding resistance directly~~ — **DONE Aug 25:

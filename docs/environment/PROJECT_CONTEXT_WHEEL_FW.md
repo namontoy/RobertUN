@@ -1,5 +1,5 @@
 # RobertUN — Wheel Controller Firmware Context
-**Last updated:** September 18, 2026 (DRV8833 history and the completed NEXT TASKS moved to the log file; 2338 → 1961 lines)
+**Last updated:** September 18, 2026 (DRV8833 history and the completed NEXT TASKS moved to the log file, 2338 → 1961 lines; MCU board replaced, PB7 re-check pending)
 
 **Sibling files:** `PROJECT_CONTEXT_REST.md` — machines, network, ROS 2/Jetson/Isaac, bus-wide CAN architecture, power distribution, and tooling. `PROJECT_CONTEXT_WHEEL_FW_LOG.md` — the full, unedited progress log behind the one-line summaries below. Paste this file alone for routine wheel-firmware session starts; pull in the log file only when you need the exact numbers/reasoning behind a specific entry.
 
@@ -19,6 +19,7 @@
 
 One line per entry. Full detail (exact numbers, register values, reasoning chains) is in `PROJECT_CONTEXT_WHEEL_FW_LOG.md`.
 
+- **Sep 18** — Context file restructured: DRV8833 history and the completed NEXT TASKS moved to the log file (2338 → 1961 lines). MCU board replaced; PB7 not yet re-checked — **task 19 is still the blocker, and the bare-board `drv pin` check is step one.**
 - **Sep 16** — PMODE was never strapped. Floating is Hi-Z, which latched the driver into independent half-bridge for five days (invisible on rpm, but it disabled current regulation and made IPROPI blind to the decay phase); on the last power-up it latched PH/EN instead, turning a 13% duty command into ~74% of the rail, and that return current destroyed PB7. MCU board is being replaced — **task 19 is a blocker on all bench work.**
 - **Sep 15** — PWM-synchronised current sampling (`drv iscan`) confirmed the TIM4_CH4 trigger placement is correct, but the IPROPI waveform inside the drive window showed unexplained structure — later traced (Sep 16) to sampling during the wrong, high-side decay phase.
 - **Sep 15 — retraction** — Withdrew the "free-running sampler aliases" diagnosis; it failed a repeatability check (189/190 mA on repeat), so the low-current scatter has a different, still-open cause.
@@ -1795,19 +1796,28 @@ gearbox is the difference between a note and a broken bench setup.
 
 19. **⛔ BLOCKER — MCU board replacement, PMODE strap, ground return
     (opened Sep 16, 2026).** Nothing else on the bench runs until this is done.
-    PB7 on the current board is destroyed and the conditions that destroyed it
-    are still wired up.
+    PB7 on the old board was destroyed and the conditions that destroyed it are
+    still wired up. **The MCU board was replaced Sep 18, 2026; the new one has
+    not been checked yet.**
 
-    - ⬜ **Fit the PMODE pull-up first: 10 kΩ from PMODE (pin 16) to 3V3.**
+    - ⬜ **Step one, before anything else is wired: check the new board bare.**
+      Flash, leave the DRV8874 wiring to PB6/PB7 **disconnected**, and run
+      `drv pin`. Bare matters — a pull-up anywhere on the net makes a healthy
+      pad read 1 and look identical to the dead one. Pass is:
+      ```
+      PB6 mode 2 af 2 pupd 0 od 0  ODR 0 IDR 0
+      PB7 mode 2 af 2 pupd 0 od 0  ODR 0 IDR 0
+      ```
+      PB6/PB7 stay where they are — TIM3/PC6-PC7 is a fallback only if the new
+      board also fails, and it is not on the table otherwise.
+    - ⬜ **Then fit the PMODE pull-up, before re-wiring anything else: 10 kΩ
+      from PMODE (pin 16) to 3V3.**
       Not 100 kΩ — against the internal 156 kΩ/44 kΩ divider that reaches only
       ≈1.66 V, 160 mV over the 1.5 V `V_TIH` minimum. **This is a per-board
       schematic item for all six nodes and for HW1, not a bench workaround.**
     - ⬜ **Replace the single DuPont between breadboard PGND and MCU ground**
       with a short, thick, dedicated conductor, separate from the logic ground
       link, sized for stall rather than for the working point.
-    - ⬜ **Check the new WeAct board bare, before any wiring to the driver.**
-      `drv pin` must show PB6 and PB7 both `mode 2 af 2` with **both** IDR
-      reading 0 after a coast.
     - ⬜ **Confirm the mode actually latched**: `drv disable` → `drv enable`
       (PMODE latches on nSLEEP rising), then `drv duty 10` and scope IN1/IN2.
       Slow-decay forward is IN1 constantly high, IN2 PWM'd at 90%. Cross-check

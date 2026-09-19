@@ -732,39 +732,6 @@ static void cmd_enc(int argc, char **argv)
   }
 }
 
-/* --- TEMPORARY DIAGNOSTIC, 2026-09-15 ------------------------------------ *
- * PB7 sits at a fixed 3.3 V while PB6 follows every command, and every line
- * that configures or writes the two pins writes them TOGETHER - same MSP call,
- * same apply(), same CCER. So the firmware cannot be the asymmetry, and the
- * question is now what the silicon actually has in its registers and whether
- * the pad can still pull down at all. `drv pin` answers both. Delete once the
- * fault is found; nothing else depends on it.
- * -------------------------------------------------------------------------- */
-static void pin_report(void)
-{
-  uint32_t moder = GPIOB->MODER,  afr   = GPIOB->AFR[0];
-  uint32_t idr   = GPIOB->IDR,    odr   = GPIOB->ODR;
-  uint32_t pupd  = GPIOB->PUPDR,  otype = GPIOB->OTYPER;
-
-  debug_uart_printf("PB6 mode %u af %u pupd %u od %u  ODR %u IDR %u\r\n",
-                    (unsigned)((moder >> 12) & 3u), (unsigned)((afr >> 24) & 0xFu),
-                    (unsigned)((pupd  >> 12) & 3u), (unsigned)((otype >> 6) & 1u),
-                    (unsigned)((odr >> 6) & 1u),    (unsigned)((idr >> 6) & 1u));
-  debug_uart_printf("PB7 mode %u af %u pupd %u od %u  ODR %u IDR %u\r\n",
-                    (unsigned)((moder >> 14) & 3u), (unsigned)((afr >> 28) & 0xFu),
-                    (unsigned)((pupd  >> 14) & 3u), (unsigned)((otype >> 7) & 1u),
-                    (unsigned)((odr >> 7) & 1u),    (unsigned)((idr >> 7) & 1u));
-  debug_uart_printf("  mode 0=in 1=out 2=AF 3=analog; both must read mode 2 af 2\r\n");
-
-  debug_uart_printf("TIM4 CR1 %04lX CCER %04lX CCMR1 %04lX\r\n",
-                    (unsigned long)TIM4->CR1, (unsigned long)TIM4->CCER,
-                    (unsigned long)TIM4->CCMR1);
-  debug_uart_printf("  CC1E %u CC2E %u  CCR1 %lu CCR2 %lu ARR %lu\r\n",
-                    (unsigned)(TIM4->CCER & 1u), (unsigned)((TIM4->CCER >> 4) & 1u),
-                    (unsigned long)TIM4->CCR1, (unsigned long)TIM4->CCR2,
-                    (unsigned long)TIM4->ARR);
-}
-
 static void cmd_drv(int argc, char **argv)
 {
   if (argc < 2)
@@ -800,8 +767,7 @@ static void cmd_drv(int argc, char **argv)
       "       decay slow|fast | limit <pct> | current [n] | zero\r\n"
       "       iscan [n] [from] [to] [step]"
       "  (diagnostic: IPROPI vs PWM phase)\r\n"
-      "       trip [<mA> | buf on|off] | clearfault\r\n"
-      "       pin [0|1|pd|af]  (TEMP: PB7 pad/register check)\r\n");
+      "       trip [<mA> | buf on|off] | clearfault\r\n");
     return;
   }
 
@@ -849,58 +815,6 @@ static void cmd_drv(int argc, char **argv)
   {
     drive_coast();
     debug_uart_puts("both inputs low - coast\r\n");
-  }
-  else if (strcmp(argv[1], "pin") == 0)
-  {
-    /* TEMPORARY - see the note above pin_report(). */
-    GPIO_InitTypeDef init = {0};
-
-    if (argc < 3)
-    {
-      pin_report();
-      return;
-    }
-
-    /* Forcing an input by hand while the driver is awake is a 100% duty
-       command to one half of the bridge. Take nSLEEP down first. */
-    drive_disable();
-
-    init.Pin   = DRV_PWM_B_Pin;
-    init.Speed = GPIO_SPEED_FREQ_LOW;
-
-    if ((strcmp(argv[2], "0") == 0) || (strcmp(argv[2], "1") == 0))
-    {
-      /* ODR before MODER, so the pad never presents an undefined level. */
-      HAL_GPIO_WritePin(DRV_PWM_B_GPIO_Port, DRV_PWM_B_Pin,
-                        (argv[2][0] == '1') ? GPIO_PIN_SET : GPIO_PIN_RESET);
-      init.Mode = GPIO_MODE_OUTPUT_PP;
-      init.Pull = GPIO_NOPULL;
-      HAL_GPIO_Init(DRV_PWM_B_GPIO_Port, &init);
-      debug_uart_printf("PB7 forced: push-pull output, driving %s\r\n", argv[2]);
-    }
-    else if (strcmp(argv[2], "pd") == 0)
-    {
-      init.Mode = GPIO_MODE_INPUT;
-      init.Pull = GPIO_PULLDOWN;
-      HAL_GPIO_Init(DRV_PWM_B_GPIO_Port, &init);
-      debug_uart_puts("PB7 input, internal pull-down (~40k) - IDR is the verdict\r\n");
-    }
-    else if (strcmp(argv[2], "af") == 0)
-    {
-      init.Mode      = GPIO_MODE_AF_PP;
-      init.Pull      = GPIO_NOPULL;
-      init.Alternate = GPIO_AF2_TIM4;
-      HAL_GPIO_Init(DRV_PWM_B_GPIO_Port, &init);
-      debug_uart_puts("PB7 back to AF2/TIM4_CH2\r\n");
-    }
-    else
-    {
-      debug_uart_puts("usage: drv pin [0|1|pd|af]\r\n");
-      return;
-    }
-
-    HAL_Delay(2u);
-    pin_report();
   }
   else if (strcmp(argv[1], "decay") == 0)
   {

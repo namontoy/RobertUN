@@ -1828,9 +1828,11 @@ gearbox is the difference between a note and a broken bench setup.
       ≈1.66 V, 160 mV over the 1.5 V `V_TIH` minimum. **This is a per-board
       schematic item for all six nodes and for HW1, not a bench workaround.**
       Fitted is not latched — see the confirm step below.
-    - ⬜ **Restore PB7 to AF before any PWM work: `drv pin af`.** The `pd` test
-      leaves it as a plain input, and nothing reaches the driver until it is back
-      to `mode 2 af 2`. Confirm with a bare `drv pin`.
+    - ⬜ **Flash the `drv pin`-free build — this is also the PB7 restore.** The
+      `pd` test left PB7 as a plain input; the reset that comes with a reflash
+      re-runs `drive_init()` and puts it back to AF2/TIM4_CH2, so no separate
+      restore step is needed (and `drv pin af` no longer exists). Built clean
+      Sep 19, **not yet flashed**.
     - ⬜ **Replace the single DuPont between breadboard PGND and MCU ground**
       with a short, thick, dedicated conductor, separate from the logic ground
       link, sized for stall rather than for the working point.
@@ -1852,8 +1854,12 @@ gearbox is the difference between a note and a broken bench setup.
       `tDELAY` should also stop biting, since it is waived while the sensed
       low-side FET stays continuously on. Only if structure *survives* this is
       the scope-on-PA2 plan worth running.
-    - ⬜ **Remove the temporary `drv pin` command from `console.c`** once the
-      new board is verified. It is marked TEMPORARY and nothing depends on it.
+    - ✅ **Temporary `drv pin` command removed from `console.c` (Sep 19)** —
+      `pin_report()`, the `pin` branch and its help line, 3659 bytes. Builds
+      clean at RAM 4.11% / flash 22.84%. `console.c` now holds no direct
+      register or HAL-GPIO access at all; everything goes through the driver
+      modules, which is how the rest of the file already worked. Recoverable
+      from git history if a future board ever needs the same pad check.
 
 ## KEY LEARNINGS & GOTCHAS
 

@@ -1,5 +1,5 @@
 # RobertUN — Wheel Controller Firmware: Full Progress Log
-**Last updated:** September 18, 2026 (took in the DRV8833 history and the completed NEXT TASKS items from the context file)
+**Last updated:** September 19, 2026 (replacement MCU board passes both PB7 pad checks; PMODE strapped; VREF pull-down considered and rejected)
 
 **Referenced from:** `PROJECT_CONTEXT_WHEEL_FW.md`, which carries a one-line-per-entry version of this log. This file is the verbatim, unedited detail behind each entry — pull it in when you need the exact numbers, register values, or reasoning chain, not for routine session start.
 
@@ -13,6 +13,65 @@
 > the split: that file gets read every session, this one only on demand.
 
 ## Progress log (most recent first) — full detail
+
+- **Sep 19 — The replacement MCU board passes both pad checks and PMODE is
+  strapped. Task 19's first item is retired; the bench is not yet unblocked.**
+  The board fitted on Sep 18 was flashed and checked **bare** — DRV8874 wiring to
+  PB6/PB7 left disconnected, because a pull-up anywhere on the net makes a
+  healthy pad and a dead one read identically.
+  - **Bare `drv pin`:** both pads `mode 2 af 2 pupd 0 od 0  ODR 0 IDR 0`. TIM4
+    `CR1 0x0081` (CEN + ARPE), `CCER 0x1011` (CC1E + CC2E + **CC4E**, no polarity
+    bits), `CCMR1 0x6868` — byte-identical halves, OC1M = OC2M = PWM1, both
+    preloaded — `CCR1 = CCR2 = 0`, `ARR 4499` (20.0 kHz). This is the *same*
+    register picture the Sep 16 dead board produced in every single field. The
+    only value that ever differed between a live and a dead pad here is PB7's
+    IDR, which is exactly why the register dump alone was never sufficient.
+  - **`drv pin pd` is the verdict, and it passes:** PB7 reconfigured as an input
+    on the internal ~40 kΩ pull-down, with every external wire off, reads
+    `mode 0 af 2 pupd 2 od 0  ODR 0  IDR 0`. **The Sep 16 board read `IDR 1` at
+    precisely this step.** The distinction matters: the 0%-duty AF report shows a
+    *push-pull* low, which a partly-damaged pad can still produce, since the
+    output transistor may sink harder than a leaking clamp sources. Only the weak
+    pull-down, fighting pad leakage alone with nothing else on the net, separates
+    a live pad from a blown ESD clamp to VDD. `af 2` persisting on the PB7 line
+    while MODER selects input is not a contradiction — AFR simply retains its
+    value and is ignored outside AF mode.
+  - **PMODE strapped: 10 kΩ from pin 16 to 3V3, fitted.** The value is the Sep 16
+    calculation, not a guess — 100 kΩ against the internal 156 kΩ/44 kΩ divider
+    reaches only ≈1.66 V, 160 mV over `V_TIH`. **Not yet confirmed latched.**
+    PMODE is sampled at nSLEEP rising, so the strap proves nothing until
+    `drv disable` → `drv enable` with a scope on IN1/IN2 — and that waits on the
+    ground return, which must be in before any signal wiring goes back on.
+  - **VREF (pin 5) confirmed bare — no resistor fitted, and none should be.**
+    This matches the record: the carrier's stock 10 kΩ nSLEEP→VREF was removed on
+    Sep 12, and VREF is driven by PA4/DAC1_OUT1 alone. The question arose from the
+    three *internal* 100 kΩ pulldowns in the datasheet (nSLEEP, and PH/IN2 in all
+    three PMODE modes) and the rejected 100 kΩ PMODE value — none of which are
+    fitted parts on this net.
+  - **Considered and not adopted Sep 19: a 100 kΩ pull-down on VREF.** Two costs,
+    one of them severe:
+    - **It would corrupt the plateau sweep, which is the next experiment.** That
+      sweep exists to determine whether VREF is compared directly or through an
+      internal divider (k = 1/2/3). An external pull-down divides VREF by a factor
+      the firmware does not model, and is therefore **indistinguishable from the
+      internal divider it is trying to measure** — the measured k would be partly
+      the resistor's, and would then be baked into every current figure taken
+      afterwards.
+    - **It loads the unbuffered DAC.** Buffered, output impedance is a few ohms
+      and 100 kΩ draws ~33 µA — irrelevant. But `drv trip buf off` is on the table
+      to reclaim 4.67 A → 4.98 A, and the unbuffered DAC output is high-impedance
+      (tens of kΩ — check the F446 datasheet for the exact `R_O`), against which
+      100 kΩ is a real divider biasing the trip low.
+    - **The argument in its favour, which is real:** removing the 10 kΩ removed
+      the fail-safe, so if the DAC peripheral is not running PA4 is high-Z and
+      VREF *floats* — the PMODE mistake repeated on an analog pin. `isense_init()`
+      sets VREF at boot, so the hole is narrow. If a defined fail-safe is ever
+      wanted, **1 MΩ** buys it at a tenth of the loading and keeps `buf off`
+      usable. Either way, meter PA4 against the commanded value before trusting a
+      trip figure.
+  - **Still open at session end:** PB7 was left in input/pull-down mode by the
+    `pd` test and needs `drv pin af` before PWM can reach the driver; the ground
+    return is untouched; the PMODE latch is unconfirmed.
 
 - **Sep 16 — PMODE was never strapped, and it cost the MCU. PB7 is destroyed,
   the board is being replaced, and the session STOPPED at the damage by bench

@@ -1,5 +1,5 @@
 # RobertUN — Wheel Controller Firmware Context
-**Last updated:** September 18, 2026 (DRV8833 history and the completed NEXT TASKS moved to the log file, 2338 → 1961 lines; MCU board replaced, PB7 re-check pending)
+**Last updated:** September 19, 2026 (replacement MCU board passes both PB7 pad checks and PMODE is strapped — task 19's first item retired; ground return and PMODE latch still open)
 
 **Sibling files:** `PROJECT_CONTEXT_REST.md` — machines, network, ROS 2/Jetson/Isaac, bus-wide CAN architecture, power distribution, and tooling. `PROJECT_CONTEXT_WHEEL_FW_LOG.md` — the full, unedited progress log behind the one-line summaries below. Paste this file alone for routine wheel-firmware session starts; pull in the log file only when you need the exact numbers/reasoning behind a specific entry.
 
@@ -19,6 +19,7 @@
 
 One line per entry. Full detail (exact numbers, register values, reasoning chains) is in `PROJECT_CONTEXT_WHEEL_FW_LOG.md`.
 
+- **Sep 19** — Replacement MCU board verified **bare** on both pad checks (`drv pin` → both pads `mode 2 af 2`, `IDR 0`; `drv pin pd` → PB7 `IDR 0`, where the dead board read 1), so PB6/PB7 stay put and TIM3/PC6-PC7 is off the table. PMODE strapped with 10 kΩ to 3V3, **not yet confirmed latched**. VREF confirmed bare and a 100 kΩ pull-down rejected — it would be indistinguishable from the internal divider the plateau sweep is meant to measure. **Task 19 still blocks: ground return next.**
 - **Sep 18** — Context file restructured: DRV8833 history and the completed NEXT TASKS moved to the log file (2338 → 1961 lines). MCU board replaced; PB7 not yet re-checked — **task 19 is still the blocker, and the bare-board `drv pin` check is step one.**
 - **Sep 16** — PMODE was never strapped. Floating is Hi-Z, which latched the driver into independent half-bridge for five days (invisible on rpm, but it disabled current regulation and made IPROPI blind to the decay phase); on the last power-up it latched PH/EN instead, turning a 13% duty command into ~74% of the rail, and that return current destroyed PB7. MCU board is being replaced — **task 19 is a blocker on all bench work.**
 - **Sep 15** — PWM-synchronised current sampling (`drv iscan`) confirmed the TIM4_CH4 trigger placement is correct, but the IPROPI waveform inside the drive window showed unexplained structure — later traced (Sep 16) to sampling during the wrong, high-side decay phase.
@@ -383,9 +384,11 @@ wired.
 | PH0/PH1 | HSE | 8 MHz crystal | — | → 180 MHz PLL (M=4, N=180, P=2) |
 | PC14/PC15 | LSE | 32.768 kHz | — | in the `.ioc`, **not enabled** in code |
 
-⚠️ **PB7 was destroyed on the bench board on Sep 16, 2026** (pad shorted to
-VDD — see the log entry). The *allocation* is unchanged and correct; the board
-is being replaced. If a future failure ever forces the PWM off PB6/PB7, the
+⚠️ **PB7 was destroyed on the *old* bench board on Sep 16, 2026** (pad shorted
+to VDD — see the log entry). The allocation is unchanged and correct, and the
+**replacement board passed both pad checks on Sep 19**, so PB6/PB7 stay put.
+Kept here because the cause (see task 19) applies to every board. If a future
+failure ever forces the PWM off PB6/PB7, the
 replacement is **TIM3 on PC6/PC7 (AF2)**: PORTC is completely unused, TIM3 is
 free, it is on APB1 at 90 MHz like TIM4 so **PSC 0 / ARR 4499 and every tick
 constant in `drive.h` survive unchanged**, and TIM3's TRGO can be driven from
@@ -414,16 +417,17 @@ would have killed SPI1 outright.
 | Timer | Role | Pins | Notes |
 |---|---|---|---|
 | TIM2 | Encoder interface, `TIM_ENCODERMODE_TI12` (x4) | PA15, PB3 | **32-bit.** Period `0xFFFFFFFF`, IC filters 15 |
-| TIM4 | PWM CH1+CH2, PSC 0 / ARR 4499 → 20.0 kHz | PB6, **PB7 (DEAD — see below)** | Both channels start at 0%; `__HAL_DBGMCU_FREEZE_TIM4()` set |
+| TIM4 | PWM CH1+CH2, PSC 0 / ARR 4499 → 20.0 kHz | PB6, PB7 | Both channels start at 0%; `__HAL_DBGMCU_FREEZE_TIM4()` set. PB7 verified healthy on the replacement board Sep 19 |
 | TIM4_CH4 | ADC trigger only — PWM mode 2, compare at the middle of the drive phase | none | PB9 is CAN1_TX (AF9), so CC4E routes nothing to a pin; configured in `drive_init()`, not the `.ioc` |
 | TIM7 | 0.5 s heartbeat tick (LED + CAN frame) | none | Basic timer; PSC 1800 / ARR 25000 at 90 MHz APB1 |
 | TIM6 | 1 kHz control tick — runs `drive_on_tick()` (nFAULT latch) | none | Configured and running as of Sep 2026 |
 | TIM3 | **free** — the PWM fallback if TIM4 must be abandoned | PC6, PC7 (AF2) | PORTC otherwise unused; APB1 at 90 MHz so PSC 0 / ARR 4499 and every tick constant carries over. `T3_TRGO` from OC4REF replaces the TIM4_CH4 ADC trigger |
 | TIM1 | **unusable** | — | All four channels land on PA8/PA9/PA10/PA11, every one taken |
 
-⚠️ **PB7 was destroyed on Sep 16, 2026** (pad shorted to VDD — see task 19).
-Relocating the PWM to TIM3/PC6-PC7 is the fallback if a replacement MCU shows the
-same fault. Do **not** take PA6/PA7 for it — those are reserved for SPI1.
+⚠️ **PB7 was destroyed on the old board on Sep 16, 2026** (pad shorted to VDD —
+see task 19); the replacement passed both pad checks on Sep 19. Relocating the
+PWM to TIM3/PC6-PC7 remains the fallback **only** if a board fails this way
+again. Do **not** take PA6/PA7 for it — those are reserved for SPI1.
 
 **Encoder mode is CH1+CH2 only — this is silicon, not a HAL limitation.** The
 interface decodes TI1FP1/TI2FP2; `HAL_TIM_Encoder_Init()` writes only `CCMR1`
@@ -1431,8 +1435,8 @@ same day**. Seven spare carriers remain stock.
 
 | Strap | As shipped | On the bench carrier now |
 |---|---|---|
-| **PMODE** | **not populated — pin left OPEN** | **10 kΩ to 3V3 required** (fitted Sep 16, unverified) |
-| nSLEEP → VREF | 10 kΩ | **REMOVED** — VREF driven by PA4/DAC1_OUT1 |
+| **PMODE** | **not populated — pin left OPEN** | **10 kΩ to 3V3 — FITTED Sep 19**, latch not yet confirmed |
+| nSLEEP → VREF | 10 kΩ | **REMOVED** — VREF driven by PA4/DAC1_OUT1. **Pad confirmed bare Sep 19; fit nothing in its place** (see below) |
 | IMODE → GND | 20 kΩ | unchanged — **still not decoded** |
 | R_IPROPI → GND | 2.48 kΩ | **1.474 kΩ** (2.0 kΩ ∥ 5.6 kΩ) |
 
@@ -1487,6 +1491,17 @@ commanded** before trusting it.
 **Default trip is 3000 mA**, matching what the stock carrier enforced, so
 lifting the resistor did not quietly make anything more dangerous. Full
 capacity is an explicit act: `drv trip 4600`.
+
+**Considered and not adopted Sep 19 — a pull-down on VREF.** Fit nothing on this
+net. A 100 kΩ to GND would divide VREF by a factor the firmware does not model,
+making it **indistinguishable from the internal divider the plateau sweep below
+exists to measure** — the k that came back would be partly the resistor's, and
+would then be baked into every current figure afterwards. It also loads the
+unbuffered DAC, which `drv trip buf off` needs. The one real argument for it is
+that VREF now *floats* if the DAC peripheral is not running (the PMODE mistake on
+an analog pin); `isense_init()` sets VREF at boot, so the hole is narrow, and
+**1 MΩ** would buy the fail-safe at a tenth of the loading if it is ever wanted.
+Full reasoning in the LOG file.
 
 **Still open: is VREF compared directly, or through an internal divider?** With
 VREF under software control this stops being a guess and becomes a measurement:
@@ -1797,24 +1812,25 @@ gearbox is the difference between a note and a broken bench setup.
 19. **⛔ BLOCKER — MCU board replacement, PMODE strap, ground return
     (opened Sep 16, 2026).** Nothing else on the bench runs until this is done.
     PB7 on the old board was destroyed and the conditions that destroyed it are
-    still wired up. **The MCU board was replaced Sep 18, 2026; the new one has
-    not been checked yet.**
+    still wired up. **The MCU board was replaced Sep 18 and both pad checks
+    passed Sep 19 — the board is good; the bench is not yet unblocked.**
 
-    - ⬜ **Step one, before anything else is wired: check the new board bare.**
-      Flash, leave the DRV8874 wiring to PB6/PB7 **disconnected**, and run
-      `drv pin`. Bare matters — a pull-up anywhere on the net makes a healthy
-      pad read 1 and look identical to the dead one. Pass is:
-      ```
-      PB6 mode 2 af 2 pupd 0 od 0  ODR 0 IDR 0
-      PB7 mode 2 af 2 pupd 0 od 0  ODR 0 IDR 0
-      ```
-      PB6/PB7 stay where they are — TIM3/PC6-PC7 is a fallback only if the new
-      board also fails, and it is not on the table otherwise.
-    - ⬜ **Then fit the PMODE pull-up, before re-wiring anything else: 10 kΩ
-      from PMODE (pin 16) to 3V3.**
+    - ✅ **Check the new board bare — DONE Sep 19, PASSED.** Flashed with the
+      DRV8874 wiring to PB6/PB7 disconnected: bare `drv pin` gave both pads
+      `mode 2 af 2 pupd 0 od 0  ODR 0 IDR 0` with TIM4 correct
+      (`CR1 0x0081`, `CCER 0x1011`, `CCMR1 0x6868`, `CCR1/2 0`, `ARR 4499`), and
+      **`drv pin pd` gave PB7 `IDR 0`** where the dead board read 1. The
+      pull-down test is the one that counts — a push-pull low can be faked by a
+      damaged pad, a weak pull-down against pad leakage cannot.
+      **PB6/PB7 stay where they are; TIM3/PC6-PC7 is off the table.**
+    - ✅ **PMODE pull-up fitted Sep 19: 10 kΩ from PMODE (pin 16) to 3V3.**
       Not 100 kΩ — against the internal 156 kΩ/44 kΩ divider that reaches only
       ≈1.66 V, 160 mV over the 1.5 V `V_TIH` minimum. **This is a per-board
       schematic item for all six nodes and for HW1, not a bench workaround.**
+      Fitted is not latched — see the confirm step below.
+    - ⬜ **Restore PB7 to AF before any PWM work: `drv pin af`.** The `pd` test
+      leaves it as a plain input, and nothing reaches the driver until it is back
+      to `mode 2 af 2`. Confirm with a bare `drv pin`.
     - ⬜ **Replace the single DuPont between breadboard PGND and MCU ground**
       with a short, thick, dedicated conductor, separate from the logic ground
       link, sized for stall rather than for the working point.
@@ -1867,6 +1883,13 @@ section; this is for things that will bite again somewhere else.
   proven. Independent half-bridge gives the *same* average voltage under slow
   decay and was never on the list. When a measurement is used as proof, write
   down every state it has to discriminate, then check it against each.
+- **Do not add an unmodelled passive to a net you are about to calibrate
+  through.** A resistor the firmware does not know about is arithmetically
+  indistinguishable from the unknown the calibration is trying to find — a
+  pull-down on VREF divides it by exactly the kind of factor the plateau sweep
+  exists to measure, so the result would silently absorb it and every later
+  reading would inherit the error. Decide what is on a net *before* the
+  experiment that characterises it, and write down what is fitted.
 - **Know which part of the circuit a current sensor can physically see.**
   IPROPI mirrors only the low-side FETs, drain→source, so whether a reading
   exists at all depends on which side of the bridge the recirculation uses —

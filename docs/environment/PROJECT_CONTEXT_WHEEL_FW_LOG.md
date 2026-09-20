@@ -1,5 +1,5 @@
 # RobertUN — Wheel Controller Firmware: Full Progress Log
-**Last updated:** September 19, 2026 (replacement MCU board passes both PB7 pad checks; PMODE strapped; VREF pull-down considered and rejected)
+**Last updated:** September 19, 2026 (PMODE confirmed latched in PWM mode from the OUT1/OUT2 decay state; ground return rebuilt; motor rail raised to 12 V at VM)
 
 **Referenced from:** `PROJECT_CONTEXT_WHEEL_FW.md`, which carries a one-line-per-entry version of this log. This file is the verbatim, unedited detail behind each entry — pull it in when you need the exact numbers, register values, or reasoning chain, not for routine session start.
 
@@ -13,6 +13,61 @@
 > the split: that file gets read every session, this one only on demand.
 
 ## Progress log (most recent first) — full detail
+
+- **Sep 19 (later) — PMODE CONFIRMED LATCHED IN PWM MODE, ground return rebuilt,
+  motor rail raised to 12 V. The Sep 16 blocker is cleared and current
+  regulation is live for the first time.**
+  - **Ground return replaced: three thicker conductors** from breadboard PGND to
+    the MCU carrier board, in place of the single DuPont that carried the Sep 16
+    fault current. Sized for stall rather than the working point, per the rule
+    that fault current, not working current, sets the conductor.
+  - **The `drv pin`-free build was flashed**, which also restored PB7 to
+    AF2/TIM4_CH2 (the reset re-runs `drive_init()`), so no separate restore was
+    needed.
+  - **The mode test, and why it is conclusive this time.** Both motor outputs
+    scoped simultaneously at `drv duty 13`: **one output carries PWM switching to
+    the rail, the other sits at GND for the whole period.** At `drv duty -13` the
+    roles swap cleanly. The discriminating channel is **the quiet one, not the
+    switching one**:
+
+    | | Driven output | Other output |
+    |---|---|---|
+    | **PWM mode** (IN1 high, IN2 PWM'd) | PWM, 0 ↔ VM | **constant GND** |
+    | Independent half-bridge | PWM, 0 ↔ VM | **constant VM** |
+
+    In independent half-bridge each output follows its own input, so IN1 held
+    high would park OUT1 at the **rail** all period. Ground is only reachable via
+    `IN1=1, IN2=1 → OUT1 L, OUT2 L` — the low-side slow decay of Table 4. This is
+    the state the two modes disagree on, so it is the only state worth probing,
+    and it is now measured rather than inferred. **Scoping IN1/IN2 could never
+    have settled this**: PMODE changes how the driver interprets its inputs, not
+    what the MCU emits, so the input waveforms are identical in all three modes.
+  - **This closes the Sep 14 error properly.** That session ruled out PH/EN from
+    an rpm figure and treated PWM mode as proven, never enumerating independent
+    half-bridge — which gives the same average voltage under slow decay and
+    therefore the same rpm. The rpm evidence discriminated one alternative out of
+    three; the OUT1/OUT2 decay state discriminates the remaining two.
+  - **Motor rail raised to 12 V.** **12.0 V measured with a DMM at the DRV8874's
+    VM pin — this is the authoritative figure.** The oscilloscope read ~12.4 V on
+    the driven output; the ~0.4 V discrepancy is scope ADC accuracy, and the DMM
+    value is the one to quote. Note this is VM **at the driver**, not at the motor
+    terminals: task 17 asks for 12 V at the *terminals*, and there is ~0.10 V of
+    harness drop at light load and more under current, so the terminal figure is
+    still unmeasured and will read slightly lower.
+  - **Current regulation is live for the first time, which changes what every
+    trip number means.** Independent half-bridge disabled internal current
+    regulation outright, so all `drv trip` / PA4 VREF work from Sep 11–16 acted
+    on nothing. Those settings now reach the hardware, and the **boot default of
+    3000 mA is a real trip point** — below the ~6.3 A cold stall the 12 V rail
+    now implies. Task 17's precondition (`drv trip 5000` before raising the rail)
+    was not applied ahead of the change; the consequence is that the motor is
+    trip-limited rather than over-current, which fails in the safe direction but
+    makes any stall figure taken right now a property of the trip, not the motor.
+  - **Every recorded plant number now belongs to the wrong rail.** The duty→speed
+    line (`rpm = 0.672 × duty% − 1.8`), the deadband, breakaway, dropout and the
+    minimum sustainable speed were all measured at 9.35 V. R, L, Ke and
+    counts/rev carry over; the mappings do not. Re-measurement is now blocking
+    W5 rather than merely pending.
 
 - **Sep 19 — The replacement MCU board passes both pad checks and PMODE is
   strapped. Task 19's first item is retired; the bench is not yet unblocked.**

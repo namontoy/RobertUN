@@ -1,5 +1,5 @@
 # RobertUN — Wheel Controller Firmware Context
-**Last updated:** September 19, 2026 (replacement MCU board passes both PB7 pad checks and PMODE is strapped — task 19's first item retired; ground return and PMODE latch still open)
+**Last updated:** September 19, 2026 (PMODE CONFIRMED in PWM mode, ground return rebuilt, rail raised to 12 V — the Sep 16 blocker is cleared; current regulation is live and every 9.35 V plant figure now needs re-taking)
 
 **Sibling files:** `PROJECT_CONTEXT_REST.md` — machines, network, ROS 2/Jetson/Isaac, bus-wide CAN architecture, power distribution, and tooling. `PROJECT_CONTEXT_WHEEL_FW_LOG.md` — the full, unedited progress log behind the one-line summaries below. Paste this file alone for routine wheel-firmware session starts; pull in the log file only when you need the exact numbers/reasoning behind a specific entry.
 
@@ -19,6 +19,7 @@
 
 One line per entry. Full detail (exact numbers, register values, reasoning chains) is in `PROJECT_CONTEXT_WHEEL_FW_LOG.md`.
 
+- **Sep 19 (later)** — **Task 19 CLEARED.** Ground return rebuilt with three thick conductors; `drv pin`-free build flashed; **PMODE confirmed latched in PWM mode** by scoping both motor outputs — at 13% duty one carries PWM and **the other sits at GND**, which only low-side slow decay produces (independent half-bridge would park it at the rail). Roles swap cleanly at −13%. Motor rail raised to **12.0 V, DMM at the DRV8874 VM pin**. Current regulation is live for the first time, so the 3000 mA boot trip is now real — and every plant figure on record belongs to the old 9.35 V rail.
 - **Sep 19** — Replacement MCU board verified **bare** on both pad checks (`drv pin` → both pads `mode 2 af 2`, `IDR 0`; `drv pin pd` → PB7 `IDR 0`, where the dead board read 1), so PB6/PB7 stay put and TIM3/PC6-PC7 is off the table. PMODE strapped with 10 kΩ to 3V3, **not yet confirmed latched**. VREF confirmed bare and a 100 kΩ pull-down rejected — it would be indistinguishable from the internal divider the plateau sweep is meant to measure. **Task 19 still blocks: ground return next.**
 - **Sep 18** — Context file restructured: DRV8833 history and the completed NEXT TASKS moved to the log file (2338 → 1961 lines). MCU board replaced; PB7 not yet re-checked — **task 19 is still the blocker, and the bare-board `drv pin` check is step one.**
 - **Sep 16** — PMODE was never strapped. Floating is Hi-Z, which latched the driver into independent half-bridge for five days (invisible on rpm, but it disabled current regulation and made IPROPI blind to the decay phase); on the last power-up it latched PH/EN instead, turning a 13% duty command into ~74% of the rail, and that return current destroyed PB7. MCU board is being replaced — **task 19 is a blocker on all bench work.**
@@ -1198,6 +1199,13 @@ figure, and it is what tells you how much margin the gain set has.
 
 ### Plant model — measured Aug 26, 2026 (free shaft, no load, slow decay)
 
+⚠️ **Every figure in this section was measured at a 9.35 V motor terminal
+voltage. The rail was raised to 12 V on Sep 19, 2026, so the duty→speed
+line, the deadband and the current figures below are all stale** — they
+describe a rail the bench no longer runs. R, L, Ke and counts/rev carry
+over unchanged; the mappings do not. Re-measurement is task 17, and it
+blocks W5.
+
 Console-driven, motor unloaded, 9.5 V rail nominal. Averaged over both
 directions:
 
@@ -1435,7 +1443,7 @@ same day**. Seven spare carriers remain stock.
 
 | Strap | As shipped | On the bench carrier now |
 |---|---|---|
-| **PMODE** | **not populated — pin left OPEN** | **10 kΩ to 3V3 — FITTED Sep 19**, latch not yet confirmed |
+| **PMODE** | **not populated — pin left OPEN** | **10 kΩ to 3V3 — FITTED and CONFIRMED IN PWM MODE Sep 19** (OUT1/OUT2 decay state) |
 | nSLEEP → VREF | 10 kΩ | **REMOVED** — VREF driven by PA4/DAC1_OUT1. **Pad confirmed bare Sep 19; fit nothing in its place** (see below) |
 | IMODE → GND | 20 kΩ | unchanged — **still not decoded** |
 | R_IPROPI → GND | 2.48 kΩ | **1.474 kΩ** (2.0 kΩ ∥ 5.6 kΩ) |
@@ -1763,13 +1771,21 @@ gearbox is the difference between a note and a broken bench setup.
     figure; 6.3 A is the first instant.** Since every start from rest draws
     stall current momentarily, the cold number is the one the driver sees.
 
-    - ⬜ **Set `drv trip 5000` before raising the rail.** This makes the
-      5.5-vs-6.3 question moot, sits below the DRV8874's 6 A peak, and stays
-      under the 4.975 A ADC ceiling only in the *supply* reading — the motor
-      figure will clip, which is expected and harmless.
-    - ⬜ Raise the supply so the **motor terminals** read 12 V, not the supply
-      output — there is ~0.10 V of harness drop at light load and more under
-      current. The 9.45 V → 9.35 V measurement is the precedent.
+    **RAIL RAISED Sep 19, 2026 — 12.0 V measured with a DMM at the DRV8874's
+    VM pin.** That is the authoritative figure; the oscilloscope read ~12.4 V on
+    the driven output and the ~0.4 V difference is scope ADC accuracy.
+
+    - ⚠️ **`drv trip 5000` was NOT set before the rail went up.** The boot
+      default of 3000 mA is therefore live against a rail whose cold stall is
+      ~6.3 A — which fails in the safe direction (trip-limited, not
+      over-current), but means **any stall or high-duty figure taken right now is
+      a property of the trip, not of the motor.** Set the trip deliberately
+      before the plateau sweep.
+    - ⬜ **Meter the MOTOR TERMINALS, not just VM.** 12.0 V at the driver input
+      is not 12 V at the motor: there is ~0.10 V of harness drop at light load
+      and more under current, so the terminal figure is still unmeasured and
+      will read lower. The 9.45 V → 9.35 V measurement is the precedent, and the
+      terminal number is the one the plant model needs.
     - ⬜ The 5.5 A bench-supply limit **needs no change**: in slow decay the
       supply sees `I_motor × D`, so even a regulated 5 A stall draws ~3.9 A.
     - ⬜ **Peak torque will be trip-limited, not voltage-limited.** Torque ∝
@@ -1778,9 +1794,12 @@ gearbox is the difference between a note and a broken bench setup.
       speed** — more voltage headroom to drive current against back-EMF, which
       shifts the whole torque-speed curve out. Worth being explicit about so
       nobody expects a bigger stall number.
-    - ⬜ Re-measure the plant at 12 V before W5 tuning. R, L and Ke carry over;
-      the duty→speed and duty→current mappings do not. **W5 has not started, so
-      this is the right moment** — gains tuned at one rail do not transfer.
+    - ⬜ **Re-measure the plant at 12 V — now BLOCKING W5, not merely pending.**
+      The rail moved on Sep 19, so `rpm = 0.672 × duty% − 1.8`, the ~2.6%
+      deadband, breakaway, dropout and the 4.9 rpm minimum sustainable speed are
+      all figures for a rail that no longer exists. R, L and Ke carry over; the
+      duty→speed and duty→current mappings do not. Gains tuned at one rail do
+      not transfer.
     - ⬜ Restate the recorded plant figures with their rail attached, so a
       future reader cannot mistake a 9.35 V number for a 12 V one.
 
@@ -1828,21 +1847,26 @@ gearbox is the difference between a note and a broken bench setup.
       ≈1.66 V, 160 mV over the 1.5 V `V_TIH` minimum. **This is a per-board
       schematic item for all six nodes and for HW1, not a bench workaround.**
       Fitted is not latched — see the confirm step below.
-    - ⬜ **Flash the `drv pin`-free build — this is also the PB7 restore.** The
-      `pd` test left PB7 as a plain input; the reset that comes with a reflash
-      re-runs `drive_init()` and puts it back to AF2/TIM4_CH2, so no separate
-      restore step is needed (and `drv pin af` no longer exists). Built clean
-      Sep 19, **not yet flashed**.
-    - ⬜ **Replace the single DuPont between breadboard PGND and MCU ground**
-      with a short, thick, dedicated conductor, separate from the logic ground
-      link, sized for stall rather than for the working point.
-    - ⬜ **Confirm the mode actually latched**: `drv disable` → `drv enable`
-      (PMODE latches on nSLEEP rising), then `drv duty 10` and scope IN1/IN2.
-      Slow-decay forward is IN1 constantly high, IN2 PWM'd at 90%. Cross-check
-      with `drv duty 50`: a near-stationary wheel there means PMODE is still
-      reading low (PH/EN, speed ∝ |2D−1|) and the strap has not taken.
+    - ✅ **`drv pin`-free build flashed (Sep 19)** — the reset restored PB7 to
+      AF2/TIM4_CH2, so the PB7 restore came free with it.
+    - ✅ **Ground return rebuilt (Sep 19): three thicker conductors** from
+      breadboard PGND to the MCU carrier board, replacing the single DuPont that
+      carried the Sep 16 fault current.
+    - ✅ **PMODE CONFIRMED LATCHED IN PWM MODE (Sep 19).** Scoped **both motor
+      outputs** at `drv duty 13`: one carries PWM to the rail, **the other sits
+      at GND for the whole period**, and the roles swap cleanly at `-13`. That
+      quiet channel is the whole proof — independent half-bridge parks it at the
+      **rail**, since each output follows its own input; only PWM mode's
+      `IN1=1, IN2=1 → OUT1 L, OUT2 L` low-side decay pulls it to ground.
+      **Scoping IN1/IN2 cannot settle this** (the earlier wording here was
+      wrong): PMODE changes how the driver interprets its inputs, not what the
+      MCU emits, so the input waveforms are identical in all three modes.
     - ⬜ **Verify the DRV8874 survived.** The MCU clamps first so the driver
-      is probably intact, but it took the same event.
+      is probably intact, but it took the same event. Largely answered already —
+      both bridges switch correctly in both directions — what remains unproven is
+      the **current-regulation path**, which the plateau sweep exercises, and
+      nFAULT assertion on a real fault (cheapest check: UVLO, drop VM below
+      ~4.5 V with nSLEEP high).
     - ⬜ **Re-take every current-regulation result.** Independent half-bridge
       disables internal current regulation, so all `drv trip` / PA4 VREF work
       from Sep 11–16 was inert. The plateau sweep in task 17 is the first thing
@@ -1879,6 +1903,13 @@ section; this is for things that will bite again somewhere else.
   a different power-up can latch a different mode — which turns one bug into an
   intermittent one. Strap every mode pin explicitly, including the one whose
   default you believe you want. This cost an MCU on Sep 16, 2026.
+- **Probe the node where the modes DIFFER — which is usually the quiet one.**
+  Confirming the DRV8874's control mode took eight days of wrong answers from
+  rpm figures and input waveforms, and five minutes once both *outputs* were
+  scoped: the switching output looks the same in either mode, while the idle one
+  sits at ground in PWM mode and at the rail in independent half-bridge. Inputs
+  cannot answer a question about how a part *interprets* its inputs. Write down
+  the state the candidates disagree on, then go and measure that state.
 - **Find out what a config pin is LATCHED on.** Many drivers sample mode pins
   once, at enable, rather than continuously — the DRV8874 latches PMODE on
   nSLEEP rising. A strap changed on a live board does nothing until the part is

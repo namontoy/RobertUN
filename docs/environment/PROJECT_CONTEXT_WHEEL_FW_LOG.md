@@ -1,5 +1,5 @@
 # RobertUN — Wheel Controller Firmware: Full Progress Log
-**Last updated:** September 20, 2026 (plateau sweep done — the DRV8874 compares IPROPI against VREF/3, so every `drv trip` is 3× too high; current sense calibrated against physics; three bugs in the synchronised sampler)
+**Last updated:** September 20, 2026 (task 20 implemented — k=3 applied as a config key, end-relative trigger placement, multi-tick averaging; VDDA/R_IPROPI constants applied; W4 closed and W5 opened)
 
 **Referenced from:** `PROJECT_CONTEXT_WHEEL_FW.md`, which carries a one-line-per-entry version of this log. This file is the verbatim, unedited detail behind each entry — pull it in when you need the exact numbers, register values, or reasoning chain, not for routine session start.
 
@@ -14,8 +14,148 @@
 
 ## Progress log (most recent first) — full detail
 
-- **Sep 19 (later) — PMODE CONFIRMED LATCHED IN PWM MODE, ground return rebuilt,
-  motor rail raised to 12 V. The Sep 16 blocker is cleared and current
+
+- **Sep 20 (later) — TASK 20 IMPLEMENTED. The current path now means what it
+  prints: `drv trip N` is N milliamps, the sampler reads the settled tail of the
+  drive window instead of its contaminated middle, and the two constants
+  measured on Sep 12 are finally applied. W4 closes on this; W5 opens blocked on
+  one measurement.**
+  - **`k = 3` as a config key, not a `#define`.** `CFG_VREF_DIVIDER` /
+    `cfg vref_div`, range 1..4, default 3, appended before `CFG_KEY_COUNT`.
+    Applied in the **conversion pair only** — `isense_ma_to_vref_mv()` and
+    `isense_vref_mv_to_ma()` — so every derived function (`trip_code`,
+    `isense_trip_ma`, `isense_trip_max_ma`, `isense_trip_min_ma`,
+    `isense_code_for_trip_ma`) follows without touching any of them.
+    `isense_raw_to_ma()` and `isense_full_scale_ma()` are deliberately
+    **untouched**: the ADC reads the resistor directly and never sees the
+    divider. A `k == 0` guard returns 1 rather than dividing by zero — a config
+    module that fails open is worse than none in a current-limit path.
+    - **Chosen over a compile-time constant** so a second-source part with a
+      different divider is a console command rather than a rebuild. The cost is
+      that `k` is runtime-writable, and `cfg vref_div 1` would triple every real
+      trip while the console reported no change; the 1..4 range and the help
+      text carry that warning.
+  - **A latent uint32 overflow, found while applying `k`.** Tripling the
+    multiply made it wrap three times sooner. `drv trip 3000` — exactly what
+    habit types, since it was the old boot default — computes
+    `3000 × 3 × 450 × 1465 = 5.93e9`, over `UINT32_MAX`, and would have come
+    back as **~811 mA reported as though it had been honoured**, instead of
+    clamping to the 1580 mA ceiling. Both conversion functions moved to `uint64`
+    intermediates with a 65535 mV clamp. **The pre-`k` code had the same fault
+    above 6516 mA**; it was simply further from anything anyone typed.
+  - **The timing budget, in `drive.h` rather than `isense.h`.** These are
+    TIM4-tick quantities about the drive window, `drive.c` does not include
+    `isense.h`, and the budget belongs next to the code that honours it:
+
+    | quantity | ticks | source |
+    |---|---|---|
+    | `DRIVE_IPROPI_SETTLE_TICKS` | 500 | measured Sep 20 (flat from 4100, edge at 3600) |
+    | `DRIVE_ADC_APERTURE_TICKS` | 112 | 28 cycles @ 22.5 MHz = 1.24 µs |
+    | `DRIVE_TRIGGER_MARGIN_TICKS` | 40 | chosen guard |
+    | `DRIVE_PHASE_MIN_TICKS` | **652** | sum → **14.5% duty** |
+
+    `ISENSE_SYNC_MIN_TICKS` (192, 4.3% duty) is retired. It was derived from the
+    aperture alone and ignored the settle, so it green-lit readings whose entire
+    drive window was shorter than the time IPROPI needs to stop ringing.
+  - **`place_trigger()` is end-relative, not a fraction.** The task originally
+    proposed `start + (ticks × 4) / 5`. That was rejected during implementation:
+    a fraction gives a *different* amount of settling time at every duty, so it
+    is correct at one operating point and quietly wrong elsewhere. The rule is
+    now `trigger = start + ticks − (aperture + guard)`, floored at
+    `start + settle` and capped below `DRIVE_CCR_FULL`. The `ticks == 0 →
+    DRIVE_CCR_FULL` case is unchanged.
+
+    | duty | window | trigger | gate |
+    |---|---|---|---|
+    | 10% | 4050–4500 | 4499 | refused |
+    | 14% | 3870–4500 | 4370 | refused |
+    | 15% | 3825–4500 | **4348** | ready |
+    | 20% | 3600–4500 | **4348** | ready |
+    | 50% | 2250–4500 | **4348** | ready |
+
+    At 20% that is 83% through the window and well past the measured 4100 settle
+    point. The trigger stops moving above 15% duty, which is the rule working:
+    the useful sample is a fixed distance from the *falling* edge.
+  - **`drive_phase_start()` added, and it was load-bearing.**
+    `console.c` derived the window start as `trig − ticks/2`, true only under the
+    midpoint convention. Left alone, moving `place_trigger()` would have
+    mis-placed `drv iscan`'s in-window `*` markers — **corrupting the exact
+    instrument used to verify the fix.** Accessor and call site changed in the
+    same step, before any measurement was taken.
+  - **Multi-tick averaging (item 5).** `drv current` was one tick on a waveform
+    that still carries commutation ripple — the Sep 20 settled tail wandered
+    **739–764 raw** across the region. `sync_burst_spread()` now spreads the
+    samples over `ISENSE_SYNC_POINTS` = **4** ticks evenly across
+    `[start + settle, start + ticks − aperture − guard]`, inclusive of both ends
+    so the two most informative points are always taken. **Same total periods**
+    — 64 samples is still 64 PWM periods, still 3.2 ms — with the `n % points`
+    remainder given to the first point and the mean weighted by share, so the
+    count is exactly what the caller asked for. Degrades to a single tick when
+    the region collapses at the 652-tick minimum, which is the budget being
+    honest rather than an edge case.
+    - **`isense_read_sync_at()` still calls `sync_burst()` directly.** `drv
+      iscan` has to stay a single-tick probe: it is the instrument that measures
+      where the settled region *is*, and averaging inside it would hide the
+      ringing the whole mechanism exists to avoid.
+    - `was_saturated` is now accumulated across the spread rather than left to
+      whichever point went last. Saturation is a safety flag.
+  - **`drv iscan` prints `--` at tick 0**, with a one-line footnote, and keeps it
+    out of the peak search. CCR4 = 0 leaves TIM4_CH4 permanently high, raises no
+    compare event, times out `adc_wait_eoc()` and returns 0 for "took nothing" —
+    which printed as `raw 0` beside 35 real numbers and read as a current.
+  - **The two measured constants applied at last**, the Sep 12 hold released now
+    that the sweep is finished: `ISENSE_VDDA_MV_DEFAULT` 3300 → **3325**,
+    `ISENSE_R_IPROPI_OHM_DEFAULT` 1474 → **1465**. Everything derived moves:
+
+    | | nominal | measured |
+    |---|---|---|
+    | scale | 0.6632 V/A | **0.6593 V/A** |
+    | ADC full scale | 4.975 A | **5.044 A** |
+    | one ADC LSB | 1.215 mA | **1.231 mA** |
+    | trip range, buffered | 100–1558 mA | **101–1580 mA** |
+    | trip range, unbuffered | 0–1658 mA | **0–1681 mA** |
+
+    Every current logged before today reads **~1.4% low**. Both are per-board
+    figures — a second carrier gets metered and `cfg`-set, not handed these.
+  - **`CONFIG_VERSION` 1 → 2, and the stored record is discarded.**
+    `CFG_KEY_COUNT` goes 8 → 9 and `trip_ma` changed meaning while keeping its
+    name, units and range — which is precisely what the version field is for.
+    `scan()` rejects every existing record and the board boots on defaults
+    reporting `CONFIG_LOAD_VERSION`. **This is the safe direction**: a stored
+    `trip_ma 3000` would otherwise have become a real 3 A limit on a board whose
+    ceiling is 1.58 A. `CFG_TRIP_BOOT_MA` range tightened 0..6000 → **0..1600**,
+    and `ISENSE_TRIP_DEFAULT_MA` 3000 → **1000**, written as the figure it
+    always physically was. Putting the newly measured constants into the
+    *defaults* in the same change means the wiped board comes up **calibrated**,
+    not nominal.
+  - **Desk verification, before anything was flashed.**
+
+    ```
+    buffered    floor 200 mV -> trip min  101 mA   ceil 3125 mV -> trip max 1580 mA
+    unbuffered  floor   0 mV -> trip min    0 mA   ceil 3325 mV -> trip max 1681 mA
+    drv trip 1000 -> VREF 1977 mV, DAC code 2435, reads back  999 mA
+    drv trip 3000 -> clamps to 1580 mA   (pre-fix: wrapped to ~811, reported as honoured)
+    place_trigger, 20% duty (start 3600, ticks 900) -> tick 4348
+    ```
+
+    Build clean under `-Wall -Wextra`. Flash **89792 → 91312 B** (+1520, the
+    uint64 divide helper and the spread burst), RAM 5384 → 5392 B. Baseline
+    measured by building `HEAD` in a throwaway git worktree, not recalled.
+  - **Documentation rewritten in `isense.h`**, which is this project's real
+    documentation and had three sections that were now false: the plateau test
+    posed as an open question, the Sep 12 "reading is SUPPLY current" conclusion
+    with its IMODE-blanking cause and `trip² × R_motor / Vm` quadratic, and the
+    192-tick gate rationale. Retractions are left visible rather than deleted,
+    the convention the file already uses for its Sep 14/15 aliasing retraction.
+  - **Still owed on the bench**, and the reason task 20 is not yet ✅: the
+    re-take of the calibration point — 20% duty, stalled, `drv current` against
+    both `D × Vm / R_motor` = 1263 mA and the settled `drv iscan 64 3550 4500 50`
+    tail. Success is `drv current` landing within a few percent of the iscan tail
+    instead of ~13% below it; that one comparison validates the trip scaling, the
+    gate, the placement and the averaging at once. **First step is a `cfg show`,
+    not a current reading** — the stored record is gone and must be confirmed
+    and re-saved before any number is trusted.
+
 - **Sep 20 — PLATEAU SWEEP DONE: the DRV8874 compares IPROPI against VREF/3.
   Every `drv trip` is 3× too high, the real trip range is 100–1558 mA, the
   current-sense chain is calibrated against physics for the first time, and
@@ -150,6 +290,9 @@
       unsynchronised fallback path.** On the synchronised path the plateau is
       `trip/k` directly. Applying the quadratic would have produced a badly wrong
       `k`.
+
+- **Sep 19 (later) — PMODE CONFIRMED LATCHED IN PWM MODE, ground return rebuilt,
+  motor rail raised to 12 V. The Sep 16 blocker is cleared and current
   regulation is live for the first time.**
   - **Ground return replaced: three thicker conductors** from breadboard PGND to
     the MCU carrier board, in place of the single DuPont that carried the Sep 16

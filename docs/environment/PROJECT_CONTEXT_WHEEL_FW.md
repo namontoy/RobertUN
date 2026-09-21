@@ -1,5 +1,5 @@
 # RobertUN — Wheel Controller Firmware Context
-**Last updated:** September 20, 2026 (plateau sweep DONE — the DRV8874 compares IPROPI against VREF/3, so every `drv trip` is 3× too high and the real range is ~100–1558 mA; the current-sense chain is calibrated against physics for the first time; three bugs found in the synchronised sampler)
+**Last updated:** September 20, 2026 (**W4 CLOSED**; task 20 implemented — `k = 3` applied, the sampler moved to the settled tail of the drive window, multi-tick averaging added; the two measured constants applied at last, VDDA 3325 and R_IPROPI 1465; **W5 opened** and blocked on one measurement, the 12 V plant re-take)
 
 **Sibling files:** `PROJECT_CONTEXT_REST.md` — machines, network, ROS 2/Jetson/Isaac, bus-wide CAN architecture, power distribution, and tooling. `PROJECT_CONTEXT_WHEEL_FW_LOG.md` — the full, unedited progress log behind the one-line summaries below. Paste this file alone for routine wheel-firmware session starts; pull in the log file only when you need the exact numbers/reasoning behind a specific entry.
 
@@ -19,6 +19,7 @@
 
 One line per entry. Full detail (exact numbers, register values, reasoning chains) is in `PROJECT_CONTEXT_WHEEL_FW_LOG.md`.
 
+- **Sep 20 (later)** — **W4 CLOSED. Task 20 implemented and built clean.** `k = 3` now applied in the mA↔VREF conversion pair (as a config key, `cfg vref_div`, so a different part is a console command and not a rebuild); the sampler moved from the window MIDPOINT to its settled tail, `trigger = end − (aperture + guard)`, which cost the minimum synchronised duty 4.3% → **14.5%** and bought back the ~13% the midpoint read low; `drv current` now spreads its samples over 4 ticks for the same 64 periods. **The two measured constants were finally applied** — VDDA 3300 → **3325**, R_IPROPI 1474 → **1465** — held back since Sep 12 so nothing moved underneath the plateau sweep, closing the last open W4 item. Printed trip range is now **~101–1580 mA** (was 1558 on the nominal constants); full scale 5.044 A, one LSB 1.231 mA. Two latent bugs caught on the way: the mA→mV multiply wrapped uint32 at `drv trip 3000` and would have reported ~811 mA as honoured, and `iscan`'s window markers were derived from the old midpoint convention. **`CONFIG_VERSION` 1 → 2, so the stored calibration record is discarded on this boot.** Bench re-take of the calibration point still owed.
 - **Sep 20** — **PLATEAU SWEEP DONE: `k = 3`.** The DRV8874 compares IPROPI against **VREF/3**, so **every `drv trip` is 3× too high** — the real range is ~100–1558 mA and the 3000 mA boot default is really 1000 mA. `k=1`/`k=2` refuted; confirmed predictively by a plateau that ignored a 7.6% shift in demand. The current-sense chain is **calibrated against physics for the first time** (1290 mA measured vs 1263 predicted, 2%). Three sampler bugs found: IPROPI settles in **5.6 µs not 1.6 µs**, `ISENSE_SYNC_MIN_TICKS` 192 is far too low (nothing below ~13% duty is valid), and `place_trigger()` samples the contaminated half of the window. The **Sep 12 "reading is SUPPLY current" conclusion is retracted** — it was a pre-Sep-16 sampling artifact, and the stated IMODE cause was wrong too.
 - **Sep 19 (later)** — **Task 19 CLEARED.** Ground return rebuilt with three thick conductors; `drv pin`-free build flashed; **PMODE confirmed latched in PWM mode** by scoping both motor outputs — at 13% duty one carries PWM and **the other sits at GND**, which only low-side slow decay produces (independent half-bridge would park it at the rail). Roles swap cleanly at −13%. Motor rail raised to **12.0 V, DMM at the DRV8874 VM pin**. Current regulation is live for the first time, so the 3000 mA boot trip is now real — and every plant figure on record belongs to the old 9.35 V rail.
 - **Sep 19** — Replacement MCU board verified **bare** on both pad checks (`drv pin` → both pads `mode 2 af 2`, `IDR 0`; `drv pin pd` → PB7 `IDR 0`, where the dead board read 1), so PB6/PB7 stay put and TIM3/PC6-PC7 is off the table. PMODE strapped with 10 kΩ to 3V3, **not yet confirmed latched**. VREF confirmed bare and a 100 kΩ pull-down rejected — it would be indistinguishable from the internal divider the plateau sweep is meant to measure. **Task 19 still blocks: ground return next.**
@@ -1456,26 +1457,37 @@ modification is small, reversible, and off the spares.
 **The scaling as modified:**
 
 ```
-scale       = A_IPROPI × R_IPROPI = 450 µA/A × 1474 Ω = 0.6632 V/A
-ADC ceiling = 3.300 V / 0.6632 V/A                    = 4.975 A
-LSB         = 4975 / 4096                             = 1.215 mA
-                                                        (823.1 counts/A)
+scale       = A_IPROPI × R_IPROPI = 450 µA/A × 1465 Ω = 0.6593 V/A
+ADC ceiling = 3.325 V / 0.6593 V/A                    = 5.044 A
+LSB         = 5044 / 4096                             = 1.231 mA
+                                                        (811.7 counts/A)
 
-integer form, no float:   I_mA = raw × 4975 / 4096
+integer form, no float:   I_mA = raw × 5044 / 4096
 ```
 
-R_IPROPI is the **nominal** parallel value. If the pair reads differently on a
-meter, `ISENSE_R_IPROPI_OHM` is the one constant to change — a 1 % error there
-is a 1 % error in every current ever logged.
+**These are the MEASURED constants, applied Sep 20, 2026** — R_IPROPI **1465 Ω**
+across the fitted pair (against a 1474 Ω nominal) and VDDA **3325 mV** on this
+board. They were measured Sep 12 and deliberately held back until the plateau
+sweep was finished, because that sweep's result was a ratio through both
+constants and immune to them. On the old nominals the same board computes
+0.6632 V/A, 4.975 A and 1.215 mA, so **every current logged before Sep 20 reads
+~1.4 % low**.
+
+Both are **per-board** figures. A second carrier gets metered and `cfg`-set, not
+handed these — a 1 % error in R_IPROPI is a 1 % error in every current ever
+logged, and `cfg r_ipropi <ohms>` changes it live with no rebuild.
 
 **Removing the 10 kΩ undid the coupling, which was the whole point.** On the
 stock carrier VREF followed nSLEEP, so the trip point and the ADC full scale
 were the same number and could not be moved apart. They are now independent:
 
-- **R_IPROPI alone sets the CEILING** — 4.975 A, fixed in hardware.
-- **VREF sets the TRIP**, anywhere from 0 up to that ceiling, in software.
-- One DAC code moves the trip by **1.215 mA — exactly one ADC LSB**, because
-  both converters are 12 bits across the same 3.3 V through the same resistor.
+- **R_IPROPI alone sets the CEILING** — 5.044 A, fixed in hardware.
+- **VREF sets the TRIP**, anywhere from 0 up to **a third** of that ceiling, in
+  software — the DRV8874 compares against `VREF/3` (`k = 3`, measured Sep 20).
+- One DAC code moves the trip by **0.410 mA — one third of an ADC LSB**, because
+  both converters are 12 bits across the same 3.325 V through the same resistor
+  but the comparator sees VREF divided by three. The limit is finer-grained than
+  the measurement can read back.
 
 **The cost is that the fail-safe is gone.** The 10 kΩ guaranteed VREF could
 never be wrong while nSLEEP was high; they moved together. Now **VREF must be
@@ -1523,9 +1535,11 @@ predicts any regulation at all.
 > **The DRV8874 compares the instantaneous IPROPI voltage against `VREF / 3`.**
 > **Every `drv trip` and `cfg trip_ma` on record is therefore 3× too high.**
 
-- The console's printed range **301–4673 mA is really ~100–1558 mA**, and the
-  **3000 mA boot default is really 1000 mA** — which is what has actually been
-  protecting the bench.
+- The console's printed range **301–4673 mA was really ~100–1558 mA**, and the
+  **3000 mA boot default was really 1000 mA** — which is what had actually been
+  protecting the bench. **Fixed Sep 20** (task 20): the printed range is now
+  **~101–1580 mA** on the measured constants, and the boot default is written as
+  the 1000 mA it always physically was.
 - The **regulated average sits at ~92% of the peak limit** (933/911 mA against a
   nominal 999), the shortfall being chopping ripple.
 - **The maximum trip is always exactly one third of the ADC ceiling, whatever
@@ -1540,15 +1554,17 @@ predicts any regulation at all.
   electrical data says the driver is chopping. Bench indicator, no console
   needed.
 
-The fix belongs in firmware (task 20), not on the bench: `drv trip` must
-multiply the requested mA by k before computing the DAC code, and the printed
-range must follow.
+The fix belonged in firmware (task 20), not on the bench, and **landed Sep 20**:
+`drv trip` multiplies the requested mA by `k` before computing the DAC code, and
+the printed range follows. `k` lives in config as `cfg vref_div` (1..4, default
+3) so a second-source part with a different divider is a console command rather
+than a rebuild.
 
 ### IPROPI — CALIBRATED Sep 20, 2026: the reading is MOTOR current
 
 `I_IPROPI = I_OUT × 450 µA/A`, and R_IPROPI converts that to a voltage the ADC
-reads. At the modified **1.474 kΩ** (2.0k ∥ 5.6k): **0.6632 V/A**, ADC ceiling
-**4.975 A**, **1.215 mA per count** (823.1 counts/A).
+reads. At the modified **1.465 kΩ** measured (2.0k ∥ 5.6k, 1.474 kΩ nominal):
+**0.6593 V/A**, ADC ceiling **5.044 A**, **1.231 mA per count** (811.7 counts/A).
 
 > **On the synchronised path, `drv current` returns MOTOR current.** The sample
 > is taken inside the drive window, where IPROPI mirrors the conducting low-side
@@ -1584,24 +1600,31 @@ load-bearing for a week.
   the plateau is `trip / k` directly. Applying the quadratic to the Sep 20 sweep
   would have produced a badly wrong `k`.
 
-**⚠️ Three bugs in the synchronised sampler, found Sep 20, all open (task 20).**
+**⚠️ Three bugs in the synchronised sampler, found Sep 20 — ALL FIXED the same
+day (task 20), bench verification still owed.**
 - **IPROPI needs 5.6 µs (500 ticks) to settle, not the datasheet's 1.6 µs
   `tDELAY`.** At 20% duty the drive edge is at tick 3600 and the reading only
   goes flat from tick 4100, ringing through 1757 / 212 / 1659 / 1275 / 994 on
   the way. Probably the sense network, not the mirror.
-- **`ISENSE_SYNC_MIN_TICKS` is 192; it needs to be ~600.** At 192 the gate admits
-  a reading at 4.27% duty, where the whole drive window is shorter than the
-  settling time. **Nothing below ~13–15% duty is valid**, and the console warns
-  about none of it.
-- **`place_trigger()` samples the window midpoint — the contaminated half.** All
+- **`ISENSE_SYNC_MIN_TICKS` was 192; it needed to be ~600.** At 192 the gate
+  admitted a reading at 4.27% duty, where the whole drive window is shorter than
+  the settling time. **Nothing below ~13–15% duty is valid**, and the console
+  warned about none of it. → now `DRIVE_PHASE_MIN_TICKS` = **652** in `drive.h`
+  (settle 500 + aperture 112 + guard 40) = **14.5% duty**.
+- **`place_trigger()` sampled the window midpoint — the contaminated half.** All
   the ringing is at the leading edge. At 20% duty the midpoint read 994 against
-  a settled 1143, **13% low**. It belongs at 75–85% through the window. The
-  Sep 15 conclusion that trigger placement was correct is withdrawn.
+  a settled 1143, **13% low**. The Sep 15 conclusion that trigger placement was
+  correct is withdrawn. → now **end-relative**, `end − (aperture + guard)`
+  floored at `start + settle`, rather than the "75–85% through the window"
+  fraction first proposed: a fraction gives a different settle allowance at every
+  duty, an end-relative rule gives the same one at all of them.
 
 Casualties measured the same day, both garbage: `drv current` gave **87 mA at
 13% duty** free-running and **211 mA at 8% duty** stalled (against 505 mA
-predicted). **Until task 20 lands, take bench current from the settled tail of
-`drv iscan 64 3550 4500 50`, not from `drv current`.**
+predicted). Both were taken below the 14.5% floor that now refuses them.
+**Task 20 has landed but is not yet bench-verified — until `drv current` has
+been checked against the settled tail of `drv iscan 64 3550 4500 50` at 20%
+duty, take bench current from the iscan tail.**
 
 **Stall readings carry a ±8% rotor-position noise floor.** The unregulated
 reference moved 1062 → 1143 raw across one session, and the encoder crept tens
@@ -1705,10 +1728,20 @@ gearbox is the difference between a note and a broken bench setup.
      bounds throughput only, not latency. Hybrid ISR-to-ring is the leading
      candidate. Settle before W6.
 
-6b. **W4 — drive motor + encoder closed loop (IN PROGRESS, opened Aug 24):**
-    Acceptance criterion: encoder counts read correctly and match physical
-    rotation — **MET Aug 26**, 8394.9 counts/rev over ten hand turns, 0.1% from
-    predicted, with the sign convention recorded on the bench.
+6b. **W4 — drive motor + encoder closed loop: ✅ CLOSED Sep 20, 2026**
+    (opened Aug 24). Acceptance criterion: encoder counts read correctly and
+    match physical rotation — **MET Aug 26**, 8394.9 counts/rev over ten hand
+    turns, 0.1% from predicted, with the sign convention recorded on the bench.
+
+    **Why it stayed open for three weeks after its criterion was met, and why
+    that was right:** the criterion was about the encoder, but the week's real
+    deliverable was a drive chain you could trust the numbers from. Everything
+    that kept it open was current-sense work — the DRV8874 swap, the carrier
+    modification, PMODE, the plateau sweep — and closing on the letter of the
+    criterion would have handed W5 a plant model measured through an
+    uncalibrated sensor on a driver that was not in the commanded mode. The
+    cost of the delay was three weeks; the cost of the alternative was tuning
+    gains against fiction.
 
     ✅ **Done — full detail in the LOG file:** pin allocation and the `.ioc`
     root cause (Sep 12); encoder read, `int32_t` delta accumulate and the `enc`
@@ -1724,27 +1757,30 @@ gearbox is the difference between a note and a broken bench setup.
     confirmed (Sep 14) and **latched in the 1 kHz tick (Sep 16)**, so a
     transient fault now leaves a mark.
 
-    Still open:
-    - ⬜ Measure real drive current — the input HW4's PDB branch sizing has
-      been waiting on. **Two ways in, and neither waits for the DRV8874:**
-      (a) measure the motor's winding resistance with a multimeter, rotating
-      the shaft between readings to average brush position — if it lands near
-      2.18 Ω the whole current analysis is validated; (b) stall the motor from
-      a current-limited bench supply with no driver in the loop and read the
-      current directly (spec says 2.8 A at 6 V). **Now a third and better
-      path exists: measure it on the loaded wheel rig at real weight**, which
-      gives the actual duty cycle of operation rather than a bounding figure.
-      The DRV8874's IPROPI output makes this a firmware reading, not a
-      multimeter session.
-    - ⬜ **Plateau sweep** — `drv trip 1000 / 2000 / 3000`, stall, step duty up,
-      record where the reported current flattens, to settle the internal VREF
-      divider (k = 1 / 2 / 3). Immune to both pending constant corrections,
-      because measured current and commanded trip pass through the same
-      R_IPROPI and the same VDDA and the ratio cancels them
-    - ⬜ **Apply the two measured constants after the sweep** (held until then so
-      nothing changes mid-experiment): `ISENSE_VDDA_MV` 3300 → **3325**,
-      `ISENSE_R_IPROPI_OHM` 1474 → **1465**. Net effect is that readings
-      currently sit ~1.4% low
+    **The four items that kept it open are all resolved:**
+    - ✅ **Real drive current measured (Sep 20)** — the input HW4's PDB branch
+      sizing was waiting on. Done as a firmware reading through IPROPI rather
+      than the multimeter or bench-supply fallbacks that were held in reserve:
+      **1290 mA at 20% duty, stalled, on the 12 V rail**, against 1263 mA
+      predicted from `D × Vm / R_motor`. 2%, inside the ±8% rotor-position
+      noise floor. The loaded-rig figure at real weight is the one HW4 should
+      size against and is now a measurement, not an estimate.
+    - ✅ **Plateau sweep run (Sep 20)** — five points, 300–1500 mA commanded,
+      slope 1/3 to better than 1%. **`k = 3`.** The sweep was designed to be
+      immune to both pending constant corrections, because measured current and
+      commanded trip pass through the same R_IPROPI and the same VDDA and the
+      ratio cancels; that immunity is what let the constants be held back until
+      it was finished.
+    - ✅ **The two measured constants applied (Sep 20)**, the hold released now
+      that nothing is mid-experiment: `ISENSE_VDDA_MV_DEFAULT` 3300 → **3325**,
+      `ISENSE_R_IPROPI_OHM_DEFAULT` 1474 → **1465**. Every current logged before
+      today reads ~1.4% low. Derived figures move with them — full scale 4.975 →
+      **5.044 A**, one LSB 1.215 → **1.231 mA**, printed trip range ~100–1558 →
+      **~101–1580 mA**. Both are **per-board** figures: a second carrier gets
+      metered and `cfg`-set, not handed these.
+    - ✅ **Task 20 firmware landed (Sep 20)** — the four bugs the sweep exposed,
+      plus multi-tick averaging. See task 20 below for what remains to *verify*;
+      the implementation itself is done and builds clean.
     - ❌ **SUPERSEDED Sep 16 — "PMODE confirmed to select PWM mode" was wrong.**
       The Sep 14 reasoning still holds as far as it goes: at 20% duty `drive.c`
       emits IN1 constantly high and IN2 PWM'd at 80% (slow decay), under either
@@ -1757,6 +1793,11 @@ gearbox is the difference between a note and a broken bench setup.
       independent half-bridge — the whole time, and internal current regulation
       was therefore disabled, meaning **every `drv trip` / PA4 VREF result taken
       before Sep 16 was inert and must be re-taken**. See the Sep 16 log entry
+
+    **Carried out of W4, not dropped** — these were never W4 acceptance items
+    and are tracked where they belong: the 12 V plant re-measurement and the
+    motor-terminal metering in task 17, the PID gain keys in task 18, nFAULT on
+    a real fault in task 19, and task 20's bench verification.
 
 
 17. **Motor rail 9.5 V → 12 V (decided Sep 12, 2026)**
@@ -1789,14 +1830,15 @@ gearbox is the difference between a note and a broken bench setup.
     VM pin.** That is the authoritative figure; the oscilloscope read ~12.4 V on
     the driven output and the ~0.4 V difference is scope ADC accuracy.
 
-    - ⚠️ **The trip cannot presently be set anywhere near stall — by a factor
-      of four.** With `k = 3` the real maximum is **~1558 mA** against a cold
-      stall of **~6.3 A**, and the boot default is **1000 mA**, not 3000. This
-      fails safe (trip-limited, never over-current) but it means **every stall
-      or high-duty figure is a property of the trip, not of the motor**, unless
-      the trip was deliberately parked at 4673 first. Reaching a stall-relevant
-      trip needs a smaller `R_IPROPI` and costs ADC resolution — an HW1 decision,
-      see the IPROPI section.
+    - ⚠️ **The trip cannot be set anywhere near stall — by a factor of four.**
+      With `k = 3` and the measured constants the maximum is **~1580 mA**
+      against a cold stall of **~6.3 A**. The boot default is now **1000 mA**,
+      written as the figure it always physically was. This fails safe
+      (trip-limited, never over-current) but it means **every stall or high-duty
+      figure is a property of the trip, not of the motor** — and there is no
+      longer any "park the trip high first" escape, because the ceiling itself
+      is below stall. Reaching a stall-relevant trip needs a smaller `R_IPROPI`
+      and costs ADC resolution — an HW1 decision, see the IPROPI section.
     - ⬜ **Meter the MOTOR TERMINALS, not just VM.** 12.0 V at the driver input
       is not 12 V at the motor: there is ~0.10 V of harness drop at light load
       and more under current, so the terminal figure is still unmeasured and
@@ -1840,7 +1882,8 @@ gearbox is the difference between a note and a broken bench setup.
     - Apply the two measured constants through `cfg` rather than a rebuild:
       `cfg vdda_mv 3325`, `cfg r_ipropi 1465` (after the plateau sweep).
     - Set `cfg rail_mv` once task 17's 12 V is metered at the motor terminals.
-    - **Add W5's PID gains as keys before tuning starts** — the biggest payoff
+    - **Add W5's PID gains as keys before tuning starts** (now tracked in task
+      21, and cheapest to do in task 20's version bump) — the biggest payoff
       of the module. Tuning a velocity loop without a reflash between trials is
       the difference between an afternoon and a week.
 
@@ -1906,37 +1949,128 @@ gearbox is the difference between a note and a broken bench setup.
       modules, which is how the rest of the file already worked. Recoverable
       from git history if a future board ever needs the same pad check.
 
-20. ⬜ **Fix the four bugs the plateau sweep exposed in the current path
-    (opened Sep 20, 2026).** None are hardware; all of them make the console lie.
-    The first one matters most — it silently triples every protection limit.
+20. 🔧 **Fix the bugs the plateau sweep exposed in the current path
+    (opened Sep 20, 2026). IMPLEMENTED Sep 20 — BENCH VERIFICATION OWED.**
+    None were hardware; all of them made the console lie. The first mattered
+    most — it silently tripled every protection limit. Code is written, builds
+    clean under `-Wall -Wextra` (flash 22.84% → 23.22%, RAM unchanged at 4.11%),
+    and the desk arithmetic checks out; what is left is the bench re-take.
 
-    - ⬜ **`drv trip` is 3× too high.** The DRV8874 compares IPROPI against
+    - ✅ **`drv trip` is 3× too high.** The DRV8874 compares IPROPI against
       **VREF/3**, so `isense_set_trip_ma()` must multiply the requested mA by
       **k = 3** before computing the DAC code, and the printed range must follow
       (**~100–1558 mA**, not 301–4673). `cfg trip_ma` inherits the same fix, and
       the **3000 mA boot default must become 1000 mA** if the intent was ever
       literal — note that 1000 mA is what has actually been in force, so the
-      bench has not been under-protected, only mislabelled. Define `k` as a
-      named constant in `isense.h` with the Sep 20 evidence cited, not a bare 3.
-    - ⬜ **`ISENSE_SYNC_MIN_TICKS` 192 → ~600.** 192 ticks is 2.1 µs, shorter
+      bench has not been under-protected, only mislabelled.
+      **Done as a config key, `cfg vref_div` (range 1..4, default 3), not a
+      `#define`** — a second-source part with a different divider is then a
+      console command rather than a rebuild. Applied in the conversion pair
+      only, so every derived function follows; `isense_raw_to_ma()` is untouched
+      because the ADC reads the resistor directly and never sees the divider.
+    - ✅ **`ISENSE_SYNC_MIN_TICKS` 192 → 652.** 192 ticks is 2.1 µs, shorter
       than the **5.6 µs** IPROPI actually needs to settle, so the gate currently
       green-lights readings at 4.27% duty that are pure ringing. 600 ticks ≈
       13.3% duty, which matches where the data goes clean. Anything below that
-      must fall through to the free-running path **with its warning**.
-    - ⬜ **`place_trigger()` samples the wrong half of the window.** It uses the
-      midpoint; the contamination is all at the leading edge. Move it to
-      **75–85% through the drive window** — `start + (ticks * 4) / 5` — and keep
-      the `DRIVE_CCR_FULL` special case for `ticks == 0`. Re-verify against an
-      `iscan` afterwards; the midpoint reads ~13% low at 20% duty.
-    - ⬜ **Cosmetic: `drv iscan` prints tick 0 as though it were data.** CCR4 = 0
+      falls through to the free-running path **with its warning**.
+      **Landed as `DRIVE_PHASE_MIN_TICKS` in `drive.h`, not `isense.h`** — these
+      are TIM4-tick quantities about the drive window, and the budget belongs
+      next to `place_trigger()`, the code that has to honour it. 652 = settle
+      500 + aperture 112 + guard 40 = **14.5% duty**.
+    - ✅ **`place_trigger()` samples the wrong half of the window.** It used the
+      midpoint; the contamination is all at the leading edge.
+      **Done END-relative rather than as the proposed `start + (ticks * 4) / 5`
+      fraction:** `trigger = window_end − (aperture + guard)`, floored at
+      `start + settle`. A fraction gives a different fraction of a different
+      settle time at every duty; the end-relative rule puts the aperture in
+      settled signal with the same guard band at *any* duty, and self-adjusts.
+      At 20% duty it lands on tick **4348**, 83% through the window. The
+      `DRIVE_CCR_FULL` special case for `ticks == 0` is kept. Re-verify against
+      an `iscan`; the midpoint read ~13% low at 20% duty.
+    - ✅ **Cosmetic: `drv iscan` prints tick 0 as though it were data.** CCR4 = 0
       never generates a compare edge, so `sync_burst()` returns 0 on a timeout.
-      Print `--` and a one-line footnote instead of a zero that looks like a
-      measurement.
-    - ⬜ **After the fixes, re-take the calibration point** (20% duty, stalled,
-      trip parked high) and confirm it still lands within a few percent of
+      Prints `--` and a one-line footnote now, and is kept out of the peak
+      search.
+    - ✅ **Multi-tick averaging (added as item 5, Sep 20).** `drv current` was
+      one tick on a waveform that still carries commutation ripple — the Sep 20
+      settled tail wandered 739–764 raw across the region. It now spreads its
+      samples over **4 ticks** inside the settled region, **same total periods**
+      (64 samples is still 64 periods, still 3.2 ms), weighted so the count is
+      exactly what the caller asked for. Degrades to a single tick when the
+      region collapses at the 652-tick minimum. `drv iscan` deliberately stays a
+      single-tick probe — it is the instrument that measures where the settled
+      region is, and averaging inside it would hide the ringing.
+    - ⬜ **After the fixes, re-take the calibration point** (20% duty, stalled)
+      and confirm it still lands within a few percent of
       `D × Vm / R_motor`. The 2% agreement on Sep 20 was taken from the `iscan`
       tail, not from `drv current`; the point of the fixes is to make
-      `drv current` agree with it.
+      `drv current` agree with it. **This one comparison validates the trip
+      scaling, the gate, the placement and the averaging at once.**
+    - ⬜ **First bench step is a `cfg` check, not a current check.**
+      `CFG_KEY_COUNT` went 8 → 9 and `CONFIG_VERSION` 1 → 2, so `scan()` rejects
+      every stored record and the board boots on defaults reporting
+      `CONFIG_LOAD_VERSION`. That is the safe direction — a stale `trip_ma 3000`
+      would otherwise have become a real 3 A limit — and the measured constants
+      are now in the defaults, so a wiped board comes up calibrated. Confirm
+      with `cfg show` before trusting any reading, then re-save.
+
+21. ⬜ **W5 — velocity PID on the drive motor (OPENED Sep 20, 2026).**
+    Acceptance criterion, to be met on the loaded wheel rig at real weight:
+    **commanded output speed is held within a stated tolerance across the usable
+    speed range, with no sustained oscillation and bounded overshoot from a
+    step.** The tolerance is deliberately left to be set from the 12 V plant
+    re-measurement rather than picked now from 9.35 V figures.
+
+    **What carries over from W4, already established:**
+    - The plant is **linear to ±1.5%** across the duty range, so **no gain
+      scheduling** — the single most useful thing the Aug 26 sweep established.
+    - **Sign convention: positive duty → CW → positive encoder counts**,
+      confirmed at every point. If the loop ever runs away inverted, the fix is
+      to swap the MOTOR leads, not the encoder.
+    - **Direction asymmetry ≈ 3.5%** (CCW faster above 20% duty) — normal brush
+      timing, absorbed by integral action, not a thing to compensate explicitly.
+    - Two motors matched to <2% on R and L, so **one gain set should fit all six
+      wheels** — the assumption W7 rests on, worth re-checking on a third motor
+      before it is relied on.
+    - TIM2 is 32-bit and free-running, so **counter rollover is off the table**
+      for the whole of tuning.
+
+    **BLOCKED ON ONE MEASUREMENT — the 12 V plant re-take (task 17).** The rail
+    moved 9.35 V → 12.0 V on Sep 19, which retires `rpm = 0.672 × duty% − 1.8`,
+    the ~2.6% deadband, breakaway, dropout and the 4.9 rpm minimum sustainable
+    speed. R, L and Ke carry over; **duty→speed and duty→current do not, and
+    gains tuned at one rail do not transfer.** This is one bench session on a
+    rig that already exists, not a week of work — but nothing downstream of it
+    should be tuned first. Meter the **motor terminals** while the rig is set
+    up, not just VM: 12.0 V at the driver is not 12 V at the motor.
+
+    **Can start now, without the bench:**
+    - ⬜ **PID gains as `config` keys BEFORE tuning starts** (task 18 flags this
+      as the biggest payoff, and it is right — re-flashing to change a gain makes
+      tuning miserable). `kp`, `ki`, `kd`, output clamp, integral limit. **Do it
+      in the same version bump as task 20's** — `CONFIG_VERSION` is already at 2
+      and the stored record is already discarded, so adding them now is free,
+      where adding them later costs a second wipe.
+    - ⬜ Control-loop skeleton on the existing TIM6 1 kHz tick: velocity estimate
+      from the TIM2 delta, the sign convention above, duty clamp.
+    - ⬜ Telemetry path. OpenOCD RTT is the standing candidate; decide before
+      it is needed, because tuning without a trace is guesswork.
+
+    **Two constraints inherited from Sep 20, to be designed around rather than
+    discovered during tuning:**
+    - ⚠️ **No synchronised current reading below 14.5% duty** at the 20 kHz
+      carrier — the honest floor, replacing a 4.3% one that was admitting pure
+      ringing. **W5 operates near the stiction floor, which is below it**
+      (breakaway was 12–14% duty on the loaded rig at 9.35 V). A **current inner
+      loop** — re-enabled by the 13.5 V branch-rail decision — is therefore blind
+      in exactly the region the rover creeps in. Options are the free-running
+      `Isup` fallback or a slower PWM carrier in that band. **Decide before
+      tuning, not during.**
+    - ⚠️ **The loop cannot measure current while it is hard-limiting.** Push the
+      DRV8874 ~90% below demand and IPROPI collapses to near zero far faster
+      than L/R decay allows; regulation is audible before it is visible. Any
+      current-aware supervision has to treat "trip active" as a distinct state,
+      not as a low reading.
 
 ## KEY LEARNINGS & GOTCHAS
 
@@ -1947,6 +2081,36 @@ it, every firmware update would silently wipe each node's calibration.
 
 Short, generalised rules. Machine-specific detail belongs in that machine's
 section; this is for things that will bite again somewhere else.
+
+- **Hold a calibration correction until the experiment that does not need it is
+  finished.** VDDA 3325 and R_IPROPI 1465 were measured Sep 12 and deliberately
+  not applied until Sep 20, because the plateau sweep's result was a *ratio*
+  through the same two constants and therefore immune to them — while applying
+  them mid-sweep would have moved every number underneath a measurement in
+  progress, for no gain. **Check whether the pending correction cancels in the
+  measurement you are about to take; if it does, the correction can wait and
+  should.** The discipline costs nothing and removes a whole class of "did the
+  numbers move because of the physics or because of me?"
+
+- **Place a sampling trigger relative to the END of a window, not as a fraction
+  of it.** A fraction (`start + 4/5 × ticks`) gives a different amount of
+  settling time at every duty, so it is right at one operating point and quietly
+  wrong everywhere else. `end − (aperture + guard)`, floored at
+  `start + settle`, puts the aperture in settled signal at *any* window width
+  and needs no re-tuning. It also makes the minimum usable window fall out as a
+  sum rather than being guessed — and **a gate that rises when you measure the
+  real settle time is a gate that was previously lying**, not a regression: the
+  floor here went 4.3% → 14.5% duty, and everything in between had been
+  reported without a warning.
+
+- **Changing what a stored value MEANS is a version bump, not an edit.**
+  `trip_ma` kept its name, range and units when `k = 3` landed, but a stored
+  `3000` went from meaning "3 A" to meaning "3 A, enforced as 1 A". Bumping
+  `CONFIG_VERSION` discards every stored record — including good calibration —
+  and that is the correct trade: a silently re-interpreted current limit is
+  worse than a re-entered one. **Put the newly measured constants into the
+  DEFAULTS in the same change, so the board that loses its record comes back up
+  calibrated rather than nominal.**
 
 - **A datasheet settling time is a floor for the silicon, not for your board.**
   The DRV8874 quotes 1.6 µs `tDELAY` for IPROPI; the measured settle on this

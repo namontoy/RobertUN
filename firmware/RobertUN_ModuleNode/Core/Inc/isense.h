@@ -35,9 +35,15 @@
   *
   * R_IPROPI turns that into a voltage:
   *
-  *     scale      = 450e-6 x 1474  = 0.6632 V/A
-  *     full scale = 3.3 / 0.6632   = 4.975 A      <- ADC ceiling
-  *     one LSB    = 4975 / 4096    = 1.215 mA
+  *     scale      = 450e-6 x 1465   = 0.6593 V/A
+  *     full scale = 3.325 / 0.6593  = 5.044 A     <- ADC ceiling
+  *     one LSB    = 5044 / 4096     = 1.231 mA
+  *
+  * Those are the MEASURED constants - R_IPROPI 1465 ohm across the fitted pair,
+  * VDDA 3325 mV on this board - applied 2026-09-20, once the plateau sweep was
+  * finished and nothing was left mid-experiment. On the 1474/3300 nominals the
+  * same board computes 0.6632 V/A, 4.975 A and 1.215 mA, which is why every
+  * current logged before that date reads ~1.4% low.
   *
   * A_IPROPI is 1000 uA/A on the DRV8876 second source, so a swap changes this
   * constant by 2.22x. It is not a transparent substitution.
@@ -54,14 +60,29 @@
   * the ADC full scale were the same number and could not be moved apart. They
   * are now independent:
   *
-  *     R_IPROPI alone sets the CEILING       = 4.975 A, fixed
-  *     VREF sets the TRIP anywhere from 0 up to that ceiling, in software
+  *     R_IPROPI alone sets the CEILING       = 5.044 A, fixed
+  *     VREF sets the TRIP anywhere from 0 up to a THIRD of that ceiling
   *
-  *     I_TRIP = V_VREF / (A_IPROPI x R_IPROPI)
+  *     I_TRIP = V_VREF / (k x A_IPROPI x R_IPROPI),   k = 3
   *
-  * One DAC code moves the trip by 1.215 mA — exactly one ADC LSB, because both
-  * converters are 12 bits across the same 3.3 V through the same resistor. The
-  * limit and the measurement have the same grain, which is a tidy place to be.
+  * The k is the DRV8874's own internal divider: it compares IPROPI against
+  * VREF/3, not VREF. Measured Sep 20, 2026 - see the plateau section below.
+  * It lives in config as `vref_div` so a second source with a different
+  * divider can be accommodated without a rebuild, but 3 is the measured value
+  * for this part and there is no reason to move it.
+  *
+  * THE CEILING AND THE TRIP ARE STRUCTURALLY COUPLED, AND CANNOT BE SEPARATED
+  * IN FIRMWARE. The comparator and the ADC read the same R_IPROPI, so the
+  * maximum commandable trip is always exactly one third of the ADC ceiling -
+  * 1.681 A here - whatever value R_IPROPI takes. Wanting a 4 A trip means
+  * wanting a ~12 A ceiling, which is a resistor change and a hardware trade:
+  * the ADC grain coarsens by the same factor.
+  *
+  * One DAC code moves the trip by 0.410 mA - one third of an ADC LSB, because
+  * the two converters are both 12 bits across the same 3.3 V through the same
+  * resistor, but the comparator sees VREF divided by three. The limit is
+  * therefore finer-grained than the measurement, and can be set to a precision
+  * this module cannot read back.
   *
   * THE COST IS THAT THE FAIL-SAFE IS GONE. The 10 kOhm guaranteed VREF could
   * never be wrong while nSLEEP was high; they moved together. Now VREF must be
@@ -71,12 +92,18 @@
   * That is the safe direction to fail, and it is deliberate.
   *
   *
-  * WHY THE DEFAULT TRIP IS 3.0 A AND NOT THE CEILING
+  * WHY THE DEFAULT TRIP IS 1.0 A AND NOT THE CEILING
   * --------------------------------------------------
-  * The stock carrier gave ~2.96 A, and every bench result on record was taken
-  * with that limit in place. Booting at 3.0 A keeps that behaviour unchanged,
-  * so nothing silently gets more dangerous because a resistor was lifted.
-  * Reaching full capacity is then an explicit act: `drv trip 4600`.
+  * >> CORRECTED 2026-09-20. This default used to read 3000 and the comment
+  * >> used to claim it reproduced the stock carrier's ~2.96 A. With k = 3 that
+  * >> number was never 3 A: `drv trip 3000` asked for, and got, 1 A. The
+  * >> default is now written as the 1000 mA it always physically was, so the
+  * >> printed figure and the enforced one finally agree.
+  *
+  * 1.0 A is also a sane place to boot regardless of the history: it is above
+  * anything the rover draws rolling, below the ~1.26 A this motor pulls
+  * stalled at 20% duty on 12 V, and well inside the 1.580 A ceiling. Reaching
+  * full capacity is then an explicit act: `drv trip 1550`.
   *
   *
   * THE OUTPUT BUFFER COSTS YOU THE TOP OF THE RANGE
@@ -86,76 +113,109 @@
   * impedance turns out to be. The price is that a buffered output cannot reach
   * either rail — roughly 0.2 V to VDDA-0.2 V:
   *
-  *     buffered    0.200 .. 3.100 V  ->  trip  0.30 .. 4.67 A
-  *     unbuffered  0.000 .. 3.300 V  ->  trip  0.00 .. 4.98 A
+  *     buffered    0.200 .. 3.125 V  ->  trip  0.101 .. 1.580 A
+  *     unbuffered  0.000 .. 3.325 V  ->  trip  0.000 .. 1.681 A
   *
-  * 4.67 A is BELOW the 4.92 A the motor draws stalled at the measured 9.35 V
-  * motor terminal voltage. So with the buffer on, a genuine stall regulates
-  * rather than being measured. That is safe, and it is also not what a
-  * full-capacity test is trying to find out — hence isense_set_vref_buffered(),
-  * and `drv trip buf off`, to reclaim the top 0.31 A once VREF's input
-  * impedance is known to be high enough to leave unbuffered. Check that with a
-  * meter on the pin before trusting an unbuffered setting: if the commanded
-  * and measured VREF disagree, the buffer belongs back on.
+  * (These were quoted as 0.30 .. 4.67 A and 0.00 .. 4.98 A before k was
+  * measured on Sep 20, 2026. Same voltages, same hardware, three times too
+  * large.)
   *
-  *
-  * THE PLATEAU TEST IS NOW A REAL TEST, NOT AN INFERENCE
-  * -----------------------------------------------------
-  * I_TRIP above assumes V_IPROPI is compared against VREF directly, with no
-  * internal divider. On the stock carrier that could only be guessed at from
-  * where a stall happened to land. With VREF under software control it can be
-  * measured properly: SET A KNOWN TRIP, STALL THE MOTOR, AND SEE WHERE THE
-  * READING PLATEAUS.
-  *
-  *     drv trip 2000, stall, plateau at ~2000 mA  ->  k = 1, as assumed
-  *     drv trip 2000, stall, plateau at ~1000 mA  ->  k = 2, halve every trip
-  *     drv trip 2000, stall, plateau at ~667 mA   ->  k = 3
-  *
-  * Sweep it — 1000, 2000, 3000 — and the relationship should be a straight
-  * line through the origin. If it is, the scaling is confirmed end to end, the
-  * ADC and the DAC agree, and every number this module reports is trustworthy.
-  * That is the single most valuable hour available on this bench right now.
+  * 1.580 A is far BELOW the ~6.3 A this motor draws stalled cold at 12 V. So
+  * with the buffer on - or off, the 0.1 A the buffer costs is not what decides
+  * this - a genuine hard stall regulates rather than being measured. That is
+  * safe, and it is also not what a full-capacity test is trying to find out;
+  * measuring a real stall needs a smaller R_IPROPI, not a different buffer
+  * setting. isense_set_vref_buffered() and `drv trip buf off` remain, to
+  * reclaim the bottom and top 0.1 A once VREF's input impedance is known to be
+  * high enough to leave unbuffered. Check that with a meter on the pin before
+  * trusting an unbuffered setting: if the commanded and measured VREF
+  * disagree, the buffer belongs back on.
   *
   *
-  * WHAT THE READING MEANS - SETTLED ON THE BENCH 2026-09-12
-  * ---------------------------------------------------------
-  * In slow decay (drive-brake, the chosen scheme) the bridge draws from VM for
-  * only D of each 50 us period; the rest of the time current recirculates
-  * through the low-side FETs. With the carrier's 20 kOhm IMODE strap, IPROPI is
-  * BLANKED during that recirculation. Therefore:
+  * THE PLATEAU TEST WAS RUN, AND k IS 3 - 2026-09-20
+  * --------------------------------------------------
+  * The question this section used to pose - is IPROPI compared against VREF
+  * directly, or against some internal fraction of it - was answered on the
+  * bench by setting a known trip, stalling the shaft, and reading where the
+  * synchronised current plateaued. Five points, 300 to 1500 mA commanded:
   *
-  *   isense_read_ma() returns SUPPLY current - that is, I_motor x D.
+  *     commanded   plateau (mA)   ratio
+  *        300          101         2.97
+  *        600          200         3.00
+  *        900          302         2.98
+  *       1200          398         3.02
+  *       1500          503         2.98
   *
-  * Measured, not inferred. Stalling the output shaft removes back-EMF, so the
-  * motor current is pure Ohm's law and both hypotheses predict a number with no
-  * friction model in the way:
+  * A straight line through the origin with slope 1/3, to better than 1%. The
+  * comparator sees VREF/3. k = 1 and k = 2 are both refuted by more than the
+  * measurement's own spread, and the result is demand-independent: raising the
+  * duty 7.6% above what regulation needed moved a plateau by -2.3%, i.e. not
+  * at all.
   *
-  *   20% duty, stalled, Vm 9.35 V, R_motor 1.90 ohm
-  *     motor current  = 0.20 x 9.35 / 1.90 = 984 mA   (if continuous)
-  *     supply current = 984 x 0.20         = 197 mA   (if drive-phase only)
-  *     MEASURED (256-sample average, twice) = 189, 190 mA
+  * Everything commanded before that date was three times smaller than it
+  * printed. That is the safe direction to have been wrong in, and it is also
+  * why several "the motor is weaker than predicted" results from the same
+  * period were really the driver regulating at a third of the intended limit.
   *
-  * A 5x discriminator landing within 4% of the supply prediction. The residual
-  * is the bridge's own RDS(on) - about 0.16 ohm across the two conducting FETs,
-  * so ~0.15 V of the rail never reaches the motor - plus the ~1.4% this module
-  * currently reads low from vdda_mv and r_ipropi both being uncorrected. Together those close the gap to ~2.5%.
+  * Two things this test also taught, both about the READING rather than the
+  * trip:
   *
-  * TWO CONSEQUENCES, AND THE SECOND ONE BITES
+  *   - Under deep regulation IPROPI goes blind. The driver chops so hard that
+  *     the drive sub-window shrinks below the settle time, and the plateau
+  *     figure stops tracking - about 92% of the period is chopped away at the
+  *     low end. Regulation is audible before it is visible.
+  *   - A plateau is only worth reading from the SETTLED tail of the window.
+  *     Taken at the midpoint it reads ~13% low, which is what sent the first
+  *     pass of this measurement chasing a non-integer k.
   *
-  * 1. The DRV8874 regulates by comparing the INSTANTANEOUS IPROPI voltage to
-  *    VREF, cycle by cycle. Since IPROPI mirrors the drive phase, the quantity
-  *    being regulated is true motor current during drive. So the trip does what
-  *    you want: `drv trip 3000` really does limit the motor to 3 A.
   *
-  * 2. But this module reports the duty-averaged SUPPLY figure, so the trip and
-  *    the reading are in different units. During a plateau sweep the reported
-  *    current does NOT plateau at the trip value - it plateaus at
+  * WHAT THE READING MEANS - CALIBRATED 2026-09-20
+  * -----------------------------------------------
+  * >> RETRACTS THE "SETTLED ON THE BENCH 2026-09-12" SECTION THAT STOOD HERE.
+  * >> That section concluded isense_read_sync_avg() returned SUPPLY current
+  * >> (I_motor x D) and blamed the carrier's 20 kOhm IMODE strap for blanking
+  * >> IPROPI during recirculation. Both halves were wrong:
+  * >>
+  * >>   - The cause. IPROPI does not read zero during recirculation because
+  * >>     something blanks it. In slow decay the current recirculates through
+  * >>     the HIGH-side FETs, and IPROPI mirrors only the low-side sense
+  * >>     element - it is physically blind to that path. No strap involved.
+  * >>   - The conclusion. The Sep 12 numbers were taken with the trigger in
+  * >>     the wrong place AND with PMODE unstrapped, so the bridge was not in
+  * >>     the decay mode the analysis assumed. The commit that moved the
+  * >>     trigger into the drive phase (9187dc9, Sep 16) already made this a
+  * >>     motor-current reading; the Sep 19 PMODE fix did not change that.
+  * >>
+  * >> Anything derived from that section - in particular the quadratic
+  * >> "plateau = trip^2 x R_motor / Vm" correction - should be discarded
+  * >> rather than adjusted.
   *
-  *      trip x D_regulation,  where D_regulation = trip x R_motor / Vm
+  * The synchronised path samples inside the drive phase, where IPROPI is live
+  * and mirrors the bridge current directly. Therefore:
   *
-  *    i.e. at trip^2 x R_motor / Vm, quadratic in the trip. Read a plateau as
-  *    though it were the trip itself and the VREF divider will look wrong when
-  *    it is not.
+  *   isense_read_sync_avg() returns MOTOR current, during drive.
+  *
+  * Calibrated against a stalled shaft, which removes back-EMF and leaves pure
+  * Ohm's law with no friction model in the way:
+  *
+  *   20% duty, stalled, Vm 12.0 V, R_motor 1.90 ohm
+  *     predicted  = 0.20 x 12.0 / 1.90  = 1263 mA
+  *     MEASURED (settled tail of the window)  = 1290 mA     2% high
+  *
+  * 2% is inside the rotor-position noise floor: repeating the same reading at
+  * different shaft angles moves it by +/-8%, because a stalled motor is a
+  * handful of commutator segments, not a resistor. Where the shaft stops is
+  * part of the measurement.
+  *
+  * isense_read_avg() - the free-running path - is a different quantity. It
+  * averages the whole period, including the recirculation time where IPROPI
+  * reads zero, so it returns something close to I_motor x D. It is kept for
+  * isense_zero() and as the sub-15%-duty fallback, and its figure is labelled
+  * Isup at the console precisely so the two are never read as one number.
+  *
+  * The trip and the synchronised reading now share units: the DRV8874
+  * regulates on instantaneous IPROPI against VREF/3 - motor current during
+  * drive - so a plateau can be compared with the commanded trip directly.
   *
   * Callers should keep recording duty alongside the reading regardless -
   * drive_duty() is right there, and `drv current` already prints both.
@@ -208,11 +268,12 @@
   *   isense_read_avg()      free-running. SUPPLY current, I_motor x D, and aliases
   *                          as described. Kept for isense_zero(), which runs with
   *                          the bridge off and no carrier to alias against, and as
-  *                          the fallback below ~4% duty.
+  *                          the fallback below the ~14.5% duty the synchronised
+  *                          path needs.
   *
-  *   isense_read_sync_avg() triggered from TIM4_CH4 at the middle of the drive
-  *                          phase. IPROPI is live there, so this is MOTOR current,
-  *                          measured directly.
+  *   isense_read_sync_avg() triggered from TIM4_CH4, in the settled tail of the
+  *                          drive phase. IPROPI is live there, so this is MOTOR
+  *                          current, measured directly.
   *
   * The synchronised path is better than the old one by more than it removes the
   * aliasing:
@@ -225,14 +286,41 @@
   *     operates near its stiction floor, which is exactly where the old path was
   *     weakest.
   *   - The trip and the reading finally share units. The DRV8874 regulates on
-  *     instantaneous IPROPI against VREF - motor current - so a plateau in a
-  *     synchronised reading can be compared with the commanded trip directly,
-  *     instead of through the quadratic correction two sections above.
+  *     instantaneous IPROPI against VREF/3 - motor current - so a plateau in a
+  *     synchronised reading can be compared with the commanded trip directly.
   *
   * The cost is time: each sample waits for the next compare event, so one
   * conversion costs a whole 50 us period rather than ~7 us. 64 samples is 3.2 ms.
   * That is why the sync default is 64 and not 1024 - past a point the extra
   * samples are averaging the wheel, not the converter.
+  *
+  *
+  * WHERE IN THE WINDOW THE SAMPLE IS TAKEN - MEASURED 2026-09-20
+  * --------------------------------------------------------------
+  * The trigger used to sit at the MIDDLE of the drive window. That is the
+  * contaminated half: IPROPI needs 5.6 us to settle after the drive edge -
+  * 500 TIM4 ticks, not the datasheet's 1.6 us tDELAY - and all of the ringing
+  * is at the leading edge. At 20% duty the midpoint read 994 raw against a
+  * settled 1143. Thirteen percent low, silently, at every duty.
+  *
+  * The budget now lives in drive.h and the placement is END-relative:
+  *
+  *     settle after the drive edge   500 ticks   measured
+  *     ADC aperture                  112 ticks   28 cycles @ 22.5 MHz
+  *     guard before the falling edge  40 ticks   chosen
+  *     -----------------------------------------
+  *     minimum honest drive window   652 ticks = 14.5% duty
+  *
+  *     trigger = window_end - (aperture + guard),  floored at start + settle
+  *
+  * so the aperture always sits in settled signal with a guard band, at any
+  * duty, and isense_sync_ready() refuses the window when it cannot.
+  *
+  * THE COST IS THE 14.5% FLOOR. It used to be 4.3%, which was not a smaller
+  * floor but a wrong one - it green-lit readings whose entire drive window was
+  * shorter than the settle time. Below 14.5% there is no synchronised reading
+  * to be had at this carrier frequency, only a free-running Isup figure or a
+  * slower carrier.
   *
   *
   * SAMPLING TIME IS 28 CYCLES ON PURPOSE
@@ -289,14 +377,19 @@ extern "C" {
    where config_get() was meant, read wrong at the call site.
    --------------------------------------------------------------------------- */
 
-/** @brief ADC and DAC reference, mV. VDDA on this board. Live: CFG_VDDA_MV. */
-#define ISENSE_VDDA_MV_DEFAULT           3300u
+/** @brief ADC and DAC reference, mV. VDDA on this board. Live: CFG_VDDA_MV.
+  *        3325 MEASURED on the bench board, not the 3300 nominal. Applied
+  *        2026-09-20, held until then so nothing moved underneath the plateau
+  *        sweep. A second board must be measured, not assumed. */
+#define ISENSE_VDDA_MV_DEFAULT           3325u
 
 /** @brief IPROPI sense resistor, ohms. MODIFIED CARRIER: 2.0k || 5.6k, the
-  *        stock 2.48k having been removed. Nominal parallel value — measure
-  *        the pair and set CFG_R_IPROPI_OHM if the meter disagrees, which on
-  *        the first board it does: 1465 measured. */
-#define ISENSE_R_IPROPI_OHM_DEFAULT      1474u
+  *        stock 2.48k having been removed. 1465 MEASURED on the fitted pair,
+  *        against the 1474 nominal parallel value. Applied 2026-09-20 alongside
+  *        VDDA, for the same reason and with the same caveat: this is a
+  *        per-board figure. Measure the pair and set CFG_R_IPROPI_OHM on any
+  *        other carrier rather than inheriting this one. */
+#define ISENSE_R_IPROPI_OHM_DEFAULT      1465u
 
 /** @brief A_IPROPI in uA per A. 450 on the DRV8874, 1000 on the DRV8876 —
   *        changing the part means changing this, and the scale moves 2.22x.
@@ -312,7 +405,7 @@ extern "C" {
 /** @brief Trip set at boot, mA. Matches what the stock carrier enforced, so
   *        lifting the 10k did not quietly make anything more dangerous.
   *        Live: CFG_TRIP_BOOT_MA. */
-#define ISENSE_TRIP_DEFAULT_MA           3000u
+#define ISENSE_TRIP_DEFAULT_MA           1000u
 
 /** @brief Buffered DAC headroom from each rail, mV. F446 datasheet figure. */
 #define ISENSE_VREF_BUF_MARGIN_MV 200u
@@ -322,12 +415,20 @@ extern "C" {
   *        free-running average covers the whole cycle rather than a slice. */
 #define ISENSE_AVG_DEFAULT        32u
 
-/** @brief Narrowest drive phase, in TIM4 ticks, that a synchronised sample will
-  *        be taken inside. The 28-cycle aperture is 1.24 us = 112 ticks at
-  *        90 MHz; 192 leaves ~40 ticks of clearance at each edge and still
-  *        admits any duty at or above 4.3%. The loaded rig stalls below 10%, so
-  *        nothing it can actually sustain comes near this floor. */
-#define ISENSE_SYNC_MIN_TICKS    192u
+/* The drive-window floor that used to live here (ISENSE_SYNC_MIN_TICKS, 192)
+   moved to drive.h as DRIVE_PHASE_MIN_TICKS on 2026-09-20, and grew to 652.
+   192 was derived from the ADC aperture alone and ignored the time IPROPI needs
+   to settle, so it admitted readings taken entirely inside the ringing. The
+   budget belongs next to place_trigger(), which is the code that has to honour
+   it. */
+
+/** @brief How many distinct ticks a synchronised average spreads itself over,
+  *        inside the settled part of the drive window. The sample COUNT is
+  *        unchanged and simply divided between them, so this costs no extra
+  *        time - 4 points is still 64 periods at the default depth. Raising it
+  *        buys less than it looks like it should: past a handful the points are
+  *        closer together than the ripple they are meant to average over. */
+#define ISENSE_SYNC_POINTS         4u
 
 /** @brief Conversions averaged by the synchronised path when the caller does
   *        not say. Each costs a whole PWM period because it waits for the next
@@ -360,14 +461,15 @@ uint16_t isense_read_avg(uint16_t samples);
 /**
   * @brief  Drive current in milliamps.
   * @param  samples  averaging depth; 0 selects ISENSE_AVG_DEFAULT.
-  * @return mA. Whether this is supply or motor current is the open question
-  *         in the header — record drive_duty() alongside it.
+  * @return mA of SUPPLY current, I_motor x D - this path averages the whole
+  *         period, including the recirculation time where IPROPI reads zero.
+  *         Record drive_duty() alongside it.
   */
 uint32_t isense_read_ma(uint16_t samples);
 
 /**
   * @brief  Whether a synchronised sample can be taken right now.
-  * @retval true   the drive phase is at least ISENSE_SYNC_MIN_TICKS wide
+  * @retval true   the drive phase is at least DRIVE_PHASE_MIN_TICKS wide
   * @retval false  duty is 0, the bridge is braking, or the phase is too narrow
   *                for the sampling aperture to sit inside it
   * @note   Ask before reading rather than interpreting a 0 afterwards - a
@@ -376,8 +478,10 @@ uint32_t isense_read_ma(uint16_t samples);
 bool isense_sync_ready(void);
 
 /**
-  * @brief  Average of @p samples conversions taken at the middle of the PWM
-  *         drive phase, offset-corrected.
+  * @brief  Average of @p samples conversions taken in the settled tail of the
+  *         PWM drive phase, offset-corrected.
+  * @note   The samples are spread over ISENSE_SYNC_POINTS ticks inside the
+  *         settled region, not stacked on one tick. Same count, same cost.
   * @param  samples  1..1024; 0 selects ISENSE_SYNC_AVG_DEFAULT.
   * @return Raw counts, or 0 if isense_sync_ready() is false.
   * @note   Costs one PWM period (50 us) per sample, not 1.78 us - it waits for

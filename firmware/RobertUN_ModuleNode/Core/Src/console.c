@@ -863,11 +863,22 @@ static void cmd_drv(int argc, char **argv)
       {
         uint16_t ticks = drive_phase_ticks();
 
-        debug_uart_printf("  sync: %u samples at tick %u, drive phase %u ticks"
-                          " = %u.%01u us of 50.0\r\n",
-                          (unsigned)((n == 0u) ? ISENSE_SYNC_AVG_DEFAULT
-                                               : ((n > 1024u) ? 1024u : n)),
-                          (unsigned)drive_phase_trigger(),
+        uint16_t depth = (uint16_t)((n == 0u) ? ISENSE_SYNC_AVG_DEFAULT
+                                              : ((n > 1024u) ? 1024u : n));
+        uint16_t first  = (uint16_t)(drive_phase_start()
+                                   + DRIVE_IPROPI_SETTLE_TICKS);
+        uint16_t last   = drive_phase_trigger();
+        uint16_t points = (uint16_t)((last > first) ? ISENSE_SYNC_POINTS : 1u);
+
+        if (points > depth) { points = depth; }
+
+        debug_uart_printf("  sync: %u samples over %u tick%s in %u..%u, drive"
+                          " phase %u ticks = %u.%01u us of 50.0\r\n",
+                          (unsigned)depth,
+                          (unsigned)points,
+                          (points == 1u) ? "" : "s",
+                          (unsigned)((points == 1u) ? last : first),
+                          (unsigned)last,
                           (unsigned)ticks,
                           (unsigned)(ticks / 90u),
                           (unsigned)(((ticks % 90u) * 10u) / 90u));
@@ -893,14 +904,15 @@ static void cmd_drv(int argc, char **argv)
 
       debug_uart_printf("  NOT SYNCHRONISED - drive phase is %u ticks, under the"
                         " %u a\r\n"
-                        "  synchronised sample needs. This average runs free"
-                        " across the PWM\r\n"
-                        "  period and can alias against it; treat it as an order"
-                        " of magnitude,\r\n"
-                        "  not a measurement. Raise duty above ~5%% for a real"
-                        " number.\r\n",
+                        "  synchronised sample needs (IPROPI settles in 500, the"
+                        " aperture is 112,\r\n"
+                        "  the guard is 40). This average runs free across the"
+                        " PWM period and can\r\n"
+                        "  alias against it; treat it as an order of magnitude,"
+                        " not a measurement.\r\n"
+                        "  Raise duty above ~15%% for a real number.\r\n",
                         (unsigned)drive_phase_ticks(),
-                        (unsigned)ISENSE_SYNC_MIN_TICKS);
+                        (unsigned)DRIVE_PHASE_MIN_TICKS);
 
       /* Below ~1% the division blows the estimate up into nonsense, so it is
          simply not offered rather than printed with a caveat nobody will read. */
@@ -955,7 +967,7 @@ static void cmd_drv(int argc, char **argv)
     uint16_t n     = (argc >= 3) ? (uint16_t)strtoul(argv[2], NULL, 10) : 64u;
     uint16_t ticks = drive_phase_ticks();
     uint16_t trig  = drive_phase_trigger();
-    uint16_t start = (ticks == 0u) ? 0u : (uint16_t)(trig - (ticks / 2u));
+    uint16_t start = drive_phase_start();
     int16_t  dperm = drive_duty();
     uint16_t peak  = 0u;
     uint16_t peak_t = 0u;
@@ -996,8 +1008,23 @@ static void cmd_drv(int argc, char **argv)
 
     for (t = from; t < to; t = (uint16_t)(t + step))
     {
-      uint16_t raw = isense_read_sync_at(t, n);
       bool     in  = (ticks != 0u) && (t >= start) && (t < (uint16_t)(start + ticks));
+      uint16_t raw;
+
+      /* Tick 0 is not a measurement and never was. CCR4 = 0 leaves TIM4_CH4
+         permanently high, so no compare edge is generated, adc_wait_eoc() times
+         out and sync_burst() returns 0 for "took nothing" - which then printed
+         as `raw 0` beside 35 real numbers and read as a current. */
+      if (t == 0u)
+      {
+        debug_uart_printf("  t %4u  %2u.%01u us  raw   --  %s\r\n",
+                          (unsigned)t,
+                          (unsigned)(t / 90u), (unsigned)((t / 9u) % 10u),
+                          in ? "*" : "");
+        continue;
+      }
+
+      raw = isense_read_sync_at(t, n);
 
       if (raw > peak) { peak = raw; peak_t = t; }
 
@@ -1010,6 +1037,12 @@ static void cmd_drv(int argc, char **argv)
 
     debug_uart_printf("  peak raw %u at tick %u; trigger currently sits at %u\r\n",
                       (unsigned)peak, (unsigned)peak_t, (unsigned)trig);
+
+    if (from == 0u)
+    {
+      debug_uart_puts("  (tick 0 reads `--`: CCR4 = 0 raises no compare event,"
+                      " so nothing is sampled there)\r\n");
+    }
   }
   else if (strcmp(argv[1], "zero") == 0)
   {

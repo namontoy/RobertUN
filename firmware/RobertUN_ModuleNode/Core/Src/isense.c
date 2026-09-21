@@ -52,18 +52,49 @@ uint32_t isense_raw_to_ma(uint16_t raw)
   return ((uint32_t)raw * isense_full_scale_ma()) / 4096u;
 }
 
+/**
+  * @brief  The DRV8874's internal VREF divider, k. MEASURED 3 on 2026-09-20.
+  * @note   Guarded the way isense_full_scale_ma() guards its divisors. A config
+  *         module that fails open is worse than no config module when the value
+  *         it hands back sets a CURRENT LIMIT - and unlike the others, a k of 0
+  *         here would divide by zero in isense_vref_mv_to_ma().
+  */
+static uint32_t vref_divider(void)
+{
+  uint32_t k = (uint32_t)config_get(CFG_VREF_DIVIDER);
+
+  return (k == 0u) ? 1u : k;
+}
+
 uint32_t isense_ma_to_vref_mv(uint32_t ma)
 {
-  return (ma * (uint32_t)config_get(CFG_A_IPROPI_UA_PER_A)
-             * (uint32_t)config_get(CFG_R_IPROPI_OHM)) / 1000000u;
+  /* x k, because the comparator sees VREF/k and not VREF: producing a trip of
+     `ma` therefore needs k times the voltage the resistor alone would suggest.
+
+     64-BIT ON PURPOSE. In 32 bits this wrapped, and k made it wrap three times
+     sooner: `drv trip 3000` - which is exactly what habit types, the old boot
+     default - computes 3000 x 3 x 450 x 1465 = 5.93e9, over uint32, and would
+     have come back as ~811 mA reported as though it were honoured instead of
+     clamping to the 1580 mA ceiling. The pre-k code had the same fault above
+     6516 mA; it was simply further from anything anyone typed. */
+  uint64_t mv = ((uint64_t)ma * (uint64_t)vref_divider()
+                             * (uint64_t)config_get(CFG_A_IPROPI_UA_PER_A)
+                             * (uint64_t)config_get(CFG_R_IPROPI_OHM)) / 1000000u;
+
+  /* Past this is unreachable on a 3.3 V DAC and exists only so a typo clamps
+     rather than wraps. The callers do the real clamping against VREF's floor
+     and ceiling; this one just keeps the arithmetic honest on the way there. */
+  return (mv > 65535u) ? 65535u : (uint32_t)mv;
 }
 
 uint32_t isense_vref_mv_to_ma(uint32_t mv)
 {
-  uint32_t denom = (uint32_t)config_get(CFG_A_IPROPI_UA_PER_A)
-                 * (uint32_t)config_get(CFG_R_IPROPI_OHM);
+  uint64_t denom = (uint64_t)vref_divider()
+                 * (uint64_t)config_get(CFG_A_IPROPI_UA_PER_A)
+                 * (uint64_t)config_get(CFG_R_IPROPI_OHM);
 
-  return (denom == 0u) ? 0u : ((mv * 1000000u) / denom);
+  return (denom == 0u) ? 0u
+                       : (uint32_t)(((uint64_t)mv * 1000000ull) / denom);
 }
 
 /* --- measurement --------------------------------------------------------- */
@@ -191,7 +222,7 @@ static bool adc_wait_eoc(void)
 
 bool isense_sync_ready(void)
 {
-  return drive_phase_ticks() >= (uint16_t)ISENSE_SYNC_MIN_TICKS;
+  return drive_phase_ticks() >= (uint16_t)DRIVE_PHASE_MIN_TICKS;
 }
 
 /**
@@ -260,6 +291,96 @@ static uint16_t sync_burst(uint16_t samples)
   return (taken == 0u) ? 0u : (uint16_t)(sum / taken);
 }
 
+/**
+  * @brief  Spread @p samples across several ticks inside the SETTLED part of
+  *         the drive window and return their mean, raw.
+  *
+  * Same total number of periods as a single-tick burst, so this costs exactly
+  * what it used to - 64 samples is still 64 PWM periods, still 3.2 ms - and
+  * measures exactly the same quantity. What it buys is scatter: one tick is one
+  * point on a waveform that still has commutation ripple on it, and the Sep 20
+  * tail wandered 739..764 raw across the settled region. Averaging a few points
+  * in that region reports the region rather than whichever point the trigger
+  * happened to land on.
+  *
+  * The region is [start + SETTLE, start + ticks - APERTURE - MARGIN] - the same
+  * bounds place_trigger() uses, for the same reasons. At the narrowest admissible
+  * window it collapses to a single point and this degrades to one tick, which is
+  * the budget being honest rather than an edge case to guard.
+  *
+  * Deliberately NOT used by isense_read_sync_at(): `drv iscan` has to stay a
+  * single-tick probe, because it is the instrument that measures where the
+  * settled region actually is. Averaging inside it would hide the ringing this
+  * whole mechanism was built to avoid.
+  */
+static uint16_t sync_burst_spread(uint16_t samples)
+{
+  uint32_t start  = (uint32_t)drive_phase_start();
+  uint32_t ticks  = (uint32_t)drive_phase_ticks();
+  uint32_t back   = (uint32_t)DRIVE_ADC_APERTURE_TICKS
+                  + (uint32_t)DRIVE_TRIGGER_MARGIN_TICKS;
+  uint32_t first  = start + (uint32_t)DRIVE_IPROPI_SETTLE_TICKS;
+  uint32_t last   = (ticks > back) ? (start + ticks - back) : first;
+  uint32_t sum    = 0u;
+  uint16_t taken  = 0u;
+  bool     sat    = false;
+  uint16_t n;
+  uint16_t points;
+  uint16_t i;
+
+  n = (samples == 0u) ? (uint16_t)ISENSE_SYNC_AVG_DEFAULT : samples;
+  if (n > 1024u) { n = 1024u; }
+
+  if (last <= first)
+  {
+    /* No room to spread - take the whole burst where place_trigger() already
+       put it rather than inventing a second opinion about where that is. */
+    return sync_burst(n);
+  }
+
+  points = (uint16_t)ISENSE_SYNC_POINTS;
+  if (points > n) { points = n; }          /* never fewer than one sample each */
+  if (points == 0u) { points = 1u; }
+
+  for (i = 0u; i < points; i++)
+  {
+    /* Evenly spaced across [first, last] inclusive at both ends, so the two
+       most informative points - just after the settle and just before the
+       guard - are always among those taken. */
+    uint32_t tick = (points == 1u)
+                  ? last
+                  : (first + (((last - first) * i) / (points - 1u)));
+
+    /* The remainder goes to the first point rather than being dropped, so the
+       total is exactly n and the average is not quietly taken over fewer
+       samples than the caller asked for. */
+    uint16_t share = (uint16_t)(n / points)
+                   + ((i == 0u) ? (uint16_t)(n % points) : 0u);
+
+    uint16_t mean;
+
+    drive_trigger_override((uint16_t)tick);
+    mean = sync_burst(share);
+
+    /* sync_burst() overwrites was_saturated per call, so a point that clipped
+       would be forgotten the moment the next point came back clean. Saturation
+       is a safety flag: accumulate it and re-assert it at the end. */
+    sat = sat || was_saturated;
+
+    if (mean != 0u)
+    {
+      sum += (uint32_t)mean * share;
+      taken = (uint16_t)(taken + share);
+    }
+  }
+
+  drive_trigger_restore();
+
+  was_saturated = sat;
+
+  return (taken == 0u) ? 0u : (uint16_t)(sum / taken);
+}
+
 uint16_t isense_read_sync_avg(uint16_t samples)
 {
   uint16_t mean;
@@ -272,7 +393,7 @@ uint16_t isense_read_sync_avg(uint16_t samples)
     return 0u;
   }
 
-  mean = sync_burst(samples);
+  mean = sync_burst_spread(samples);
 
   return (mean > zero_offset) ? (uint16_t)(mean - zero_offset) : 0u;
 }

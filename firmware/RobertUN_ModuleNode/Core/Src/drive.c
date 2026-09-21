@@ -34,6 +34,7 @@ static volatile int16_t  fault_duty;
    timer is running - which is the failure mode that would put an ADC sample
    in the blanked phase and look like a real reading. See drive.h. */
 static uint16_t phase_ticks;
+static uint16_t phase_start;
 static uint16_t phase_trigger;
 
 /** @brief Compare value for 100% output. CCR > ARR never matches, so the
@@ -55,7 +56,7 @@ static void apply(uint32_t ccr1, uint32_t ccr2)
 }
 
 /**
-  * @brief  Record where the drive phase is and point TIM4_CH4 at its middle.
+  * @brief  Record where the drive phase is and point TIM4_CH4 at its END.
   * @param  start  first tick of the drive phase
   * @param  ticks  its width; 0 means there is no drive phase
   *
@@ -70,13 +71,60 @@ static void apply(uint32_t ccr1, uint32_t ccr2)
   * free-running path rather than sampling somewhere outside the drive window.
   * Failing to sample is recoverable; sampling at the wrong phase is the bug
   * this whole mechanism exists to remove.
+  *
+  * THE TRIGGER IS PLACED FROM THE END OF THE WINDOW, NOT ITS MIDDLE - 2026-09-20
+  * ---------------------------------------------------------------------------
+  * It used to sit at the midpoint, which was wrong by 13% at 20% duty. All the
+  * contamination is at the LEADING edge: IPROPI takes DRIVE_IPROPI_SETTLE_TICKS
+  * to settle after the bridge turns on - 5.6 us measured, 3.5x the datasheet's
+  * 1.6 us tDELAY - and the midpoint is as close to that edge as the window
+  * allows. Backing off the trailing edge by exactly the sampling aperture plus a
+  * guard band puts the whole aperture in settled signal and self-adjusts at
+  * every duty, where any fixed fraction of the window does not.
+  *
+  * The floor matters as much as the placement. A window narrower than
+  * DRIVE_PHASE_MIN_TICKS cannot hold settle + aperture + margin at all;
+  * isense_sync_ready() refuses those outright, but `drv iscan` deliberately
+  * overrides the gate, so the floor here keeps even an overridden placement from
+  * landing before the signal has settled.
   */
 static void place_trigger(uint32_t start, uint32_t ticks)
 {
   phase_ticks = (uint16_t)ticks;
+  phase_start = (uint16_t)((ticks == 0u) ? 0u : start);
 
-  phase_trigger = (ticks == 0u) ? (uint16_t)DRIVE_CCR_FULL
-                                : (uint16_t)(start + (ticks / 2u));
+  if (ticks == 0u)
+  {
+    phase_trigger = (uint16_t)DRIVE_CCR_FULL;
+  }
+  else
+  {
+    uint32_t back = (uint32_t)DRIVE_ADC_APERTURE_TICKS
+                  + (uint32_t)DRIVE_TRIGGER_MARGIN_TICKS;
+    uint32_t tick;
+
+    /* Back off the trailing edge far enough for the aperture plus its guard. */
+    tick = (ticks > back) ? (start + ticks - back) : start;
+
+    /* ...but never sample before IPROPI has settled. These two only conflict in
+       a window under DRIVE_PHASE_MIN_TICKS, which is refused for measurement -
+       the floor exists so an overridden trigger still lands somewhere defensible
+       rather than in the ringing. */
+    if (tick < (start + (uint32_t)DRIVE_IPROPI_SETTLE_TICKS))
+    {
+      tick = start + (uint32_t)DRIVE_IPROPI_SETTLE_TICKS;
+    }
+
+    /* A trigger at or past CCR_FULL never fires. Clamp to the last tick that
+       does, so a pathological width degrades to a late sample rather than to
+       silence. */
+    if (tick >= (uint32_t)DRIVE_CCR_FULL)
+    {
+      tick = (uint32_t)DRIVE_CCR_FULL - 1u;
+    }
+
+    phase_trigger = (uint16_t)tick;
+  }
 
   __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_4, (uint32_t)phase_trigger);
 }
@@ -308,6 +356,11 @@ uint16_t drive_limit(void)
 uint16_t drive_phase_ticks(void)
 {
   return phase_ticks;
+}
+
+uint16_t drive_phase_start(void)
+{
+  return phase_start;
 }
 
 uint16_t drive_phase_trigger(void)

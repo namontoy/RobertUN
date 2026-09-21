@@ -88,7 +88,13 @@
 
 /** @brief Bumped when a key's meaning changes, discarding stored records.
   *        Adding or removing keys is handled by the key count, not by this. */
-#define CONFIG_VERSION      1u
+/* 2 since 2026-09-20: trip_ma CHANGED MEANING. The DRV8874 compares IPROPI
+   against VREF/3, so a stored "3000" written by a v1 firmware asked for 3000 mA
+   and got 1000. Reading it positionally into a build that now honours the
+   request would turn it into a real 3 A limit on a motor whose cold stall is
+   6.3 A - silently tripling a protection limit is exactly what this field is
+   here to prevent. */
+#define CONFIG_VERSION      2u
 
 /**
   * @brief One tunable per entry. Order is free; it is not part of the stored
@@ -105,6 +111,7 @@ typedef enum
   CFG_MOTOR_RAIL_MV,      /*!< measured motor terminal voltage, mV */
   CFG_ISENSE_AVG,         /*!< conversions averaged by a bare `drv current` */
   CFG_ISENSE_SAT_RAW,     /*!< raw count at or above which the ADC is clipping */
+  CFG_VREF_DIVIDER,       /*!< DRV8874 internal VREF divider k - measured 3 */
   CFG_KEY_COUNT
 } config_key_t;
 

@@ -301,21 +301,83 @@ void drive_clear_fault(void);
  * when the 28-cycle sampling time was chosen; this is it being opened.
  * -------------------------------------------------------------------------- */
 
+/* ---------------------------------------------------------------------------
+   THE SAMPLING TIMING BUDGET - MEASURED 2026-09-20
+   ---------------------------------------------------------------------------
+   Every number below is in TIM4 ticks: 11.11 ns at 90 MHz, 4500 to the 50 us
+   period. They live here rather than in isense.h because they are properties of
+   the DRIVE WINDOW, and because drive.c cannot include isense.h without a
+   circular include - isense.c already includes this file.
+
+   The settle figure is the one that was wrong for four days. The DRV8874
+   datasheet quotes 1.6 us of tDELAY for IPROPI; the bench says 5.6 us. At 20%
+   duty the drive edge is at tick 3600 and the reading rings through 1757, 212,
+   1659, 1275 and 994 raw before going flat from tick 4100. Almost certainly the
+   sense network rather than the mirror itself, but the cause does not change the
+   budget - what matters is that a guard band derived from the datasheet admitted
+   readings that were pure ringing, and the console reported them as current.
+
+   Placement follows from these directly: back off the END of the window by
+   APERTURE + MARGIN, and refuse any window that cannot hold all three. See
+   place_trigger() in drive.c.
+   --------------------------------------------------------------------------- */
+
+/** @brief How long IPROPI takes to settle after the bridge turns on. MEASURED,
+  *        5.6 us - 3.5x the datasheet tDELAY. Do not restore the datasheet
+  *        figure without re-running the iscan that produced this one. */
+#define DRIVE_IPROPI_SETTLE_TICKS   500u
+
+/** @brief The ADC's sampling aperture: 28 cycles at PCLK2/4 = 22.5 MHz is
+  *        1.24 us. Only the SAMPLE needs the input stable - the 12 conversion
+  *        cycles that follow hold the charge - so this is the aperture, not the
+  *        1.78 us full conversion. */
+#define DRIVE_ADC_APERTURE_TICKS    112u
+
+/** @brief Guard band between the end of the aperture and the falling edge.
+  *        0.44 us of slop for jitter and for the settle figure being a little
+  *        optimistic on some other board. */
+#define DRIVE_TRIGGER_MARGIN_TICKS   40u
+
+/** @brief Narrowest drive window that can hold a defensible sample: settle,
+  *        then the aperture, then the guard. 652 ticks is 14.5% duty.
+  *
+  *        This replaced a floor of 192 ticks (4.3% duty) on 2026-09-20, which
+  *        was derived from the aperture alone and ignored the settle entirely -
+  *        so it green-lit readings whose whole window was shorter than the time
+  *        IPROPI needs to be worth reading. Everything measured below ~13% duty
+  *        before that date is ringing, including two figures that were recorded
+  *        as real: 87 mA at 13% duty and 211 mA at 8%. */
+#define DRIVE_PHASE_MIN_TICKS  (DRIVE_IPROPI_SETTLE_TICKS + \
+                                DRIVE_ADC_APERTURE_TICKS + \
+                                DRIVE_TRIGGER_MARGIN_TICKS)
+
 /**
   * @brief  Width of the drive phase, in TIM4 ticks (11.11 ns each, 4500 to the
   *         period).
   * @return 0 when there is no drive phase at all - duty 0, or braking.
   *
-  * The ADC's 28-cycle sampling aperture is 1.24 us, or 112 ticks, and has to
-  * fit inside this with margin at both ends. Callers compare against
-  * ISENSE_SYNC_MIN_TICKS rather than assuming: at 20 kHz a 4% duty is only
-  * 2 us wide, and a sample that straddles the edge reads the blanked phase.
+  * The whole timing budget above has to fit inside this. Callers compare against
+  * DRIVE_PHASE_MIN_TICKS rather than assuming: at 20 kHz a 4% duty is only 2 us
+  * wide, which is shorter than IPROPI takes to settle, never mind sampling it.
   */
 uint16_t drive_phase_ticks(void);
 
 /**
-  * @brief  TIM4 count at which the ADC trigger is armed - the middle of the
-  *         drive phase, or CCR_FULL when the phase is too narrow to sample.
+  * @brief  First tick of the drive phase.
+  * @return 0 when there is no drive phase - check drive_phase_ticks() first.
+  *
+  * Slow decay drives the TAIL of the period and fast decay the head, so this is
+  * not derivable from the duty alone. It is also not derivable from
+  * drive_phase_trigger() any more: the trigger used to sit at the midpoint, and
+  * `drv iscan` reconstructed the window as `trigger - ticks/2` from it. That
+  * arithmetic broke the moment the trigger moved to the end of the window, which
+  * is why this accessor exists rather than the caller doing the sum.
+  */
+uint16_t drive_phase_start(void);
+
+/**
+  * @brief  TIM4 count at which the ADC trigger is armed - near the END of the
+  *         drive phase, or CCR_FULL when there is no phase to sample.
   * @note   Diagnostic. `drv current` prints it, so a reading taken at the wrong
   *         phase shows up as a number rather than being inferred from nonsense
   *         further down the line.

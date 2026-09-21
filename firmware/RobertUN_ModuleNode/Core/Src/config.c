@@ -50,7 +50,7 @@ static const key_info_t keys[CFG_KEY_COUNT] =
       "driver current-mirror gain - 450 DRV8874, 1000 DRV8876" },
 
   [CFG_TRIP_BOOT_MA] =
-    { "trip_ma",      "mA",      0,  6000, (int32_t)ISENSE_TRIP_DEFAULT_MA,
+    { "trip_ma",      "mA",      0,  1600, (int32_t)ISENSE_TRIP_DEFAULT_MA,
       "regulation trip - applied at boot, and live when set here" },
 
   [CFG_DUTY_LIMIT] =
@@ -68,6 +68,15 @@ static const key_info_t keys[CFG_KEY_COUNT] =
   [CFG_ISENSE_SAT_RAW] =
     { "sat_raw",      "",     1000,  4095, (int32_t)ISENSE_SATURATED_RAW_DEFAULT,
       "raw count at or above which the ADC itself is clipping" },
+
+  /* The range starts at 1, not 0: 0 is not a divider, it is a divide-by-zero in
+     the path that sets a current limit. isense.c guards it anyway. Setting this
+     to 1 does not make the driver stop dividing - it makes every trip three
+     times what the console claims, which is the bug this key exists to record
+     the fix for. Change it only if the DRIVER PART changes. */
+  [CFG_VREF_DIVIDER] =
+    { "vref_div",     "",        1,     4, 3,
+      "DRV8874 internal VREF divider - measured 3, Sep 20 2026" },
 };
 
 /* ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 # RobertUN — Wheel Controller Firmware: Full Progress Log
-**Last updated:** September 19, 2026 (PMODE confirmed latched in PWM mode from the OUT1/OUT2 decay state; ground return rebuilt; motor rail raised to 12 V at VM)
+**Last updated:** September 20, 2026 (plateau sweep done — the DRV8874 compares IPROPI against VREF/3, so every `drv trip` is 3× too high; current sense calibrated against physics; three bugs in the synchronised sampler)
 
 **Referenced from:** `PROJECT_CONTEXT_WHEEL_FW.md`, which carries a one-line-per-entry version of this log. This file is the verbatim, unedited detail behind each entry — pull it in when you need the exact numbers, register values, or reasoning chain, not for routine session start.
 
@@ -16,6 +16,140 @@
 
 - **Sep 19 (later) — PMODE CONFIRMED LATCHED IN PWM MODE, ground return rebuilt,
   motor rail raised to 12 V. The Sep 16 blocker is cleared and current
+- **Sep 20 — PLATEAU SWEEP DONE: the DRV8874 compares IPROPI against VREF/3.
+  Every `drv trip` is 3× too high, the real trip range is 100–1558 mA, the
+  current-sense chain is calibrated against physics for the first time, and
+  three bugs were found in the Sep 16 synchronised sampler.**
+  - **Method.** Motor stalled against a mechanical hold (`enc` confirming
+    `rpm 0.00` before every run), 20% duty, slow decay, 12.0 V at VM. Each point
+    is `drv iscan 64 3550 4500 50` and the figure taken is the **mean of the
+    settled tail, ticks 4100–4450** (8 points), not the `drv current` single
+    sample — see the trigger-placement bug below. Scale 1.215 mA/count.
+  - **The unregulated reference validates the whole chain.** With the trip
+    parked above demand, 20% duty at stall read **1062 raw = 1290 mA** against
+    `0.20 × 12.0 V / 1.90 Ω` = **1263 mA predicted — 2%.** IPROPI, the modified
+    1.474 kΩ R_IPROPI, `ISENSE_VDDA_MV`, the ADC and `isense_raw_to_ma()` all
+    agree with an independent physical prediction. First end-to-end current
+    calibration the project has had.
+  - **The sweep** (all at 20% duty stalled; "demand" = unregulated current):
+
+    | `drv trip` | VREF | tail raw | mA | reading |
+    |---|---|---|---|---|
+    | 4673 | 3099 mV | 1062 | 1290 | unregulated reference (early) |
+    | 4673 | 3099 mV | 1143 | 1389 | unregulated reference (late) |
+    | 3297 | 2187 mV | 987 | 1199 | ambiguous — sat on the onset |
+    | 2997 | 1988 mV | 768 | 933 | flat plateau |
+    | 2995 | 1987 mV | 750 | 911 | flat plateau, repeat |
+    | 1997 | 1325 mV | 171 | 208 | ramp then collapse |
+    | 999 | 663 mV | 59 | 72 | ramp then collapse |
+
+  - **`k = 1` refuted.** A trip of 1997 mA sits above every demand measured
+    (1290–1389 mA), so under `k = 1` nothing would clamp and the tail would have
+    read ~1062. It read 171.
+  - **`k = 2` refuted.** At trip 2997, `k = 2` puts the limit at 1499 mA, again
+    above demand, so the tail should have been the unregulated value. It sat
+    28–33% below the reference band. For that to be demand rather than
+    regulation, `R_motor` would have to be 2.57 Ω — 35% above the measured
+    1.90 Ω, a ~90 °C winding rise. Not credible.
+  - **`k = 3` confirmed predictively, by demand-independence.** The two trip-2997
+    plateaus (933 and 911 mA) were taken either side of a reference that moved
+    **+7.6%** (1062 → 1143 raw). A current limit must ignore that; a measurement
+    of current must track it. The plateau moved **−2.3%**, inside its own ±1.5%
+    tail scatter. The prediction was 768 raw if regulating, 826 if tracking; it
+    came in at **750**.
+  - **The regulated average sits at ~92% of the peak limit.** Plateaus of 933 and
+    911 mA against a nominal `trip/3` of 999 and 998 mA. The shortfall is
+    chopping ripple: the peaks touch the limit, the troughs do not.
+  - **Why the shapes differ, and the regime that is readable.** With the limit
+    29–39% below demand the current hovers at the threshold and the tail is
+    **flat**. With it ~94% below (trip 1997) the current slams into the limit
+    early and the tail **collapses to near zero**. That collapse is *not* the
+    current going away — falling from ~1500 mA to ~70 mA in 5 µs is two orders
+    of magnitude faster than L/R decay allows (τ = L/R ≈ 0.9 ms), and body-diode
+    coasting at 12 V would shed only ~40 mA over that span. **IPROPI goes blind
+    while regulation is active.** W5 cannot measure current whenever the loop is
+    hard-limiting.
+  - **Regulation is audible.** A low but clear high-pitched tone appeared at
+    exactly the points the electrical data says the driver was limiting.
+    Chopping adds switching events unrelated to the 20 kHz carrier and drops the
+    acoustic signature into hearing range. Useful bench indicator: chirp means
+    limiting, no console required.
+  - **CONSEQUENCE 1 — `drv trip` and `cfg trip_ma` are 3× too high.** Commanding
+    2997 mA yields a 999 mA peak limit. The console's printed range of
+    301–4673 mA is really **100–1558 mA**, and the **3000 mA boot default is
+    really 1000 mA** — which is what has actually been protecting the bench all
+    day.
+  - **CONSEQUENCE 2 — the maximum trip is always exactly one third of the ADC
+    ceiling, whatever R_IPROPI is.** Both the comparator and the ADC read the
+    same resistor, so the ceiling is `VDDA / (R × 450 µA/A)` and the trip tops
+    out at `VREF_max/3` over the same product. Reaching a 4 A trip means
+    accepting a ~12 A ceiling (R_IPROPI ≈ 600 Ω) and surrendering two thirds of
+    the ADC's resolution to get it. **That is a hardware trade for HW1, not a
+    firmware fix.** The cold stall at 12 V is ~6.3 A and is presently
+    unreachable as a trip by a factor of four.
+  - **BUG 1 — IPROPI needs 5.6 µs to settle, not the datasheet's 1.6 µs
+    `tDELAY`.** From the trip-4673 run, the drive edge is at tick 3600 and the
+    reading rings through 3650 (1757), 3700 (212), 3800 (1659), 3950 (1275),
+    4050 (994) before going flat from **tick 4100 — 500 ticks, 5.6 µs.** Almost
+    certainly ringing in the sense network rather than the mirror itself.
+  - **BUG 2 — `ISENSE_SYNC_MIN_TICKS` is 192 and needs to be ~600.** At 192 the
+    gate admits a reading at 4.27% duty, where the entire drive window is
+    shorter than the settling time. **Nothing measured below ~13–15% duty is
+    valid**, and the console reports those readings with no warning at all.
+  - **BUG 3 — `place_trigger()` samples the window midpoint, which is the
+    contaminated half.** All the ringing is at the leading edge, so the midpoint
+    is as close to it as the window permits. At 20% duty the midpoint (tick
+    4050) read 994 against a settled 1143 — **13% low**. It belongs at 75–85%
+    through the window. The Sep 15 conclusion that the trigger placement was
+    correct is withdrawn.
+  - **Casualties of bugs 2 and 3, measured the same day:** `drv current` gave
+    **87 mA at 13% duty free-running** and **211 mA at 8% duty stalled** (against
+    505 mA predicted). Both sampled inside the ringing. Both are garbage.
+  - **Zero offset is a non-issue.** `drv zero` with nSLEEP low returned **0
+    counts over 256 samples** — legitimate, since the sleeping mirror is high-Z,
+    R_IPROPI pulls the ADC input to ground, and there is no negative rail to
+    dither below. The *awake* pedestal, which `drv zero` structurally cannot
+    reach (it refuses while the bridge is live), was measured instead by an
+    `iscan` at `duty 0` with nSLEEP high: **flat 3–5 counts ≈ 4 mA** across the
+    whole period. Negligible, and no firmware change needed.
+  - **That zero-duty scan also served as the control that confirmed PWM mode a
+    third time.** The 13% scan showed 107–339 raw through the decay phase where
+    Sep 15 read exact zeros; the zero-duty scan proves that is real recirculating
+    current and not a mirror pedestal. IPROPI sees the low-side FETs during
+    brake, which only low-side decay produces.
+  - **Tick 0 in an `iscan` is a non-measurement, always.** It reads exactly 0 in
+    every scan including the zero-duty control, because CCR4 = 0 leaves TIM4_CH4
+    permanently high and never produces a compare edge — `adc_wait_eoc()` times
+    out and `sync_burst()` returns 0 on `taken == 0`. Documented behaviour
+    (`drive.c`, `place_trigger()`), but it prints as though it were data.
+  - **Stall measurements carry a ±8% rotor-position noise floor.** The
+    unregulated reference moved 1062 → 1143 raw (+7.6%) across the session, and
+    the encoder crept tens of counts *during* individual runs (1181203 → 1181272
+    inside one scan). The hold is compliant, the motor twists against it, and at
+    stall the armature resistance depends on which commutator segments are
+    bridged. **Every plateau point needs its own reference taken back-to-back**;
+    one reference compared against forty minutes of later points is worthless,
+    and treating it as a constant cost one wasted confirmation run (trip 3297,
+    which landed inside the scatter band and resolved nothing).
+  - **RETRACTION — the Sep 12 "`isense_read_ma()` returns SUPPLY current"
+    conclusion, and its stated cause, are both wrong.**
+    - The cause on record was that "the carrier's 20 kΩ IMODE strap blanks the
+      mirror during recirculation." It was never IMODE. The driver was in
+      **independent half-bridge**, so decay was **high-side**, and IPROPI —
+      which mirrors only the low-side FETs, drain→source — is physically blind
+      to it.
+    - The conclusion itself was a **sampling artifact that a later commit already
+      fixed**. `place_trigger()` landed in `9187dc9` on **Sep 16**; on Sep 12
+      there was no phase-synchronised sampling at all. The ADC free-ran and
+      averaged across the whole period, and a free-running average of a signal
+      that is zero for `1 − D` of it is `I_motor × D` by construction. The Sep 16
+      trigger work, not the Sep 19 mode fix, is what turned the reading into
+      motor current.
+    - **Therefore the plateau-sweep formula recorded in the carrier section —
+      `trip² × R_motor / Vm`, quadratic in the trip — describes only the
+      unsynchronised fallback path.** On the synchronised path the plateau is
+      `trip/k` directly. Applying the quadratic would have produced a badly wrong
+      `k`.
   regulation is live for the first time.**
   - **Ground return replaced: three thicker conductors** from breadboard PGND to
     the MCU carrier board, in place of the single DuPont that carried the Sep 16

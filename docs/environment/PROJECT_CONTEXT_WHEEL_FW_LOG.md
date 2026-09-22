@@ -1,5 +1,5 @@
 # RobertUN — Wheel Controller Firmware: Full Progress Log
-**Last updated:** September 20, 2026 (task 20 implemented — k=3 applied as a config key, end-relative trigger placement, multi-tick averaging; VDDA/R_IPROPI constants applied; W4 closed and W5 opened)
+**Last updated:** September 21, 2026 (task 20 bench-verified and closed — `drv current` +0.4% against physics at 12 V; the old midpoint tick re-reproduced its own 14–16% error; a new decay-phase lead)
 
 **Referenced from:** `PROJECT_CONTEXT_WHEEL_FW.md`, which carries a one-line-per-entry version of this log. This file is the verbatim, unedited detail behind each entry — pull it in when you need the exact numbers, register values, or reasoning chain, not for routine session start.
 
@@ -13,6 +13,154 @@
 > the split: that file gets read every session, this one only on demand.
 
 ## Progress log (most recent first) — full detail
+
+- **Sep 21 — TASK 20 BENCH-VERIFIED. `drv current` now agrees with physics to
+  +0.4%, and the same traces re-reproduced the bug it was built to remove.**
+  One verification run, taken one step at a time, on the 12.0 V rail with the
+  shaft held.
+
+  **Step 1 — the `cfg` check, deliberately before any current reading.**
+  `CONFIG_VERSION` 1 → 2 and `CFG_KEY_COUNT` 8 → 9 meant `scan()` rejected every
+  stored record and the board booted on defaults. It came up **already
+  calibrated**, which was the whole point of putting the measured constants into
+  the defaults rather than leaving them as saved overrides:
+
+  ```
+  config v2, 9 keys, slot 0/1024 used
+    vdda_mv    3325  (default 3325)
+    r_ipropi   1465  (default 1465)
+    a_ipropi    450
+    trip_ma    1000  (0..1600)
+    duty_limit 1000
+    rail_mv   12000
+    isense_avg   32
+    sat_raw    4050
+    vref_div      3
+  ```
+
+  No `*` override markers anywhere — the calibration is the default now. Then
+  the trip ceiling, which validates item 1 without spinning the motor:
+
+  ```
+  drv trip 1580
+    trip 1579 mA  (VREF 3123 mV, DAC code 3847, buffer on)
+    range 101..1580 mA, ADC ceiling 5043 mA
+  ```
+
+  **Predicted 1580 / 101 / 5043 on the desk; measured 1579 / 101 / 5043.** The
+  1 mA is integer truncation in the round trip, not error.
+
+  **Step 2 — the calibration re-take. This is the measurement task 20 existed
+  for.** 20% duty, shaft stalled, `drv iscan 64 3550 4500 50` either side of a
+  `drv current`:
+
+  | Quantity | raw | mA |
+  |---|---|---|
+  | `iscan` settled tail, run 1 (ticks 4100–4400) | 1056 | 1300 |
+  | `iscan` settled tail, run 2 (ticks 4100–4400) | 963 | 1186 |
+  | **`drv current`** | **1030** | **1268** |
+  | predicted, `D × Vm / R_motor` = 0.20 × 12.0 / 1.90 | 1026 | **1263** |
+
+  `drv current` is **+0.4%** on the prediction. The acceptance criterion written
+  into task 20 was "landing within a few percent of the iscan tail instead of
+  ~13% below it"; it landed *between* the two tails, on physics.
+
+  And the `sync:` line confirms three separate items at once:
+
+  ```
+  Imotor 1268 mA  (raw 1030, offset 0)  at duty +20%  decay slow
+    sync: 64 samples over 4 ticks in 4100..4348, drive phase 900 ticks = 10.0 us of 50.0
+    implies Isup 253 mA (Imotor x D)
+  ```
+
+  `over 4 ticks` is the spread live (not its single-tick fallback); `4100` is the
+  500-tick settle floor honoured exactly; `4348` is the end-relative placement
+  computed exactly as the desk check predicted.
+
+  **The bug re-reproduced itself in the same data, which is better evidence than
+  the fix passing.** The old midpoint tick is 4050, and it is still in every
+  scan:
+
+  | | midpoint t4050 | that run's tail | error |
+  |---|---|---|---|
+  | run 1 | 905 | 1056 | **−14.3%** |
+  | run 2 | 808 | 963 | **−16.1%** |
+
+  So the ~13% low reading measured on Sep 20 was not a one-off — it is where the
+  midpoint convention always sat. `drv current` at 1030 raw is a **27%**
+  correction over the 808 the old code would have reported in run 2.
+
+  **The ±8% rotor-position noise floor showed up again, and it is the dominant
+  uncertainty now.** Two `iscan` runs at a nominally *identical* operating point
+  gave tails of 1056 and 963 — **9.3% apart**. Nothing was changed between them.
+  This is larger than every remaining systematic error in the current path, and
+  it is why the prediction sitting between the two tails is the right way to read
+  this result rather than picking either tail as "the" value. Back-to-back
+  references remain mandatory.
+
+  **The guard band earned itself.** Tick 4450 — 50 ticks from the window end, so
+  its 112-tick aperture runs 62 ticks past the falling edge — read **806** in run
+  1 against a 1056 tail (−24%) and 924 in run 2 against 963 (−4%). The trigger at
+  4348 + 112 aperture = 4460 keeps the whole aperture 40 ticks clear of the edge.
+  Without the 40-tick margin the sampler would be reading into the decay phase at
+  every duty.
+
+  **Step 3 — duty 0, volunteered rather than asked for, and it checked two
+  things.** `drv iscan 64 3550 4500 50` at duty 0 printed `no drive phase at this
+  duty - scanning anyway, every point should read the same` and then read a flat
+  **4–5 raw at every one of the 19 ticks**, with `trigger currently sits at 4500`.
+  That is the `ticks == 0 → DRIVE_CCR_FULL` case confirmed, and it reproduces
+  Sep 20's "flat 3–5" pedestal. `drv current` at duty 0 correctly fell through:
+  `Isup 2 mA` plus the rewritten NOT SYNCHRONISED warning citing the 652-tick
+  minimum. The gate refuses what it should refuse.
+
+  **Not exercised:** the tick-0 `--` cosmetic fix. Every scan started at 3550;
+  it needs one with `from = 0`.
+
+  **Loose end worth 0.4%:** `offset 0` in both readings means `drv zero` had not
+  been run this boot, so every reading carries the 4-count (~5 mA) pedestal the
+  duty-0 scan just measured. Subtracting it moves 1268 → 1263 — cosmetically
+  exact, materially irrelevant, but free.
+
+  **NEW LEAD — the decay phase may be readable, which would dissolve the W5
+  low-duty blind spot.** Tick 3550 sits in the decay (brake) window, 50 ticks
+  before the drive edge:
+
+  | run | decay t3550 | drive tail | ratio |
+  |---|---|---|---|
+  | 1 | 709 | 1056 | **0.671** |
+  | 2 | 642 | 958 | **0.670** |
+
+  Three digits of agreement, across two runs whose absolute levels differ by 9%.
+  That is a *reproducible attenuation*, not noise. And it is not physics: with
+  both low-side FETs on and a stalled rotor there is no back-EMF to drive decay,
+  so over a 40 µs brake window at τ = L/R = 0.9 ms the current should fall
+  **4.4%**, not 33%. Something in the DRV8874's mirror reports the brake-phase
+  current at roughly two thirds — plausibly because it mirrors one sense element
+  while the circulating current splits between two low-side FETs.
+
+  **Why this matters:** the standing W5 constraint is that no synchronised
+  reading is possible below **14.5% duty**, because the drive window gets shorter
+  than the 500-tick settle — and the rover creeps below that (breakaway was
+  12–14% duty). The decay window is *widest* exactly where the drive window is
+  too narrow. If the 0.670 factor holds across duties, a current inner loop
+  becomes possible at low duty with a single calibration constant, and the
+  fallback options (free-running `Isup`, or a slower carrier in that band) become
+  unnecessary. **Two points at one duty is a lead, not a result** — it needs a
+  decay-phase scan across several duties before anything is designed on it.
+
+  **Console fixed afterwards, not during.** The one remaining lie, `drv trip`'s
+  `1 code = 1 ADC LSB`, is now `1 DAC code = 1/3 ADC LSB (VREF/3)` — a DAC step
+  moves VREF by one step but the comparator sees VREF/3, so it moves the trip by
+  one third of a current step (0.410 mA, against the 1.231 mA ADC LSB). This was
+  known wrong before the bench session and **deliberately held** until the
+  measurement was done, per the Sep 20 key learning about not changing firmware
+  between flashing and verifying. Builds clean, flash 91312 → 91320 B (+8, the
+  longer string).
+
+  **Task 20 is closed. W4 has no owed items left.** W5 remains blocked on the
+  12 V plant re-take (task 17), which is unchanged by any of this.
+
 
 
 - **Sep 20 (later) — TASK 20 IMPLEMENTED. The current path now means what it

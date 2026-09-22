@@ -1098,8 +1098,13 @@ static void cmd_drv(int argc, char **argv)
                       (unsigned)isense_vref_mv(),
                       (unsigned)isense_vref_code(),
                       isense_vref_buffered() ? "on" : "off");
-    debug_uart_printf("  range %lu..%lu mA, ADC ceiling %u mA, 1 code = 1 ADC"
-                      " LSB\r\n",
+    /* One DAC code is a THIRD of an ADC LSB, not one. Both sides read the same
+       R_IPROPI, but the comparator is fed VREF/3, so a code that moves VREF by
+       one DAC step moves the trip by one third of a current step. The old text
+       here said "1 code = 1 ADC LSB" - true only under k = 1, which the Sep 20
+       plateau sweep killed. Held until the re-take was done, then fixed. */
+    debug_uart_printf("  range %lu..%lu mA, ADC ceiling %u mA, 1 DAC code ="
+                      " 1/3 ADC LSB (VREF/3)\r\n",
                       (unsigned long)isense_trip_min_ma(),
                       (unsigned long)isense_trip_max_ma(),
                       (unsigned)isense_full_scale_ma());

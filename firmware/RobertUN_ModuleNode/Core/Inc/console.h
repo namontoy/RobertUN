@@ -89,6 +89,19 @@ void console_report_mks(void);
 void console_report_encoder(void);
 
 /**
+  * @brief  Emit one telemetry line if `telem on` is active and its period has
+  *         elapsed. Call every main-loop pass, beside console_report_encoder().
+  *
+  * Runs from the main loop rather than the TIM6 tick on purpose: it takes an
+  * ADC reading, and isense's synchronised path waits on conversions triggered
+  * once per 50 us PWM period. That is not work for an interrupt. The resulting
+  * jitter is recorded rather than hidden — every line carries the board's own
+  * millisecond stamp, so the host sees the real intervals instead of assuming
+  * the nominal one.
+  */
+void console_report_telem(void);
+
+/**
   * @brief  Whether the periodic CAN heartbeat should be sent.
   *
   * Toggled by the `heartbeat` command. Lets the node be silenced while

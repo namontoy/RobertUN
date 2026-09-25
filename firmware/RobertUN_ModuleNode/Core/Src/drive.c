@@ -29,6 +29,12 @@ static volatile bool     fault_latched;
 static volatile uint32_t fault_ticks;
 static volatile int16_t  fault_duty;
 
+/* Command watchdog. Counted down by drive_on_tick() in the TIM6 ISR, written by
+   the caller; the same single-object no-tearing argument as the fault latch. */
+static volatile uint32_t wd_period_ms;   /*!< 0 = disabled                    */
+static volatile uint32_t wd_remaining;   /*!< ms left; 0 = expired or off     */
+static volatile bool     wd_expired;     /*!< sticky; cleared by arming only  */
+
 /* Where the bridge is actually driving, in TIM4 ticks. Maintained alongside
    every CCR write so it can never describe a different duty than the one the
    timer is running - which is the failure mode that would put an ADC sample
@@ -208,6 +214,12 @@ bool drive_is_enabled(void)
 
 void drive_set_duty(int16_t permille)
 {
+  /* A duty command is proof the caller is alive, so it refreshes the deadline.
+     That makes the watchdog transparent to any active command stream — only a
+     genuinely silent host expires. Placed before the clamps so that even a
+     command clamped to zero counts as liveness. */
+  drive_kick();
+
   if (permille >  DRIVE_DUTY_MAX) { permille =  DRIVE_DUTY_MAX; }
   if (permille < -DRIVE_DUTY_MAX) { permille = -DRIVE_DUTY_MAX; }
 
@@ -283,6 +295,23 @@ bool drive_faulted(void)
 
 void drive_on_tick(void)
 {
+  /* The watchdog runs FIRST because the fault path below returns early on the
+     common case, and a deadline that only advances while something is wrong is
+     not a deadline. */
+  if ((wd_period_ms != 0u) && (wd_remaining != 0u))
+  {
+    if (--wd_remaining == 0u)
+    {
+      /* Register writes only, so this is safe from the ISR. It can in principle
+         race a concurrent apply() from a console command, but the only caller
+         that could be mid-command is a host that has just been declared dead,
+         and the losing outcome is one torn CCR pair corrected by the next
+         command. Coast rather than brake — see drive.h. */
+      drive_coast();
+      wd_expired = true;
+    }
+  }
+
   if (!drive_faulted())
   {
     return;
@@ -325,6 +354,40 @@ void drive_clear_fault(void)
   fault_ticks   = 0u;
   fault_duty    = 0;
   fault_latched = false;
+}
+
+void drive_set_timeout(uint32_t ms)
+{
+  /* Order matters. Clear the latch and stop the countdown before publishing the
+     new period, so a tick landing mid-update can never see a live period with a
+     stale remaining count and fire immediately. */
+  wd_expired   = false;
+  wd_remaining = 0u;
+  wd_period_ms = ms;
+  wd_remaining = ms;
+}
+
+uint32_t drive_timeout(void)
+{
+  return wd_period_ms;
+}
+
+void drive_kick(void)
+{
+  if (wd_period_ms != 0u)
+  {
+    wd_remaining = wd_period_ms;
+  }
+}
+
+uint32_t drive_timeout_remaining(void)
+{
+  return wd_remaining;
+}
+
+bool drive_timeout_expired(void)
+{
+  return wd_expired;
 }
 
 void drive_set_decay(drive_decay_t new_decay)

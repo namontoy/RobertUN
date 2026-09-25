@@ -243,6 +243,7 @@ int main(void)
     mks_poll();            /* advance the SERVO42C transaction state machine */
     console_report_mks();  /* print its outcome once it lands */
     console_report_encoder();  /* live counts while `enc watch on` */
+    console_report_telem();    /* machine stream while `telem on`  */
 
     /* Heartbeat: one frame per TIM7 tick (~0.5 s), same cadence as the LED so
        the blink doubles as a visual "this node is transmitting". */

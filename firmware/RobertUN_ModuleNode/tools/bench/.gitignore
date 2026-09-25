@@ -1,0 +1,10 @@
+# Bench runs are not committed by default - most are exploratory, and a long
+# `hold` produces a large CSV. A run worth keeping goes in deliberately:
+#
+#     git add -f tools/bench/runs/2026-09-25T14-03-11_sweep
+#
+runs/
+
+# Python bytecode
+__pycache__/
+*.pyc

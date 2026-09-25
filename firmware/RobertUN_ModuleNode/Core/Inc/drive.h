@@ -276,6 +276,61 @@ int16_t drive_fault_duty(void);
   *        itself is a fault record nobody reads. */
 void drive_clear_fault(void);
 
+/* --- Command watchdog ---------------------------------------------------- *
+ *
+ * MECHANISM, NOT POLICY — the same split as drive_on_tick() above. This module
+ * provides a deadline and coasts when it passes; it does not decide whether
+ * there is a deadline or how long it is. Disabled by default, so nothing that
+ * worked before behaves differently.
+ *
+ * It exists because an UNATTENDED HOST is a new failure mode. A person typing
+ * `drv duty 20` is themselves the watchdog — they are looking at the wheel.
+ * A bench script that dies to SIGKILL, or a USB cable that falls out, leaves
+ * the bridge driving at the last commanded duty indefinitely, and no amount of
+ * cleanup code on the host can cover that case, because no host code runs.
+ *
+ * COAST, not brake, on expiry. Braking from speed drives I = E/R through the
+ * low-side FETs — see the Ke table earlier in this file, where 50 rpm is 3.6 A —
+ * and a dead host is precisely when nobody is watching the driver dissipate it.
+ * Coasting is a zero-current event at any speed.
+ * -------------------------------------------------------------------------- */
+
+/**
+  * @brief  Arm the command watchdog, and kick it.
+  * @param  ms  deadline in milliseconds; 0 disables.
+  *
+  * Re-issuing the same value refreshes the deadline, so a host keepalive needs
+  * no separate verb. Arming also clears the expiry latch, since arming is a
+  * deliberate act that starts a new run.
+  */
+void drive_set_timeout(uint32_t ms);
+
+/** @brief Configured watchdog period in ms; 0 when disabled. */
+uint32_t drive_timeout(void);
+
+/**
+  * @brief  Refresh the deadline without changing the period.
+  *
+  * Called implicitly by drive_set_duty(), so a live command stream keeps itself
+  * alive and only a genuinely silent host expires. Does NOT clear the expiry
+  * latch — see drive_timeout_expired().
+  */
+void drive_kick(void);
+
+/** @brief Milliseconds until expiry; 0 when disabled or already expired. */
+uint32_t drive_timeout_remaining(void);
+
+/**
+  * @brief  True if the watchdog has expired since it was last armed.
+  *
+  * Sticky, and deliberately NOT cleared by drive_kick(), for the same reason
+  * the fault latch is sticky: a motor that stopped itself must not be
+  * indistinguishable from one that was told to stop. A host reconnecting after
+  * a crash needs to be able to find out which happened. drive_set_timeout()
+  * clears it.
+  */
+bool drive_timeout_expired(void);
+
 /* --- PWM phase, for synchronised current sampling ------------------------ *
  *
  * The bridge draws from VM for only part of each 50 us period, and with the

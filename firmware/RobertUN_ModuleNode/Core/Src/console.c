@@ -52,6 +52,28 @@ static bool monitor_on   = true;
 static bool enc_watch_on = false;
 static uint32_t enc_watch_last;
 
+/* Telemetry stream. Off at boot: it is a machine format that would make an
+   interactive session unreadable, and it costs an ADC conversion per line. */
+static bool     telem_on   = false;
+static uint16_t telem_ms   = 20u;   /* period, not rate - see cmd_telem()     */
+static uint32_t telem_next;         /* HAL_GetTick() at which the next is due */
+static uint32_t telem_seq;          /* +1 per line; gaps = dropped lines      */
+
+/** @brief Fastest stream the wire can carry. A ~55-byte line at 100 Hz is
+  *        5.5 kB/s against 11.52 kB/s at 115200 8N1 - under half. At 200 Hz it
+  *        is ~95%, where the TX ring stops keeping up and lines vanish into
+  *        stats.tx_dropped instead of reaching the host. */
+#define TELEM_MAX_HZ      100u
+#define TELEM_MIN_HZ        1u
+
+/** @brief ADC samples per telemetry line. Deliberately far below
+  *        ISENSE_SYNC_AVG_DEFAULT (64): each sample costs one 50 us PWM period,
+  *        so 64 would be 3.2 ms of every 10 ms line at 100 Hz. Sixteen is
+  *        0.8 ms. The noise this gives up is bought back on the host, which can
+  *        average 50 lines a second - far more than 64 samples one line at a
+  *        time. Sample fast and thin, average off-board. */
+#define TELEM_ISENSE_SAMPLES  16u
+
 /** @brief Command handler. @p argv[0] is the command name, so a bare
   *        invocation arrives with @p argc == 1. Tokens point into the mutable
   *        line buffer and are only valid for the duration of the call. */
@@ -762,12 +784,25 @@ static void cmd_drv(int argc, char **argv)
                         drive_fault_duty() / 10);
     }
 
+    if (drive_timeout() != 0u)
+    {
+      debug_uart_printf("  watchdog %lu ms armed, %lu ms remaining%s\r\n",
+                        (unsigned long)drive_timeout(),
+                        (unsigned long)drive_timeout_remaining(),
+                        drive_timeout_expired() ? "  - HAS EXPIRED" : "");
+    }
+    else if (drive_timeout_expired())
+    {
+      debug_uart_puts("  WATCHDOG EXPIRED and is now disarmed - the bridge was"
+                      " coasted by the watchdog\r\n");
+    }
+
     debug_uart_puts(
       "  sub: enable | disable | duty <+/-pct> | brake | coast\r\n"
       "       decay slow|fast | limit <pct> | current [n] | zero\r\n"
       "       iscan [n] [from] [to] [step]"
       "  (diagnostic: IPROPI vs PWM phase)\r\n"
-      "       trip [<mA> | buf on|off] | clearfault\r\n");
+      "       trip [<mA> | buf on|off] | clearfault | timeout [ms]\r\n");
     return;
   }
 
@@ -1145,6 +1180,41 @@ static void cmd_drv(int argc, char **argv)
                       " 'cfg save' to survive a reset)\r\n");
     }
   }
+  else if (strcmp(argv[1], "timeout") == 0)
+  {
+    if (argc >= 3)
+    {
+      drive_set_timeout(strtoul(argv[2], NULL, 10));
+    }
+
+    uint32_t period = drive_timeout();
+
+    if (period == 0u)
+    {
+      debug_uart_puts("timeout off - the bridge holds its last duty"
+                      " indefinitely\r\n");
+      debug_uart_puts("  'drv timeout <ms>' before any unattended run:"
+                      " a host that dies to SIGKILL\r\n"
+                      "  or a cable that falls out runs no cleanup code"
+                      " at all\r\n");
+    }
+    else
+    {
+      debug_uart_printf("timeout %lu ms, %lu ms remaining\r\n",
+                        (unsigned long)period,
+                        (unsigned long)drive_timeout_remaining());
+      debug_uart_puts("  any 'drv duty' kicks it; re-issuing this command"
+                      " kicks it too\r\n");
+    }
+
+    if (drive_timeout_expired())
+    {
+      debug_uart_puts("  EXPIRED SINCE ARMING - the bridge was coasted by the"
+                      " watchdog, not by a\r\n"
+                      "  command. Whatever was driving it stopped talking."
+                      " 'drv timeout <ms>' to re-arm\r\n");
+    }
+  }
   else
   {
     debug_uart_printf("unknown subcommand '%s' - try 'drv'\r\n", argv[1]);
@@ -1430,6 +1500,154 @@ static void cmd_id(int argc, char **argv)
   }
 }
 
+/* --- telem ---------------------------------------------------------------- *
+ * The machine-readable counterpart to `enc watch`. That command exists to be
+ * read by a person at 5 Hz; this one exists to be parsed by a host at up to
+ * 100 Hz, and the two requirements pull in opposite directions - hence a second
+ * format rather than a flag on the first.
+ *
+ * Everything a bench run needs is on ONE line, because the alternative is
+ * correlating separate `enc` and `drv current` replies by host arrival time,
+ * which is exactly the uncertainty the stream exists to remove.
+ *
+ *     T,<seq>,<ms>,<duty>,<count>,<milli_rpm>,<mA>,<flags>
+ *
+ *   seq    uint32, +1 per emitted line. A GAP MEANS LINES WERE DROPPED, which
+ *          the host cannot otherwise distinguish from the board being busy.
+ *          Cross-check against `stats` tx_dropped.
+ *   ms     HAL_GetTick() at emission. BOARD time - the console has never
+ *          exposed one, and host arrival time carries the UART's latency plus
+ *          the OS's scheduling on top of the jitter actually being measured.
+ *   duty   signed per-mille, as commanded (post-clamp, post-limit).
+ *   count  int32 encoder position. THIS IS THE REAL MEASUREMENT: it is exact
+ *          and unfiltered, so the host can differentiate it at whatever
+ *          smoothing an analysis wants.
+ *   mrpm   rpm x 1000. A CONVENIENCE, not the primary signal: it comes from
+ *          encoder_rpm(), which is a boxcar average over `enc window` ticks
+ *          and therefore lags. Fitting a time constant to this column would
+ *          measure the FILTER, not the plant. Differentiate count instead.
+ *   mA     current. Flags bit 0 says which quantity: motor current when the
+ *          sample was phase-synchronised, supply current when it was not.
+ *          They are in different units - see isense.h - so a host that ignores
+ *          the flag will silently mix them.
+ *   flags  1 sync  2 enabled  4 fault latched  8 ADC saturated  16 watchdog
+ *
+ * Integer fields throughout. "%f" pulls in newlib's float formatter, which is
+ * far too slow to run a hundred times a second, and milli-rpm keeps three
+ * decimals without it.
+ * -------------------------------------------------------------------------- */
+
+static void print_telem_line(void)
+{
+  int64_t pos = encoder_position();
+
+  if (pos >  2147483647LL) { pos =  2147483647LL; }
+  if (pos < -2147483648LL) { pos = -2147483648LL; }
+
+  /* Asked before reading, not inferred from the result - the same reason
+     `drv current` asks: a zero reading means both "no current" and "could not
+     measure", and the host has to be able to tell them apart. */
+  bool     sync = isense_sync_ready();
+  uint16_t raw  = sync ? isense_read_sync_avg(TELEM_ISENSE_SAMPLES)
+                       : isense_read_avg(TELEM_ISENSE_SAMPLES);
+
+  uint8_t flags = 0u;
+  if (sync)                    { flags |= 0x01u; }
+  if (drive_is_enabled())      { flags |= 0x02u; }
+  if (drive_fault_latched())   { flags |= 0x04u; }
+  if (isense_saturated())      { flags |= 0x08u; }
+  if (drive_timeout_expired()) { flags |= 0x10u; }
+
+  debug_uart_printf("T,%lu,%lu,%d,%ld,%ld,%lu,%u\r\n",
+                    (unsigned long)telem_seq++,
+                    (unsigned long)HAL_GetTick(),
+                    (int)drive_duty(),
+                    (long)pos,
+                    (long)(encoder_rpm() * 1000.0f),
+                    (unsigned long)isense_raw_to_ma(raw),
+                    (unsigned)flags);
+}
+
+static void cmd_telem(int argc, char **argv)
+{
+  if (argc < 2)
+  {
+    debug_uart_printf("telem %s, period %u ms (%u Hz), seq %lu\r\n",
+                      telem_on ? "on" : "off",
+                      (unsigned)telem_ms,
+                      (unsigned)(1000u / telem_ms),
+                      (unsigned long)telem_seq);
+    debug_uart_puts("  T,seq,ms,duty_permille,count,milli_rpm,mA,flags\r\n");
+    debug_uart_puts("  flags: 1 sync  2 enabled  4 fault  8 saturated"
+                    "  16 watchdog\r\n");
+    debug_uart_puts("  count is the measurement; milli_rpm is filtered by"
+                    " 'enc window' and lags\r\n");
+    debug_uart_puts("  sub: on | off | rate <1..100 hz>\r\n");
+    return;
+  }
+
+  if (strcmp(argv[1], "rate") == 0)
+  {
+    if (argc < 3)
+    {
+      debug_uart_puts("usage: telem rate <1..100>\r\n");
+      return;
+    }
+
+    unsigned long hz = strtoul(argv[2], NULL, 10);
+
+    if ((hz < TELEM_MIN_HZ) || (hz > TELEM_MAX_HZ))
+    {
+      debug_uart_printf("rate must be %u..%u Hz - above that a %u-byte line"
+                        " outruns 115200\r\n",
+                        (unsigned)TELEM_MIN_HZ, (unsigned)TELEM_MAX_HZ, 55u);
+      return;
+    }
+
+    /* The period is what the scheduler actually uses, so it is what gets
+       stored and reported. 1000/hz truncates - 60 Hz becomes 16 ms, which is
+       62.5 Hz - and rather than hide that, every line carries its own `ms`. */
+    telem_ms   = (uint16_t)(1000u / hz);
+    telem_next = HAL_GetTick();
+
+    debug_uart_printf("rate %u Hz (period %u ms)\r\n",
+                      (unsigned)(1000u / telem_ms), (unsigned)telem_ms);
+    return;
+  }
+
+  bool on;
+
+  if (!parse_on_off(argv[1], &on))
+  {
+    debug_uart_puts("usage: telem on|off | telem rate <hz>\r\n");
+    return;
+  }
+
+  telem_on = on;
+
+  if (on)
+  {
+    telem_seq  = 0u;
+    telem_next = HAL_GetTick();
+
+    debug_uart_printf("telem on at %u Hz - seq restarted at 0\r\n",
+                      (unsigned)(1000u / telem_ms));
+
+    if (monitor_on)
+    {
+      debug_uart_puts("  WARNING: 'monitor on' interleaves CAN frame lines into"
+                      " the stream.\r\n"
+                      "  'monitor off' first, or the host parser sees them as"
+                      " corrupt telemetry\r\n");
+    }
+  }
+  else
+  {
+    debug_uart_printf("telem off - %lu lines sent\r\n",
+                      (unsigned long)telem_seq);
+  }
+}
+
 static const command_t commands[] =
 {
   { "help",      "",             "list these commands",                       cmd_help      },
@@ -1444,6 +1662,7 @@ static const command_t commands[] =
   { "mks",       "<sub> [args]", "MKS SERVO42C on UART4 - 'mks' for subcommands", cmd_mks   },
   { "enc",       "[sub]",        "drive encoder - 'enc' for position and speed", cmd_enc   },
   { "drv",       "[sub]",        "drive H-bridge - 'drv' for state",          cmd_drv       },
+  { "telem",     "[sub]",        "machine-readable stream for the bench host", cmd_telem   },
   { "cfg",       "[key] [val]",  "stored tunables - 'cfg' to list",           cmd_cfg       },
   { "id",        "",             "module identity from the DIP switches",     cmd_id        },
   { "reset",     "",             "reboot the MCU",                            cmd_reset     },
@@ -1733,6 +1952,39 @@ void console_report_encoder(void)
 
   enc_watch_last = now;
   print_encoder_line();
+}
+
+void console_report_telem(void)
+{
+  if (!telem_on)
+  {
+    return;
+  }
+
+  uint32_t now = HAL_GetTick();
+
+  /* Signed difference, so the tick wrap at 49.7 days shortens one interval
+     instead of stalling the stream for another 49.7. */
+  if ((int32_t)(now - telem_next) < 0)
+  {
+    return;
+  }
+
+  /* Advance by the period rather than from `now`, so the schedule does not
+     creep later by one main-loop latency on every single line. */
+  telem_next += telem_ms;
+
+  /* Unless we have already fallen a whole period behind - then resynchronise
+     rather than emit a catch-up burst. A burst would arrive as a clump of
+     lines with near-identical `ms`, overflow the TX ring, and show up on the
+     host as a seq gap: three lies about the timing, to repay a debt the host
+     can already see in the timestamps. */
+  if ((int32_t)(now - telem_next) > 0)
+  {
+    telem_next = now + telem_ms;
+  }
+
+  print_telem_line();
 }
 
 bool console_monitor_enabled(void)

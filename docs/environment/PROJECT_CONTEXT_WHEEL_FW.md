@@ -1,5 +1,9 @@
 # RobertUN — Wheel Controller Firmware Context
-**Last updated:** September 21, 2026 (**task 20 BENCH-VERIFIED and CLOSED** — `drv current` 1268 mA against 1263 mA predicted at 12 V / 20% duty stalled, +0.4%, and the old midpoint tick re-reproduced the 14–16% low reading in the same traces; a new lead, the decay phase reads a reproducible 0.670 of the drive phase, which would dissolve the 14.5% duty floor if it holds; **W5 still blocked** on the 12 V plant re-take)
+**Last updated:** September 25, 2026 (**BENCH TOOLING BUILT, AND THE 12 V FREE-WHEEL PLANT RE-TAKEN WITH IT.** Firmware gained `telem` (machine-readable stream, 1–100 Hz) and `drv timeout` (command watchdog, coasts on expiry); `tools/bench/` drives runs and logs them to files. Four clean sweeps, **wheel now CLAMPED to the table** rather than hand-held: **CW `rpm = 0.8327 d − 1.524`, CCW `0.8618 d − 1.164`, R² ≥ 0.9999**. **Task 17's CCW is CLOSED — +3.49% asymmetry against Aug 26's +3.5%**, confirmed by a different method, rail and mounting. **The mounting moves the intercept, not the slope** (clamped vs hand-held slope agree to 0.3%); the tool validated like-for-like against the hand-typed table to **−0.18%**. What reads as hysteresis is the motor **warming**. Loaded-rig pass and the deliberate watchdog test still owed)
+
+**Previously:** September 23, 2026 (**12 V FREE-WHEEL PLANT MODEL MEASURED — `rpm ≈ 0.83 × duty% − 0.96`, one straight line from 3% to 100% duty, no hysteresis in the 5–30% operating band**; stiction is separate and large — breakaway 5–6% duty, dropout 2–3%, minimum sustainable speed ≈1.6 rpm; a duty slew-rate limiter was raised as a W5 requirement after every duty step fired the trip; **CCW and the loaded-rig pass still owed**)
+
+**Previously:** September 21, 2026 (**task 20 BENCH-VERIFIED and CLOSED** — `drv current` 1268 mA against 1263 mA predicted at 12 V / 20% duty stalled, +0.4%, and the old midpoint tick re-reproduced the 14–16% low reading in the same traces; a new lead, the decay phase reads a reproducible 0.670 of the drive phase, which would dissolve the 14.5% duty floor if it holds; **W5 still blocked** on the 12 V plant re-take)
 
 **Sibling files:** `PROJECT_CONTEXT_REST.md` — machines, network, ROS 2/Jetson/Isaac, bus-wide CAN architecture, power distribution, and tooling. `PROJECT_CONTEXT_WHEEL_FW_LOG.md` — the full, unedited progress log behind the one-line summaries below. Paste this file alone for routine wheel-firmware session starts; pull in the log file only when you need the exact numbers/reasoning behind a specific entry.
 
@@ -19,6 +23,7 @@
 
 One line per entry. Full detail (exact numbers, register values, reasoning chains) is in `PROJECT_CONTEXT_WHEEL_FW_LOG.md`.
 
+- **Sep 25** — **BENCH HOST TOOLING, end of the hand-transcription era.** Firmware gained **`telem`** (`T,seq,ms,duty,count,milli_rpm,mA,flags` at 1–100 Hz, integer fields only, emitted from the main loop) and **`drv timeout`** (a command watchdog that was simply absent — it **coasts** on expiry, and is checked *before* the fault path's early return). `tools/bench/` (`node.py` + `bench.py`) drives profiles, logs raw-before-parsed, and rewrites `status.json` once a second so a run can be left alone and checked on by reading one small file. Proven at the wire with the motor stopped: **31 lines in 3.0 s, zero seq gaps, board-stamped intervals 99–100 ms against a nominal 100.** One real bug found and fixed: the prompt carries no newline, so a telemetry line landing behind it merged in the buffer and the prompt was never seen again. **The tool then found a second bug in itself** — the pre-flight fault gate would have refused every run, because nFAULT reads low the whole time nSLEEP is low, so a reset board always reports a latched fault; it now wakes the driver and clears the latch before looking. **First motor run: no 12 V rail.** Board accepted 20% duty and was genuinely switching (`flags=3`), but zero counts and 11 mA across 150 samples — diagnosed from the recorded run in one look, no re-run. After the rail was repaired, **a third bug surfaced only on real hardware**: the console echoes each typed character as its own one-byte write while a telemetry line is one atomic write, so a `T,` record lands *inside* a command echo — the parser now extracts records anywhere in a line and reassembles the echo around them, and an echo mismatch is counted rather than fatal. **Then four clean sweeps re-took the plant** (0 seq gaps, 0 echo mismatches, 0 `tx_dropped` on all four), with the **wheel clamped to the table** instead of hand-held: CW asc `0.8327 d − 1.524`, CW desc `0.8187 d − 0.752`, CCW `0.8618 d − 1.164`, CW full range `0.8186 d − 0.833`, every R² ≥ 0.9999. **The validation gate passed at −0.18%** against the Sep 23 hand-typed table over the same 20–100% points, and **CCW closed task 17's last free-wheel item at +3.49%**, matching Aug 26's +3.5% from a different method. Two findings worth keeping: **mounting moves the intercept and leaves the slope alone**, and the asc/desc gap is **the motor warming, not hysteresis** — it tracks elapsed time, not direction. Loaded rig and the deliberate `kill -9` watchdog test still owed.
 - **Sep 20 (later)** — **W4 CLOSED. Task 20 implemented and built clean.** `k = 3` now applied in the mA↔VREF conversion pair (as a config key, `cfg vref_div`, so a different part is a console command and not a rebuild); the sampler moved from the window MIDPOINT to its settled tail, `trigger = end − (aperture + guard)`, which cost the minimum synchronised duty 4.3% → **14.5%** and bought back the ~13% the midpoint read low; `drv current` now spreads its samples over 4 ticks for the same 64 periods. **The two measured constants were finally applied** — VDDA 3300 → **3325**, R_IPROPI 1474 → **1465** — held back since Sep 12 so nothing moved underneath the plateau sweep, closing the last open W4 item. Printed trip range is now **~101–1580 mA** (was 1558 on the nominal constants); full scale 5.044 A, one LSB 1.231 mA. Two latent bugs caught on the way: the mA→mV multiply wrapped uint32 at `drv trip 3000` and would have reported ~811 mA as honoured, and `iscan`'s window markers were derived from the old midpoint convention. **`CONFIG_VERSION` 1 → 2, so the stored calibration record is discarded on this boot.** Bench re-take of the calibration point still owed.
 - **Sep 21** — **TASK 20 BENCH-VERIFIED, W4's last owed item cleared.** At 12.0 V, 20% duty, shaft stalled: **`drv current` = 1268 mA against `D × Vm / R_motor` = 1263 mA, +0.4%**, with `sync: 64 samples over 4 ticks in 4100..4348` confirming the spread, the settle floor and the end-relative placement in one line. The same two traces re-reproduced the bug that was fixed — the old midpoint tick 4050 read **14.3% and 16.1% below** the settled tail of its own run. The `cfg` check came first and passed: the forced wipe booted the board **already calibrated** (`config v2, 9 keys, slot 0/1024`, vdda_mv 3325, r_ipropi 1465, vref_div 3, no overrides), and `drv trip 1580` read back 1579 mA with `range 101..1580 mA` — the predicted ceiling to the digit. Duty-0 checks confirmed the `ticks == 0 → CCR 4500` case and the gate's refusal. **New lead:** the decay-phase tick reads a reproducible **0.670** of the drive tail across runs, where physics allows only 4.4% of droop — if that factor is real it makes current readable below the 14.5% synchronised floor, which is the standing W5 constraint. Console fixed afterwards, not during: `1 code = 1 ADC LSB` → `1 DAC code = 1/3 ADC LSB (VREF/3)`.
 - **Sep 20** — **PLATEAU SWEEP DONE: `k = 3`.** The DRV8874 compares IPROPI against **VREF/3**, so **every `drv trip` is 3× too high** — the real range is ~100–1558 mA and the 3000 mA boot default is really 1000 mA. `k=1`/`k=2` refuted; confirmed predictively by a plateau that ignored a 7.6% shift in demand. The current-sense chain is **calibrated against physics for the first time** (1290 mA measured vs 1263 predicted, 2%). Three sampler bugs found: IPROPI settles in **5.6 µs not 1.6 µs**, `ISENSE_SYNC_MIN_TICKS` 192 is far too low (nothing below ~13% duty is valid), and `place_trigger()` samples the contaminated half of the window. The **Sep 12 "reading is SUPPLY current" conclusion is retracted** — it was a pre-Sep-16 sampling artifact, and the stated IMODE cause was wrong too.
@@ -564,6 +569,8 @@ and switch CAN modes with no debugger session and no reflash.
 ```
 help  info  stats  errors  clear  send <id> [hex]
 heartbeat [on|off]   monitor [on|off]   loopback [on|off]   reset
+enc [sub]   drv [sub]   cfg [key] [val]   mks <sub>   id
+telem [on|off|rate <1..100>]
 ```
 
 - `send` accepts the payload however it is easiest to type — `send 123 DEADBEEF`,
@@ -578,6 +585,26 @@ heartbeat [on|off]   monitor [on|off]   loopback [on|off]   reset
   before touching wiring.
 - `heartbeat off` / `monitor off` silence async output while typing.
 - `info` prints live clocks and the bit timing read back from `CAN1->BTR`.
+- **`telem` is the machine-readable half of the console (added Sep 25, 2026).**
+  One line per sample, `T,<seq>,<ms>,<duty>,<count>,<milli_rpm>,<mA>,<flags>`,
+  flags `1 sync · 2 enabled · 4 fault · 8 saturated · 16 watchdog`. **Integer
+  fields only** — `%f` pulls in newlib's float formatter, far too slow at
+  100 Hz, so speed goes out as milli-rpm. Emitted from the **main loop**, not
+  the TIM6 ISR, because the synchronised ADC read waits on conversions
+  triggered once per 50 µs PWM period. **Capped at 100 Hz**: a ~55 byte line at
+  100 Hz is ~5.5 kB/s of the 11.52 kB/s available, where 200 Hz would be ~95%
+  and lines would start vanishing into `tx_dropped`. `seq` restarts at 0 on
+  every `telem on`, so a host detects dropped lines rather than inferring them.
+  Turn `monitor off` first — CAN frame lines interleave into the stream.
+
+**The prompt is the frame boundary, and it has no newline.** `execute_line()`
+emits `\r\n`, dispatches, then prints `"> "` unterminated, and every printable
+character is echoed as typed. So one exchange on the wire is
+`<echo>\r\n<output lines>\r\n> `. A host that tests for the prompt as a
+*buffer suffix* breaks the moment a `telem` line lands behind it — the two merge
+into one run of text and the prompt is never seen again. Consume it in arrival
+order instead. Cost an hour Sep 25, 2026, and would have been near-impossible to
+diagnose at the bench rather than against a simulated console.
 
 **Terminal line endings — cost real debugging time Aug 9, 2026.** The
 interpreter executes on CR or LF. CoolTerm with *Enter Key Emulation* set to
@@ -1206,8 +1233,11 @@ figure, and it is what tells you how much margin the gain set has.
 voltage. The rail was raised to 12 V on Sep 19, 2026, so the duty→speed
 line, the deadband and the current figures below are all stale** — they
 describe a rail the bench no longer runs. R, L, Ke and counts/rev carry
-over unchanged; the mappings do not. Re-measurement is task 17, and it
-blocks W5.
+over unchanged; the mappings do not. **Re-measured Sep 23 and re-taken by tool
+Sep 25 — use the 12 V free-wheel model further down, not these numbers.** The
+one thing here that survived the re-take is the **direction asymmetry**: +3.5%
+measured here, +3.49% measured Sep 25 on a different rail by a different
+method.
 
 Console-driven, motor unloaded, 9.5 V rail nominal. Averaged over both
 directions:
@@ -1720,6 +1750,74 @@ Doing it this way means a firmware mistake shows up as a wrong trace on a
 screen rather than as an unexpected motion, which on a rover with a 131.3:1
 gearbox is the difference between a note and a broken bench setup.
 
+### Bench host tooling — `tools/bench/` (built Sep 25, 2026)
+
+`node.py` (serial transport + console protocol) and `bench.py` (CLI, run
+directories, safety). Under the **firmware** tree deliberately: the parser is
+coupled to the console's exact output format, so a console change and its parser
+change land in the same commit.
+
+```sh
+./bench.py run sweep --duty 5,10,15,20,25,30    # CW; --dir ccw for the other
+./bench.py status                                # latest run's status.json
+```
+
+**No daemon, no IPC — the file *is* the interface.** The runner owns the port
+for the duration and rewrites `status.json` once a second, so checking in on a
+long run is reading one small file rather than attaching to anything. That is
+the whole "start it, come back in five minutes" story. A run directory holds
+`meta.json` (profile, outcome, and full `info`/`cfg`/`drv`/`enc` dumps taken at
+connect — the conditions, recorded rather than typed), `console.log`,
+`telemetry.csv`, `events.csv`, `status.json`, and the profile's own summary.
+
+- **Raw log written before anything is parsed.** A parser bug then costs an
+  analysis but never a bench run. This paid for itself the same day: the dead
+  12 V rail was diagnosed from the recorded transcript in one look, with no
+  re-run.
+- ⚠️ **Telemetry lands *inside* command echoes, and the parser must expect it.**
+  The console echoes each typed character as its own one-byte write, while a
+  telemetry line is one atomic write — so a `T,` record routinely appears in the
+  middle of an echo: `drv t` + `T,226,575448,200,…\r\n` + `imeout 2000`. A
+  parser that anchors the record at the start of a line loses the record *and*
+  corrupts the command echo behind it. `node.py` matches `T,…` **anywhere** in a
+  line, extracts every match, and rejoins the residue into the echo. An echo
+  mismatch is **counted** (`echo_mismatches`, reported in `meta.json` and
+  `status.json`) rather than fatal, because the echo is a convenience and the
+  telemetry is the measurement. This only ever showed up against real hardware.
+- **Defaults track the rover's real band, not the full range.** `--duty`
+  defaults to `5,8,11,14,17,20,23,26,29,32,35,39` — the 5–39% operating range.
+  Full-range sweeps are for calibration and are asked for explicitly.
+  `--trip` defaults to **1580 mA** and is *set* at run start rather than assumed,
+  so the trip is a recorded run condition instead of whatever the board booted
+  with.
+- **`count` is the measurement; `milli_rpm` is a convenience column.**
+  `enc window` is a boxcar over N × 1 ms ticks, so at window 100 the rpm figure
+  lags ~50 ms and is smoothed over 100 ms. Fitting *that* to an exponential
+  would measure the filter's time constant and report it as the plant's. The
+  tool derives speed from the least-squares slope of `count` against the
+  board's own `ms` stamp.
+- **Safety, in the order it matters.** (1) `try`/`finally` plus a SIGTERM
+  handler, so a normal exit, an exception, Ctrl-C and `kill` all end at
+  `drv duty 0` → `coast` → `disable`. (2) **`drv timeout 2000` armed on the
+  board and kicked while dwelling** — the part `finally` cannot cover, because
+  `kill -9` and a yanked cable run no Python at all. (3) A **40% duty ceiling**
+  by default, matching the rover's real band. (4) Pre-flight refusal on a real
+  fault or a non-zero duty. (5) Post-flight: any `seq` gap or `tx_dropped`
+  marks the run **suspect**, because a stream with holes must not be quietly
+  fitted.
+- ⚠️ **The watchdog test has to be done deliberately, not assumed** — start a
+  long run, `kill -9` it, and watch the wheel coast. It only ever fires when
+  everything else has already failed. **Still owed.**
+- ⚠️ **Flash wear will bite gain scanning.** `cfg` save appends a full snapshot
+  to the next free slot, 1024 slots, currently at 0. A 50-point Kp/Ki scan that
+  persists each trial burns 5% of the log per scan. W5's config bump needs a
+  **volatile set-for-this-session path**, with `cfg save` only for a keeper.
+
+**Profiles:** `sweep` (done). `coastdown`, `step`, `hold`, `stiction` planned —
+`coastdown` and `step` are the two that actually unblock gain selection, since
+together they give a first-order model and therefore starting gains by pole
+placement instead of by guessing.
+
 ## NEXT TASKS — wheel firmware track
 
 (Original numbering preserved for cross-reference with PROJECT_CONTEXT_REST.md)
@@ -1857,12 +1955,187 @@ gearbox is the difference between a note and a broken bench setup.
       speed** — more voltage headroom to drive current against back-EMF, which
       shifts the whole torque-speed curve out. Worth being explicit about so
       nobody expects a bigger stall number.
-    - ⬜ **Re-measure the plant at 12 V — now BLOCKING W5, not merely pending.**
-      The rail moved on Sep 19, so `rpm = 0.672 × duty% − 1.8`, the ~2.6%
-      deadband, breakaway, dropout and the 4.9 rpm minimum sustainable speed are
-      all figures for a rail that no longer exists. R, L and Ke carry over; the
+    - ✅ **Re-measure the plant at 12 V — FREE-WHEEL PASS COMPLETE Sep 25, 2026**
+      (CW, CCW, full range and the operating band all taken; **the loaded-rig
+      pass is the only part still owed**, and it is tracked under the rig entry
+      rather than here). The rail
+      moved on Sep 19, so `rpm = 0.672 × duty% − 1.8`, the ~2.6% deadband,
+      breakaway, dropout and the 4.9 rpm minimum sustainable speed are all
+      figures for a rail that no longer exists. R, L and Ke carry over; the
       duty→speed and duty→current mappings do not. Gains tuned at one rail do
       not transfer.
+
+      ✅ **CW sweep DONE Sep 23** — free-spinning **wheel on the shaft** (not the
+      bare shaft of the Aug 26 table, and not the loaded rig), VM 12.03 V, trip
+      999 mA, slow decay, two reads per point:
+
+      | duty % | rpm | Imotor mA |
+      |---|---|---|
+      | 20 | 15.00 | 178 / 236 |
+      | 40 | 31.95 | 151 / 188 |
+      | 60 | 48.38 | 237 / 190 |
+      | 80 | 64.44 | 253 / 246 |
+      | 100 | 80.68 | 245 / 267 |
+
+      > **`rpm = 0.819 × duty% − 1.07`, deadband ≈ 1.3% duty** (12.03 V,
+      > free wheel). Residuals ±0.32 rpm over the whole range, per-20%
+      > increments 16.95/16.43/16.06/16.24 (±2.7%). **Linear — W5 needs no gain
+      > scheduling**, now established on the real wheel rather than inherited.
+
+      The rpm pairs at each duty differ by ~0.35 rpm, exactly the 0.357 rpm
+      quantum of the 20-tick velocity window — quantisation, not instability.
+      **Current is a noisy constant ~150–270 mA with no trend against duty**
+      (scatter within one duty point exceeds any trend across the range), which
+      is what constant friction torque looks like on a free wheel.
+
+      ✅ **Operating band (5–30%) DONE Sep 23**, ascending from rest, same free
+      wheel, `enc window 100` (0.071 rpm/count, against 0.357 at window 20):
+
+      | duty % | rpm | current mA |
+      |---|---|---|
+      | 5 | 3.14 | 89 / 84 Isup — NOT SYNCHRONISED |
+      | 10 | 7.43 | 98 / 315 Isup — NOT SYNCHRONISED |
+      | 15 | 11.46 | 222 / 261 Imotor (marginal — see below) |
+      | 20 | 15.64 | 184 / 171 Imotor |
+      | 25 | 19.85 | 174 / 163 Imotor |
+      | 30 | 23.96 | 179 / 200 Imotor |
+
+      > **`rpm = 0.832 × duty% − 0.97`, deadband ≈ 1.2% duty** over 5–30%.
+      > Residuals **±0.09 rpm** — about one count of the window-100 quantum.
+
+      **The two fits agree** — 0.832 vs 0.819 rpm/duty% (1.6%) and 1.2% vs 1.3%
+      deadband — so **one straight line describes 5–100% duty** on the free
+      wheel. No Stribeck cliff appears, and **the wheel breaks away at 5% duty
+      from rest**, so true breakaway is somewhere below 5% and is not yet
+      bounded. W5's no-gain-scheduling assumption now holds across the rover's
+      real operating range rather than being extrapolated into it.
+
+      ⚠️ **The 20% point differs between the two passes** — 15.00 rpm at window
+      20, 15.64 at window 100, 4% apart. Candidates are bearing warm-up over the
+      session and window-20 quantisation (±0.357 rpm; the two reads differed by
+      2 counts). **The window-100 figures are the better-resolved set** — if the
+      upper band is ever restated, re-take it at window 100.
+
+      ⚠️ **15% duty is the marginal edge of synchronised sensing, not a
+      comfortable operating point.** Its usable region is `4325..4348` — **23
+      ticks** — and its two reads scatter 222/261 mA (17%), the widest in the
+      synchronised set. Treat 15% as the boundary for current-aware control.
+
+      ✅ **The 14.5% gate demonstrated its worth.** At 10% duty consecutive reads
+      gave Isup 98 and 315 mA, implying Imotor 980 and 3150 mA — the `Isup / D`
+      fallback multiplies the error by `1/D`. The console refused both as
+      `NOT SYNCHRONISED` rather than printing them as current.
+
+      ✅ **Descending pass + stiction limits DONE Sep 23**, same free wheel,
+      window 100. Descending rpm against the ascending figures above:
+
+      | duty % | ascending | descending |
+      |---|---|---|
+      | 30 | 23.96 | 23.92 |
+      | 25 | 19.85 | 19.85 |
+      | 20 | 15.64 | 15.64 |
+      | 15 | 11.46 | 11.61 |
+      | 10 | 7.43 | 7.47 |
+      | 5 | 3.14 | 3.07 |
+
+      **NO hysteresis in the 5–30% operating band** — the pairs agree to one or
+      two encoder counts. The duty→speed map is single-valued there, so **W5
+      never has to model direction of approach.**
+
+      **Stiction at the bottom is a different story, and it is large:**
+      - **Breakaway from rest: 5–6% duty.** Conclusive from the logged counts —
+        at 3% and 4% the count sat at exactly 1677933 and did not move; 5% is
+        marginal, 6% reliable.
+      - **Dropout: between 2% and 3% duty.** Held 1.64 rpm at 3%, stopped dead
+        at 2%.
+      - **Minimum sustainable speed ≈ 1.6 rpm** (3% duty).
+      - So a **~3% duty stiction band**: command ~6% to start, ~3% to keep
+        creeping.
+
+      > **CONSOLIDATED 12 V FREE-WHEEL PLANT MODEL (Sep 23, 2026):**
+      > **`rpm ≈ 0.83 × duty% − 0.96`**, inverse **`duty% ≈ 1.21 × rpm + 1.16`**
+      > (12.03 V at VM, free wheel on the shaft, slow decay, CW).
+      > Three independent fits agree within 1.6%: ascending 5–30% gives
+      > 0.832/−0.97, descending 3–30% gives 0.831/−0.95, and the 20–100% sweep
+      > gives 0.819/−1.07. **One straight line covers 3–100% duty.**
+
+      ![12 V free-wheel plant characterisation](figures/plant_12v_free_wheel.png)
+
+      *Regenerate with `python3 figures/plot_plant_12v.py` — the script carries
+      every data point from both sessions inline, prints every fit it draws, and
+      derives the slopes rather than quoting them, so extending it with the
+      loaded-rig pass means adding an array and a plot call, not re-typing the
+      tables. Top: the 5–39% band, CW ascending / CW descending / CCW, each
+      against its own fit, residuals inset. Bottom, left to right: the warming
+      drift, the clamped-vs-hand-held slope check, and current versus duty.*
+
+      ✅ **RE-TAKEN BY TOOL, WHEEL CLAMPED — Sep 25, 2026.** Four `sweep` runs
+      via `tools/bench/bench.py`, enc window 100, trip 1580 mA, watchdog 2000 ms.
+      **The wheel is now clamped to the table**; every figure above was taken
+      with the operator *holding the wheel in their hands*. That is a different
+      plant, and it is why the intercept moved.
+
+      | pass | range | fit | R² | max\|res\| |
+      |---|---|---|---|---|
+      | CW ascending | 11–39% | `rpm = 0.8327 d − 1.524` | 0.99993 | 0.117 |
+      | CW descending | 11–39% | `rpm = 0.8187 d − 0.752` | 0.99993 | 0.134 |
+      | CCW ascending | 11–39% | `rpm = 0.8618 d − 1.164` | 0.99999 | 0.059 |
+      | CW full range | 10–100% | `rpm = 0.8186 d − 0.833` | 0.99998 | 0.286 |
+
+      All four runs were integrity-clean: **0 sequence gaps, 0 echo mismatches,
+      0 `tx_dropped`.**
+
+      > **THE MOUNTING MOVES THE INTERCEPT, NOT THE SLOPE.** Clamped CW
+      > ascending is 0.8327 rpm/duty% against hand-held 0.830 — **0.3% apart** —
+      > while the intercept went −0.96 → −1.52. Hand-held adds a damping term
+      > the clamp does not. **The slope belongs to the motor and the rail; the
+      > intercept belongs to the mounting.** Expect the loaded rig to move the
+      > intercept again and leave the slope where it is.
+
+      ✅ **Tool validated like-for-like against the hand-typed table.** Over the
+      *same* 20–100% points: Sep 23 by hand `0.8193 d − 1.065`, Sep 25 by tool
+      `0.8178 d − 0.775` — **slopes agree to −0.18%**, per-point deltas +0.52
+      (20%), −0.03 (40%), −0.02 (60%), +0.34 (80%), +0.06 (100%) rpm. The tool's
+      numbers are the same numbers. This was the plan's validation gate and it
+      passes with room to spare.
+
+      ✅ **CCW TAKEN — task 17's outstanding item is closed.** CCW is **+3.49%**
+      faster than CW at the same duty (slope 0.8618 vs 0.8327). **Aug 26
+      measured +3.5%** on a 9.35 V rail, by hand, on a bare shaft. Same number
+      from a different method, a different rail and a different mounting — the
+      asymmetry is a property of the motor (brush timing), and it is now
+      confirmed twice. It stays absorbed by integral action; do not chase it.
+      CCW also fits best of the four: R² 0.99999, max residual 0.059 rpm.
+      ⚠️ **CCW did not break away at 5%** where CW did — breakaway is direction-
+      dependent even though the running slope is clean.
+
+      ⚠️ **What looked like hysteresis is the motor warming up.** Descending
+      reads faster than ascending at every shared duty, but the gap tracks
+      **elapsed time, not direction**: +0.94 rpm at 5% (the two passes ~11 min
+      apart) falling monotonically to +0.05 rpm at 39% (taken back-to-back).
+      Friction falls as the motor warms. A test that walks duty one way and
+      reads the return leg as hysteresis will measure this instead. **Interleave
+      or randomise the duty order** when hysteresis is the actual question.
+
+      **Current, 20–100%: mean 226 mA, range 200–253, slope 0.555 mA/%.** Flat —
+      friction torque, not load. Consistent with Sep 23. Dropout is still
+      between 3% and 2% duty (2% → 0.00 rpm), unchanged by the clamp.
+
+      ⚠️ **The fit's 1.2% intercept is NOT the dropout.** The intercept is the
+      viscous/Coulomb offset; dropout sits at 2–3% and breakaway at 5–6%,
+      because static friction is a separate and larger effect that only appears
+      from rest. Do not read a deadband off the regression and expect the wheel
+      to start there.
+
+      ⬜ **Console duty resolution is 10× coarser than the driver's.**
+      `drive_set_duty()` takes per-mille (±1000, CCR steps of 4.5 ticks) but
+      `drv duty` parses percent with `strtol` and multiplies by 10 — so
+      `drv duty 0.5` silently becomes 0. Bracketing breakaway/dropout finer than
+      1% duty needs a per-mille console command first. Desk change, not a bench
+      improvisation.
+
+      ⬜ **Still owed:** the **loaded-rig pass** (`drv trip 1580` set first).
+      CCW was taken Sep 25 and is closed — see the clamped re-take above.
     - ⬜ Restate the recorded plant figures with their rail attached, so a
       future reader cannot mistake a 9.35 V number for a 12 V one.
 
@@ -2070,9 +2343,45 @@ gearbox is the difference between a note and a broken bench setup.
       tuning miserable). `kp`, `ki`, `kd`, output clamp, integral limit. **Do it
       in the same version bump as task 20's** — `CONFIG_VERSION` is already at 2
       and the stored record is already discarded, so adding them now is free,
-      where adding them later costs a second wipe.
+      where adding them later costs a second wipe. **Design a volatile
+      set-for-this-session path in the same bump** (raised Sep 25, 2026): the
+      log is append-only with 1024 slots and one full snapshot per save, so a
+      50-point gain scan that persists each trial burns 5% of it. Persist only
+      a keeper. Cheap to build in now, a retrofit later.
+    - ⬜ **Tuning data now comes from `tools/bench/`, not by hand** (Sep 25,
+      2026). `telem` streams at up to 100 Hz with a board timestamp and a
+      sequence number, which is what makes a step response or a coast-down
+      measurable at all — the console's 5 Hz hand-read pace never could.
     - ⬜ Control-loop skeleton on the existing TIM6 1 kHz tick: velocity estimate
       from the TIM2 delta, the sign convention above, duty clamp.
+    - ⬜ **DUTY SLEW-RATE LIMITER — ramp the speed command, never step it
+      (raised Sep 23, 2026, at the bench).** `drv duty 60` from rest is a step
+      change, and because back-EMF is zero at t=0 it is a stall-current event
+      every time — the trip fires on each step, which is the protection working
+      but is not how the rover should be driven. Needs a gentle
+      acceleration/deceleration ramp between the commanded speed and what
+      reaches the bridge, so current never spikes to the limit in normal
+      operation.
+      - Belongs in the **control layer, not `drive.c`** — consistent with the
+        standing position that `drive.c` implements no policy (see *Stopping:
+        coast or brake*, which already requires the control layer to ramp duty
+        down before braking). Same mechanism serves both.
+      - Ramp the **duty command**, and once the velocity loop exists, the
+        **setpoint** — limiting the setpoint keeps the PID from winding up
+        against its own ramp.
+      - Rate should be a `config` key, so it is tunable on the bench without a
+        reflash — add it in the same version bump as the PID gains above.
+      - This also makes the low-duty band usable: a ramp that walks up through
+        stiction is gentler than a step that has to break it.
+      - **The stiction numbers measured Sep 23 set the ramp's floor.** Breakaway
+        is 5–6% duty but dropout is 2–3%, so a ramp from rest must actually
+        reach ~6% to get the wheel turning — it cannot creep in at 3% and expect
+        motion. Once moving, the command can fall back to 3% (≈1.6 rpm, the
+        slowest sustainable speed). A velocity PID sees this for free: the
+        integrator winds up through breakaway, then unwinds. But **the ramp rate
+        must not be so slow that the wheel sits energised below breakaway for a
+        long time** — that is stall current with no back-EMF, exactly the
+        condition the trip exists for.
     - ⬜ Telemetry path. OpenOCD RTT is the standing candidate; decide before
       it is needed, because tuning without a trace is guesswork.
 
@@ -2113,6 +2422,45 @@ it, every firmware update would silently wipe each node's calibration.
 Short, generalised rules. Machine-specific detail belongs in that machine's
 section; this is for things that will bite again somewhere else.
 
+- **A driver's fault pin can be telling you about its own sleep state.** The
+  DRV8874 holds nFAULT low the entire time nSLEEP is low, and `drive_faulted()`
+  reads the pin directly — so a freshly reset board **always** reports a
+  latched fault. A pre-flight gate written against that reading refuses every
+  run on an artifact. **Wake the device, clear the latch, and only then decide
+  whether a fault is real.** The general rule: a status line read while a
+  peripheral is disabled is describing the disable, not the peripheral.
+- **Write the raw transcript before you parse a byte of it.** Bench time is the
+  expensive input; a parser is cheap and re-runnable. Logging raw-first means a
+  parser bug costs an analysis and never a run — and it turns a failed run into
+  a diagnosis, which is how the dead 12 V rail was identified from the record in
+  one look on Sep 25, 2026 instead of by repeating the experiment.
+- **A protocol's frame boundary needs testing against a simulator before the
+  bench, not on it.** The console's prompt carries no newline, so a host that
+  matched it as a buffer suffix broke as soon as an async line landed behind it.
+  That class of bug is nearly invisible at a bench — it reads as flaky hardware
+  — and took minutes to find against a pty that emulated the console.
+
+- **A "hysteresis" that shrinks as the two passes get closer in time is
+  thermal.** Sweeping duty up and then back down and reading the gap as
+  hysteresis will instead measure the motor warming: on Sep 25, 2026 the
+  descending-minus-ascending gap ran +0.94 rpm at the ends of the sweep (~11 min
+  apart) down to +0.05 rpm in the middle (back-to-back). **The tell is that the
+  gap tracks elapsed time rather than direction.** When hysteresis is the actual
+  question, interleave or randomise the duty order so time and direction stop
+  being the same axis.
+- **Mounting changes the intercept; the slope belongs to the motor and the
+  rail.** The same wheel hand-held and then clamped to a table gave slopes 0.830
+  and 0.8327 rpm/duty% — 0.3% apart — while the intercept moved −0.96 → −1.52.
+  So a bench figure is only comparable to another if the mounting matches, but
+  **the slope is portable across mountings and the offset is not**. Record the
+  mounting as a run condition, and when a plant number shifts, check the
+  fixture before suspecting the motor.
+- **Confirm an old result with a different method before trusting it, not by
+  repeating it.** The CCW direction asymmetry measured +3.5% in Aug 2026 by
+  hand, on a 9.35 V rail, on a bare shaft — and +3.49% in Sep 2026 by tool, on a
+  12 V rail, on a clamped wheel. Agreement across three changed variables is
+  evidence the effect is in the motor; a second run of the same procedure would
+  only have confirmed the procedure.
 - **Hold a calibration correction until the experiment that does not need it is
   finished.** VDDA 3325 and R_IPROPI 1465 were measured Sep 12 and deliberately
   not applied until Sep 20, because the plateau sweep's result was a *ratio*

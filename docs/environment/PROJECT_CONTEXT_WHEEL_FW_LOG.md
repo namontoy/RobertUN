@@ -1,5 +1,5 @@
 # RobertUN — Wheel Controller Firmware: Full Progress Log
-**Last updated:** September 21, 2026 (task 20 bench-verified and closed — `drv current` +0.4% against physics at 12 V; the old midpoint tick re-reproduced its own 14–16% error; a new decay-phase lead)
+**Last updated:** September 25, 2026 (bench host tooling built, flashed and then *used* — after the 12 V rail was repaired, four clean sweeps re-took the free-wheel plant with the wheel clamped; CCW is closed at +3.49%, the tool validated to −0.18% against the hand-typed table, and the asc/desc gap turned out to be the motor warming)
 
 **Referenced from:** `PROJECT_CONTEXT_WHEEL_FW.md`, which carries a one-line-per-entry version of this log. This file is the verbatim, unedited detail behind each entry — pull it in when you need the exact numbers, register values, or reasoning chain, not for routine session start.
 
@@ -13,6 +13,166 @@
 > the split: that file gets read every session, this one only on demand.
 
 ## Progress log (most recent first) — full detail
+
+- **Sep 25 — BENCH HOST TOOLING: firmware `telem` + `drv timeout` flashed and
+  proven at the wire; the first motor run stopped on a dead 12 V rail.**
+  Built to end the hand-transcription era: every plant number on record so far
+  passed through a human reading four lines and typing them into a table.
+
+  **Firmware, two additions.**
+  - `telem on|off|rate <1..100>` emits one line per sample from the main loop,
+    beside `console_report_encoder()`:
+    `T,<seq>,<ms>,<duty>,<count>,<milli_rpm>,<mA>,<flags>`, flags
+    `1 sync · 2 enabled · 4 fault · 8 saturated · 16 watchdog`. **Integer
+    fields only** — `%f` pulls in newlib's float formatter, far too slow at
+    100 Hz, so speed goes out as milli-rpm. Emitted from the main loop and not
+    the TIM6 ISR because `isense_read_sync_avg(16)` waits on conversions
+    triggered once per 50 µs PWM period (~0.8 ms). Capped at **100 Hz**: a
+    ~55 byte line at 100 Hz is ~5.5 kB/s of the 11.52 kB/s the wire has, where
+    200 Hz would be ~95% and would start vanishing into `tx_dropped`.
+    `seq` restarts at 0 on every `telem on`, so a host detects dropped lines
+    directly instead of inferring them.
+  - `drv timeout <ms>` — a command watchdog, absent until now. Counted down in
+    `drive_on_tick()` **before** the fault path's early return, because a
+    deadline that only advances while something is wrong is not a deadline.
+    Any `drive_set_duty()` kicks it, so the host keepalive is the same command
+    repeated with no extra verb. **Coasts, not brakes, on expiry** — braking
+    from speed drives I = E/R through the low-side FETs (50 rpm is 3.6 A in the
+    Ke table), and a dead host is exactly when nobody is watching the driver
+    dissipate it. Arming clears the expiry latch; kicking does not, so a host
+    that reconnects after a crash can tell whether the motor stopped itself.
+    Default 0 (disabled), so no existing bench procedure changes behaviour.
+
+  Build clean, no warnings: RAM 5432 B (4.14%), FLASH 94012 B (23.91%).
+  Flashed over SWD with `STM32_Programmer_CLI`, download verified.
+
+  **Host tool — `firmware/RobertUN_ModuleNode/tools/bench/`.** `node.py`
+  (transport + protocol), `bench.py` (CLI, run directories, safety), README.
+  Placed under the firmware tree deliberately: the parser is coupled to the
+  console's exact output format, so a console change and its parser change land
+  in the same commit.
+
+  **The one hard part was the shared wire.** Telemetry and command replies
+  interleave freely, so there is exactly one reader and every complete line is
+  classified once — `T,` to the telemetry sink, everything else to a pending
+  reply buffer, with `command()` draining that same pump while it waits. A
+  command issued mid-stream therefore loses no samples. **The prompt is the
+  frame boundary and it carries no newline**, which caused the one real bug: a
+  telemetry line landing immediately behind `"> "` merged with it in the buffer
+  and the prompt was never seen again. Fixed by consuming the prompt in the
+  pump, in arrival order, rather than testing for it as a buffer suffix.
+
+  **Verified before the bench, against a pty that emulates the console:** reply
+  framing, echo stripping, clean replies mid-stream, 156 samples with zero seq
+  gaps, and the safe-stop sequence. Then a full `sweep` end-to-end producing all
+  six run files. The count-slope velocity fit is exact — at 5% the fake emits 11
+  counts per 20 ms and the tool reported 3.927 rpm, which is that number to
+  three decimals.
+
+  **At the wire, motor stopped:** 31 lines in 3.0 s at 10 Hz, **zero seq gaps**,
+  board-stamped intervals **99–100 ms against a nominal 100**. No drift and no
+  catch-up burst, which is what the `telem_next += telem_ms` scheduling with a
+  one-period resynchronisation guard was for.
+
+  **The pre-flight fault gate was wrong, and the tool found it.**
+  `drive_faulted()` reads the nFAULT pin directly, and the DRV8874 holds nFAULT
+  low the entire time nSLEEP is low — so a freshly reset board **always**
+  reports a latched fault, and the gate as written would have refused every run
+  on an artifact. Measured: `flags=0x04` asleep, then `flags=0x02` with no fault
+  across all 21 samples once `drv enable` + `drv clearfault` had run at duty 0,
+  12 mA. Pre-flight now wakes the driver and clears the latch *first*, so what
+  it tests is a fault that re-asserts while awake at zero duty — which is real.
+
+  **First motor run: no 12 V rail.** `sweep --duty 20 --dwell 3` was accepted by
+  the board — `duty_permille 200`, `flags=3` (synchronised **and** enabled), so
+  the H-bridge was genuinely switching — but `count = 0` across all 150 samples
+  and current sat at **11–16 mA**, indistinguishable from the 12 mA idle reading
+  at zero duty. A stalled motor at 20% into 1.87 Ω would pull hundreds of mA to
+  amps and hit the 999 mA trip; no trip, no fault, no motion. Logic side runs
+  off the ST-Link/USB, so console and encoder stay alive while VM is dead.
+  **Diagnosed from the recorded run in one look, with no re-run** — which is the
+  first concrete return on logging raw before parsing. Bench work paused there
+  at the user's call; the 12 V line is being repaired.
+
+  **Rail repaired, and the third bug surfaced immediately.** First command
+  after the repair failed the echo check:
+
+  ```
+  echo mismatch: sent 'drv timeout 2000',
+                 board echoed 'drv tT,226,575448,200,11047,14780,230,3'
+  ```
+
+  Not a corrupted link — a framing assumption. The console echoes **each typed
+  character as its own one-byte write**, while a telemetry line is **one atomic
+  write**. So a `T,` record does not politely wait for a line boundary; it lands
+  in the middle of the echo of whatever is being typed. A parser that anchors
+  the record at the start of a line loses the record *and* mangles the echo
+  behind it. Fixed by matching `T,…` **anywhere** in a line
+  (`TELEM_RE.finditer`), emitting every match, and rejoining the residue either
+  side into the echo text — plus a `_partial` carry for the case where the
+  line's newline belonged to the record rather than to the echo. Echo mismatch
+  was also downgraded from fatal to a counted `echo_mismatches`, surfaced in
+  `meta.json` and `status.json`: the echo is a convenience, the telemetry is the
+  measurement, and a run should not die because a character interleaved.
+  Unit-tested against the exact observed byte stream — both records recovered,
+  echo reassembled to `drv timeout 2000`, no sequence gap. **Neither this bug
+  nor the nFAULT one was reachable from the pty simulator**; both needed the
+  real board's write granularity and real async traffic.
+
+  **Then the plant was re-taken — four sweeps, all integrity-clean.** The user
+  also changed the fixture: the wheel is now **clamped to the table**, where
+  every Sep 23 figure was taken with the operator **holding the wheel in their
+  hands**. Runs in `tools/bench/runs/`, enc window 100, trip 1580 mA set
+  explicitly at run start, watchdog 2000 ms:
+
+  | pass | range | fit | R² | max\|res\| |
+  |---|---|---|---|---|
+  | CW ascending | 11–39% | `rpm = 0.8327 d − 1.524` | 0.99993 | 0.117 |
+  | CW descending | 11–39% | `rpm = 0.8187 d − 0.752` | 0.99993 | 0.134 |
+  | CCW ascending | 11–39% | `rpm = 0.8618 d − 1.164` | 0.99999 | 0.059 |
+  | CW full range | 10–100% | `rpm = 0.8186 d − 0.833` | 0.99998 | 0.286 |
+
+  **0 sequence gaps, 0 echo mismatches, 0 `tx_dropped` on all four.**
+
+  - **The validation gate passed.** The plan required reproducing the hand-taken
+    table before trusting any new number. Like-for-like over the *same* 20–100%
+    points: Sep 23 by hand `0.8193 d − 1.065`, Sep 25 by tool
+    `0.8178 d − 0.775` — **slopes agree to −0.18%**. Per-point deltas +0.52
+    (20%), −0.03 (40%), −0.02 (60%), +0.34 (80%), +0.06 (100%) rpm.
+  - **The apparent plant change was the fixture, and the diagnosis held.** The
+    first comparison looked alarming — −5.6% on speed, +26% on current,
+    breakaway up — and was called as increased friction before the cause was
+    known. The user then supplied it: hand-held → clamped. That is the same
+    thing. **Clamped CW ascending slope 0.8327 vs hand-held 0.830 — 0.3% apart
+    — while the intercept moved −0.96 → −1.52.** A hand adds a damping term a
+    clamp does not; it shows up entirely in the offset.
+  - **CCW closed.** +3.49% faster than CW at the same duty (0.8618 vs 0.8327).
+    **Aug 26 measured +3.5%** by hand, on a 9.35 V rail, on a bare shaft. Three
+    variables changed and the number did not, so the asymmetry is in the motor
+    (brush timing), not in any one bench setup. CCW is also the best-conditioned
+    fit of the four. One real difference: **CCW did not break away at 5%** where
+    CW did — breakaway is direction-dependent even though the running slope is
+    clean.
+  - **What looked like hysteresis is thermal.** Descending reads faster than
+    ascending at every shared duty, but the gap is +0.94 rpm at 5%, +0.69 at 8%,
+    +0.63 at 11%, +0.56 at 14%, +0.54 at 17%, +0.39 at 20%, +0.43 at 23/26/29%,
+    +0.34 at 32%, +0.44 at 35%, and **+0.05 at 39%**. The 39% points were taken
+    back-to-back; the 5% points ~11 minutes apart. **The gap tracks elapsed
+    time, not direction** — the motor warms and friction falls. Sep 23's "no
+    speed hysteresis" conclusion stands; this is a second, slower effect that a
+    naive up-then-down sweep would have reported as hysteresis.
+  - **Current, 20–100%: mean 226 mA, range 200–253, slope 0.555 mA/%.** Flat,
+    i.e. friction torque rather than load — consistent with Sep 23. Dropout is
+    still between 3% and 2% duty (2% → 0.00 rpm), unchanged by the clamp.
+
+  `figures/plot_plant_12v.py` was extended with all four Sep 25 series alongside
+  the Sep 23 hand-held data, and now **derives every fit it draws and prints
+  them** rather than carrying quoted constants.
+
+  **Still owed:** the `coastdown` / `step` / `hold` / `stiction` profiles and
+  `analyze.py`; the **deliberate watchdog test** (start a long run, `kill -9`
+  it, watch the wheel coast — it must be done, not assumed); and the loaded-rig
+  pass.
 
 - **Sep 21 — TASK 20 BENCH-VERIFIED. `drv current` now agrees with physics to
   +0.4%, and the same traces re-reproduced the bug it was built to remove.**

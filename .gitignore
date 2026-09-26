@@ -67,3 +67,10 @@ project-context.zip
 # Python bytecode from the figure and bench scripts
 __pycache__/
 *.pyc
+
+# Bench run data. A run's CSVs are raw instrument output - tens of thousands of
+# rows, megabytes each - and they are INPUT to the figure scripts, not a record
+# anyone reads. They stay on the bench machine; what the repo keeps is the
+# figure and the numbers quoted in the docs. Never `git add -f` one: if a result
+# matters, it belongs in a figure and in PROJECT_CONTEXT, not as a blob.
+*.csv

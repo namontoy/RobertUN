@@ -296,6 +296,14 @@ runs/2026-09-25T14-03-11_sweep/
 cost an analysis but never a bench run — the run is re-parsable offline. Bench
 time is the expensive thing here.
 
+⚠️ **The `.csv` files are local-only and gitignored** — raw instrument output,
+megabytes per run, and input to the figure scripts rather than a record anyone
+reads. `meta.json` (profile, arguments, outcome, integrity counters, and the
+connect-time `info`/`cfg`/`drv`/`enc` dumps) is what the repo keeps as
+provenance. **Consequence to know about: regenerating a figure in
+`docs/environment/figures/` needs its run directory present on this machine.**
+A figure in the repo is the published result; the rows behind it are not.
+
 ## Reading the data correctly
 
 `count` is the measurement. `mrpm` is a convenience column.

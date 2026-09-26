@@ -1,5 +1,5 @@
 # RobertUN — Wheel Controller Firmware: Full Progress Log
-**Last updated:** September 26, 2026 (**THE VELOCITY LOOP RAN 21 CONTINUOUS MINUTES ON THE RIG AND THE SHIPPED GAINS ARE GOOD** — 21 setpoints × 60 s, 10→20 rpm: mean tracking error **+0.0008 rpm**, **0% saturation** at every hold, and a closed-loop plant inverse **0.39% from the Sep 25 open-loop sweep**, so the feedforward is carrying the load and the ¼-of-textbook derating costs nothing. The ±1 rpm ripple is **mechanical — 11.91 ± 0.19 events per output revolution across a 2:1 speed range**, which only a rotating feature can do. ⚠️ Then `bench.py run step`'s metric was found to be **measuring `vel_slew`, not the loop** — rise and settling are now anchored at the end of the setpoint ramp, and the "14% overshoot" turned out to be a **ripple peak**: 4 encoder counts at both 10 and 20 rpm, `overshoot_above_ripple` False on all three runs. Two figures added. Previously: W5's velocity PID module, the `V,` channel and `run step` written but unrun)
+**Last updated:** September 26, 2026 (**THE STAIRCASE WAS RUN IN REVERSE AND THE DIRECTION ASYMMETRY IS ENTIRELY THE INTEGRATOR** — `corr(Δ|out|, Δi) = 0.9986`; tracking is *better* reverse (0.006 rpm worst vs 0.015), 0% saturation at all 21 holds, and the asymmetry **changes sign at 14.3 rpm** so "reverse is x% harder" is false. A ripple panel was caught about to claim an agreement its estimator could not measure. `bench.py` gained the `stair` profile, with a reverse-direction sign bug in its ceiling guard caught before it ran)
 
 **Referenced from:** `PROJECT_CONTEXT_WHEEL_FW.md`, which carries a one-line-per-entry version of this log. This file is the verbatim, unedited detail behind each entry — pull it in when you need the exact numbers, register values, or reasoning chain, not for routine session start.
 
@@ -13,6 +13,140 @@
 > the split: that file gets read every session, this one only on demand.
 
 ## Progress log (most recent first) — full detail
+
+- **Sep 26 (bench, reverse) — THE SAME STAIRCASE THE OTHER WAY. The direction
+  asymmetry is the integrator and nothing else, "reverse is x% harder" is
+  false, and a figure panel was caught about to assert an agreement its
+  estimator cannot measure.**
+
+  **Why reverse is not an optional symmetry check.** The rover reverses. And
+  the friction feedforward in `velocity.c:346` *"takes the sign of where we are
+  trying to go, not of the error"* — `ff_term = ff_slope * sp_rpm`, then
+  `+ ff_offset` if `sp_rpm > 0` and `- ff_offset` if `< 0`. It is therefore
+  symmetric **by construction**, which means it cannot absorb a plant that is
+  not. Whatever the plant does differently in reverse has to show up somewhere
+  else, and that somewhere is measurable.
+
+  **Tooling first: the `stair` profile, and two sign bugs caught before it ran.**
+  The forward staircase had been driven by a scratchpad script; it was landed in
+  `bench.py` as a real profile (one arming, a long dwell per point, settled
+  stats past `--hold-settle`, abort on `--abort-ma` or any watchdog fraction).
+  Promoting it surfaced two bugs, both fatal, neither cosmetic:
+    - A literal `--lo -10 --hi -20` makes the step count negative and produces
+      an **empty setpoint list**.
+    - ⚠️ **The 30% ceiling guard was written as `max(setpoints)`.** For a
+      reverse run that reads **−10**, which is below every ceiling, so the guard
+      **silently stops guarding in exactly the direction about to be tested.**
+      The standing instruction is that 30% duty is the hard ceiling for
+      characterisation work; this would have removed it at the moment it
+      mattered most.
+    - Fix: `--lo`/`--hi` are **magnitudes**, `--dir` carries the sign (the same
+      split `profile_step` already uses), a `walk` term handles descending
+      ranges, and the guard tests `max(abs(s))`. Verified offline across four
+      argument combinations before anything spun. `import statistics` was also
+      missing — the new profile used it.
+
+  **A short −10 rpm direction check** ran first (`runs/2026-09-26T11-01-57_stair`,
+  25 s), then the full run.
+
+  **The run — `runs/2026-09-26T11-02-46_stair`, `outcome=ok`, NOT SUSPECT.**
+  21 points, −10.0 → −20.0 rpm in 0.5 rpm steps, 60 s each, 1265.5 s total.
+  **63,203 `V` rows, 0 sequence gaps, 0 velocity gaps, 0 unpublished steps,
+  0 tx_dropped.**
+
+  | | forward | reverse |
+  |---|---|---|
+  | worst settled error | 0.015 rpm | **0.006 rpm** |
+  | per-point sem | 0.020 | 0.019 |
+  | inverse fit | `12.559·rpm + 30.54` (rms 1.51) | `11.503·\|rpm\| + 43.65` (rms 1.54) |
+  | peak \|out\| | 284 o/oo | 277 o/oo (of 300) |
+  | saturation | 0% at all 21 | 0% at all 21 |
+  | mean current | 270 mA | **292 mA (+8.1%)** |
+  | ripple sd | 0.87 → 1.21 rpm | 0.88 → 1.00 rpm |
+  | integrator range | −0.6 .. +3.7 o/oo | −6.7 .. +5.3 o/oo |
+
+  ⚠️ **A prediction I made was wrong, and the data corrected it.** From the
+  single −10 rpm check — where reverse costs ~3.8% more duty — I said the top of
+  the reverse range would saturate against the 300 o/oo ceiling. It did not:
+  **0% saturation at all 21 points, peak 277.** The extrapolation came from the
+  one point where reverse costs *more*, and the asymmetry **changes sign near
+  14.3 rpm**.
+
+  **THE HEADLINE — the asymmetry is the integrator, and that is arithmetic, not
+  luck.** `corr(Δ|out|, Δi) = 0.9986` across the 21 setpoints, the two
+  difference curves **0.62 o/oo rms apart**. The feedforward is bit-identical in
+  both runs (asserted at figure load: `fwd.ff() == rev.ff()`), so there is
+  nowhere else for a direction difference to land. The consequence is the useful
+  part: **the integrator is a direct readout of the model's direction error**,
+  which is how a separate reverse `ff_b` would get *measured* rather than
+  guessed.
+
+  ⚠️ **"Reverse is x% harder" is false.** The asymmetry spans **−10.0 to
+  +1.7 o/oo**, mean −2.74, and clears the comparison's own noise floor —
+  **±2.16 o/oo**, the quadrature sum of the two fits' residuals — at only
+  **9 of 21 setpoints**, with the sustained sign change at **14.3 rpm**. Reverse
+  costs more below it and less above. Two fits with different slope *and*
+  intercept cannot be summarised by one scalar.
+    - The crossing detector needed fixing too: it first reported **10.5 rpm**,
+      having taken the *first* zero crossing — one of four noise wobbles inside
+      the ±2.16 floor. It now takes the last crossing the data does not return
+      from.
+
+  ⚠️ **THE PANEL THAT WAS ABOUT TO SHIP A FALSE CLAIM.** The raw
+  events-per-revolution figures came out **identical to every digit** in both
+  directions: 11.91 ± 0.19 vs 11.91 ± 0.19. That is not independent agreement.
+  An autocorrelation period is quantised to an integer number of **20 ms control
+  periods**, and at these speeds one bin is worth **±0.72 events/rev** — four
+  times the "spread" being reported. The estimator cannot resolve a difference
+  smaller than its own bin, so two perfectly coincident marker sets would have
+  asserted a precision the method does not have, and the whole ±0.19 was
+  quantisation rather than physics.
+    - **Fix: parabolic sub-bin peak refinement** (fit a parabola through the
+      peak and its two neighbours, take the vertex; reject it if the curvature
+      is non-negative or the vertex leaves its own bin). Added as **opt-in
+      (`interp=True`)** so the forward figure's published numbers do not move —
+      `velocity_loop_stair_21min.png` was md5-baselined before the change and
+      re-verified byte-identical after it (`8a9865010df31cf6f6216e7ac04498a8`).
+    - **The refined result is a better statement than the one it replaced:**
+      **11.998 ± 0.017** forward, **11.978 ± 0.017** reverse — an 11× tightening
+      that puts the forward run on **exactly 12 per revolution to 0.02%**.
+      The paired difference is **−0.0204 ± 0.0030 events/rev**, negative at
+      **20 of 21** setpoints: statistically resolved, but 0.17% — far too small
+      to be a different feature.
+    - The ripple's **amplitude** is *not* the same and the figure says so
+      explicitly, because "the ripple is identical" is only half true.
+
+  ⚠️ **Reverse draws +8.1% current while commanding LESS output** (292 vs
+  270 mA; 277 o/oo against 284 at the top of the range). More current for less
+  duty is either a real direction-dependent load or a **sign-dependent offset in
+  the current sense**. These two runs cannot separate them, and the low end sits
+  inside the 145 o/oo synchronised-sense floor's reach anyway. It still wants an
+  independent ammeter.
+
+  ⚠️ **THE CONFOUND, stated on the figure itself.** The two runs are **67 min
+  apart and NOT interleaved**. Temperature, belt tension, and where the carriage
+  sits on a treadmill belt that travels the *other way* in reverse are all
+  aliased into the word "direction". **An A/B/A staircase would separate them
+  and has not been run.** Until it is, "direction" is the honest label for the
+  difference but not a proven cause of it.
+
+  **Figure: `figures/velocity_loop_stair_direction.png`** + 
+  `plot_velocity_loop_stair_direction.py`, sharing `stairdata.py` with the
+  forward figure and likewise transcribing nothing; both scripts end by printing
+  the same numbers they drew. A separate figure rather than more panels on the
+  forward one, deliberately: the forward figure's four panels each carry a
+  single-run argument with long annotations and have no room, and this data's
+  value is **entirely comparative** — every interesting number here is a
+  difference, which is a different thesis. `stairdata.py` gained magnitude
+  views (`m_sp`, `m_rpm`, `m_out`, `m_ff`) so both signs share one code path;
+  ⚠️ **`m_i` is deliberately NOT `abs()`** — it is `i * sign(setpoint)`, what
+  the integrator adds to the *magnitude* of the commanded output, because the
+  integrator's sign is only meaningful against the output it is correcting.
+
+  **Still unexercised:** bit 64 (MISSED) has still never fired; **`cfg save` has
+  still never been run**, so every gain remains RAM-live; the ~12-per-revolution
+  mechanical feature is still unidentified; and the A/B/A interleaved staircase
+  is owed.
 
 - **Sep 26 (bench) — THE VELOCITY LOOP RAN FOR 21 CONTINUOUS MINUTES AND THE
   GAINS ARE GOOD. Then the step metric that said otherwise turned out to be

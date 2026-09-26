@@ -1,5 +1,7 @@
 # RobertUN — Wheel Controller Firmware Context
-**Last updated:** September 26, 2026 (**THE VELOCITY LOOP RAN FOR 21 CONTINUOUS MINUTES ON THE RIG, AND THE SHIPPED GAINS ARE GOOD.** 21 setpoints 0.5 rpm apart, 10→20 rpm, 60 s each, uninterrupted: **mean tracking error +0.0008 rpm** against a 0.020 rpm instrument floor, **0% saturation at every hold** (peak 284 of 300 o/oo — the 6% an earlier short step reported was the acceleration transient, not the operating point), and **zero drift** over each 60 s. The closed-loop plant inverse `out = 12.559 × rpm + 30.54 o/oo` sits **0.39% from the Sep 25 open-loop sweep inverted**, from different excitation and a different estimator — **the feedforward is doing essentially all the work** (integrator mean +1.5 of ~219 o/oo) and the ¼-of-textbook derating is costing no accuracy. ⚠️ The **±1 rpm ripple is MECHANICAL and the run proves it**: 11.91 ± 0.19 events *per output revolution*, held across a 2:1 speed range while the period swept 500→260 ms — a limit cycle holds a fixed period, only a rotating feature holds a fixed count per rev. ⚠️ **Then `bench.py run step`'s metric was caught measuring `vel_slew` under the loop's name** — a 0→10 step returned "rise 2.0 s" whatever Kp was, because 2.0 s is 0.8 × the 2.5 s the 4 rpm/s setpoint ramp costs on its own. Rise/overshoot/settling now anchor at the **end of the ramp**, `track_lag_rpm` measures the loop *during* it, and the **"14% overshoot" turned out to be a ripple peak** — 4 encoder counts above target at both 10 and 20 rpm, `overshoot_above_ripple` **False on all three runs**. Two figures added; `stepdata.py` **imports `step_metrics` from `bench.py`** so the figure cannot drift from the tool)
+**Last updated:** September 26, 2026 (**THE STAIRCASE WAS RUN IN BOTH DIRECTIONS, AND THE DIRECTION ASYMMETRY IS ENTIRELY THE INTEGRATOR.** A second 21-minute staircase at **−10.0 → −20.0 rpm** (63,203 `V` rows, 0 gaps, 0 unpublished steps) tracks **better** than forward — worst settled error **0.006 rpm** vs 0.015 — with **0% saturation at all 21 holds**, peak 277 of 300 o/oo. ⚠️ **That corrects a prediction that the top of the reverse range would saturate**, extrapolated from the single −10 rpm check; it does not, because the asymmetry **changes sign at 14.3 rpm**. **`corr(Δ|out|, Δi) = 0.9986`, 0.62 o/oo rms apart** — the feedforward is symmetric *by construction* (it takes the sign of the setpoint), so every bit of direction dependence lands in the integrator, which makes **the integrator a direct readout of the model's direction error** and is how a separate reverse `ff_b` gets measured rather than guessed. ⚠️ **"Reverse is x% harder" is false**: the asymmetry spans −10.0 to +1.7 o/oo and clears the comparison's own **±2.16 o/oo noise floor at only 9 of 21 setpoints**. Reverse draws **+8.1% current while commanding LESS output** — real load or sign-dependent current sense, undecidable from these two runs. ⚠️ **A panel was caught about to ship a false claim:** the ripple count came out *identical to every digit* in both directions, which was the 20 ms lag grid (**±0.72 events/rev**), not agreement — sub-bin refinement tightens it 11× and gives **11.998 ± 0.017 forward, 11.978 ± 0.017 reverse**, i.e. the same feature at **exactly 12 per revolution**. ⚠️ **The confound is stated on the figure:** the runs are **67 min apart and not interleaved**, so temperature, belt tension and belt position are aliased into "direction"; an **A/B/A staircase has not been run**. `bench.py` gained the **`stair` profile** — with a sign bug caught before it ran, where a ceiling guard written as `max(setpoints)` would have read −10 and waved through any speed in the very direction about to be tested)
+
+**Previously:** September 26, 2026 (**THE VELOCITY LOOP RAN FOR 21 CONTINUOUS MINUTES ON THE RIG, AND THE SHIPPED GAINS ARE GOOD.** 21 setpoints 0.5 rpm apart, 10→20 rpm, 60 s each, uninterrupted: **mean tracking error +0.0008 rpm** against a 0.020 rpm instrument floor, **0% saturation at every hold** (peak 284 of 300 o/oo — the 6% an earlier short step reported was the acceleration transient, not the operating point), and **zero drift** over each 60 s. The closed-loop plant inverse `out = 12.559 × rpm + 30.54 o/oo` sits **0.39% from the Sep 25 open-loop sweep inverted**, from different excitation and a different estimator — **the feedforward is doing essentially all the work** (integrator mean +1.5 of ~219 o/oo) and the ¼-of-textbook derating is costing no accuracy. ⚠️ The **±1 rpm ripple is MECHANICAL and the run proves it**: 11.91 ± 0.19 events *per output revolution*, held across a 2:1 speed range while the period swept 500→260 ms — a limit cycle holds a fixed period, only a rotating feature holds a fixed count per rev. ⚠️ **Then `bench.py run step`'s metric was caught measuring `vel_slew` under the loop's name** — a 0→10 step returned "rise 2.0 s" whatever Kp was, because 2.0 s is 0.8 × the 2.5 s the 4 rpm/s setpoint ramp costs on its own. Rise/overshoot/settling now anchor at the **end of the ramp**, `track_lag_rpm` measures the loop *during* it, and the **"14% overshoot" turned out to be a ripple peak** — 4 encoder counts above target at both 10 and 20 rpm, `overshoot_above_ripple` **False on all three runs**. Two figures added; `stepdata.py` **imports `step_metrics` from `bench.py`** so the figure cannot drift from the tool)
 
 **Previously:** September 26, 2026 (**W5's VELOCITY PID MODULE IS WRITTEN, AND SO IS THE INSTRUMENT TO TUNE IT WITH — both on `w5-velocity-pid`, neither yet run on hardware.** `velocity.c`/`.h` is a **policy layer above `drive.c`**, stepping at the *measurement* rate (once per `enc window`, 50 Hz default) rather than on the 1 kHz tick, with feedforward from the inverse plant, the **setpoint ramp that task 21 said belongs up here**, four named anti-windup freeze conditions, and nine `cfg` keys in milli-units. Then the telemetry: a second opt-in **`V,` record — one line per control step**, carrying setpoint, measurement, output and **all four terms separately**, plus a flag set that splits *why* the integrator froze. Host side gained the parser, `velocity.csv`, and **`bench.py run step`** — rise time, overshoot, settling, steady-state error, and the integrator's resting value, which is how much the feedforward missed by. ⚠️ **The finding that generalises: arming a control loop invalidates every host-side stop sequence that talks to the layer below it.** `safe_stop()`'s `drv duty 0` / `drv coast` were being overwritten by the loop 20 ms later; `vel off` now goes first. Same shape as task 21's watchdog-defeat problem, one layer up. ⚠️ Also fixed: **`velocity.c` shipped with no `volatile` on any ISR-written static** — caught while adding the snapshot, before it cost anything)
 
@@ -27,6 +29,7 @@
 
 One line per entry. Full detail (exact numbers, register values, reasoning chains) is in `PROJECT_CONTEXT_WHEEL_FW_LOG.md`.
 
+- **Sep 26 (bench, reverse)** — **THE SAME STAIRCASE IN REVERSE, AND THE ASYMMETRY IS THE INTEGRATOR AND NOTHING ELSE.** 21 points, −10.0 → −20.0 rpm, 60 s each, uninterrupted (`runs/2026-09-26T11-02-46_stair`, **63,203 `V` rows, 0 gaps, 0 unpublished steps, 0 tx_dropped**). **Tracking is better than forward** — worst settled error **0.006 rpm** vs 0.015, per-point sem 0.019 — and **0% saturation at all 21 holds**, peak **277 of 300 o/oo**. ⚠️ **This corrects a prediction I made** from the single −10 rpm direction check, that the top of the reverse range would saturate: it does not, because the asymmetry **changes sign**. **The headline: `corr(Δ|out|, Δi) = 0.9986`, 0.62 o/oo rms apart.** The feedforward takes the sign of the *setpoint* ([`velocity.c:346`](../../firmware/RobertUN_ModuleNode/Core/Src/velocity.c#L346)) and is therefore symmetric **by construction**, so it cannot absorb a plant that is not — every bit of direction dependence lands in the integrator, which makes **the integrator a direct readout of the model's direction error**. ⚠️ **No single "reverse is x% harder" is true:** the asymmetry spans **−10.0 to +1.7 o/oo** (mean −2.74) and **changes sign at 14.3 rpm**, clearing the comparison's own **±2.16 o/oo noise floor** (quadrature sum of the two fits' residuals) at **9 of 21 setpoints**. Reverse inverse **`out = 11.503 × |rpm| + 43.65`** (rms 1.54) vs forward `12.559 × rpm + 30.54` — different slope *and* intercept. **The ripple is the same mechanical feature, at 12.00 per revolution**: 11.998 ± 0.017 forward, 11.978 ± 0.017 reverse, paired difference −0.0204 ± 0.0030 (negative at 20 of 21) — resolved but 0.17%. ⚠️ **That panel was about to ship a false claim:** on the raw grid an autocorrelation period is an integer count of 20 ms control steps, worth **±0.72 events/rev**, so both directions returned *identical digits* at all 21 holds and reporting it as agreement would have claimed a precision the method does not have; sub-bin parabolic refinement (opt-in, so the forward figure's numbers do not move) tightens it 11×. The ripple's **amplitude** is not the same (0.87→1.21 rpm fwd, 0.88→1.00 rev). ⚠️ **Reverse draws +8.1% current (292 vs 270 mA) while commanding LESS output** — a real direction-dependent load or a sign-dependent offset in the current sense, undecidable from these two runs and partly inside the 145 o/oo sense floor. ⚠️ **THE CONFOUND, carried on the figure:** the runs are **67 min apart and NOT interleaved**, so temperature, belt tension and carriage position on a belt that travels the *other way* in reverse are all aliased into "direction"; **an A/B/A staircase would separate them and has not been run.** Tooling: `bench.py` gained the **`stair` profile** (one arming, long dwell per point, settled stats) — ⚠️ **two sign bugs were caught in it before it ran**, the fatal one a ceiling guard written as `max(setpoints)`, which reads **−10** for a reverse run and would have waved through any speed at all in the very direction about to be tested; `--lo`/`--hi` are now **magnitudes** with `--dir` carrying the sign, and the guard tests magnitude. Figure `velocity_loop_stair_direction.png` + script added.
 - **Sep 26 (bench)** — **THE VELOCITY LOOP RAN 21 CONTINUOUS MINUTES AND THE SHIPPED GAINS ARE GOOD; THEN THE STEP METRIC THAT SAID OTHERWISE TURNED OUT TO BE MEASURING THE SLEW LIMITER.** A 21-point staircase, 10.0→20.0 rpm in 0.5 rpm steps, **60 s each, uninterrupted** — chosen over another short step because a step says whether the loop is *stable* and nothing about whether it is *accurate*. **63,202 `V` rows, 0 sequence gaps, 0 unpublished control steps, 0 tx_dropped.** **Tracking: mean error +0.0008 rpm, worst 0.015, sd 0.005**, against a per-point standard error of ~0.020 rpm — the loop is accurate below the noise floor of the instrument measuring it. **0% saturation at all 21 holds**, peak **284 of 300 o/oo**, which corrects the 6% an earlier short step reported at 20 rpm: that was the **acceleration transient**, not the operating point. **The derating costs nothing because the plant model behind the feedforward is right** — closed-loop inverse **`out = 12.559 × rpm + 30.54 o/oo`** (rms 1.51, n=21) against Sep 25's open-loop sweep inverted, **`12.511 × rpm + 30.28` — 0.39% apart** from different excitation and a different estimator; shipped `ff` error at 15 rpm **−1.3 o/oo (−0.6%)**, integrator **mean +1.46 o/oo of ~219 commanded**. ⚠️ **The "~4.5% optimistic" caveat on that plant model does not hold in this band.** ⚠️ **The ±1 rpm ripple is MECHANICAL and the run proves it rather than asserting it: 11.91 ± 0.19 events per output revolution**, range 11.5–12.2, held across a 2:1 speed range while the *period* swept 500→260 ms — **a control limit cycle holds a fixed period; only a rotating feature holds a fixed count per revolution.** Identifying which feature is a mechanical job. Within-hold drift **+0.0005 rpm / −0.04 o/oo over 60 s**, and the low-end current U-shape is **not** a warm-up transient (a 90 s re-take 22 min later reproduced 294→293 and 274→278 mA) — but it sits near the 145 o/oo sense floor and wants an independent ammeter. ⚠️ **THEN THE METRIC.** `run step` reported "rise 2.0 s, overshoot 14%" for 0→10 rpm; **both were measurements of something other than the controller, and both pointed at a gain change that would have made the loop worse.** `vel_slew` ships at **4 rpm/s**, so a 0→10 "step" is 2.5 s of ramp and 0→20 is 5 s — **the tell was that rise did not depend on Kp**, because 2.0 s is 0.8 × 2.5 s, the limiter's own 10→90% time. Overshoot and settling now anchor **at the instant `VFLAG_RAMPING` clears**; `rise_s` is still reported from the command but beside **`rise_slew_floor_s`** with **`ramp_limited`** set when it is within 30% of it; new **`track_lag_rpm`** measures how far behind the moving setpoint the loop sits *during* the ramp, **which is the quantity a gain change actually moves**. Replaying all three committed runs recovers **`slew_rpm_s` 3.97–3.98** against the configured 4.0, and the 0→20 run settles **2.94 s from the ramp's end vs 7.94 s from the command** — **the same instant**, 5.00 s apart only in what they subtract. ⚠️ **The corrected metric then exposed a second defect: the "overshoot" is a ripple peak.** A single maximum drawn from ~1.2 rpm sd of mechanical ripple sits 2–3 sd high whatever the gains do; all three runs peak **4 encoder counts (1.42 rpm) above target — the same distance at 10 and at 20 rpm**, which a controller's overshoot would not be. `step_metrics` now reports **`tail_sd_rpm`** and sets **`overshoot_above_ripple`, False on all three**, bounds the peak search to a 3 s window (the plant's slow pole is 2.75 s) so a longer `--dwell` cannot manufacture a bigger overshoot, and flags **`overshoot_window_truncated`** when a run was too short to fill it. **The honest verdict for all three is "no overshoot resolvable, and rise not measurable above the limiter"** — less satisfying than "lower Kp", and correct. A real step response needs **`--slew 0`, which has not been run.** Two figures added; ⚠️ **`stepdata.py` imports `step_metrics` from `bench.py` and calls it rather than recomputing it**, so the figure cannot drift from the tool it documents.
 - **Sep 26 (later)** — **W5's VELOCITY PID IS WRITTEN, AND SO IS THE INSTRUMENT TO TUNE IT.** Branch `w5-velocity-pid`; **nothing here has been run on hardware yet.** `velocity.c`/`velocity.h` is a **policy layer above `drive.c`** — it decides, `drive.c` actuates — and it **steps at the measurement rate, not the tick rate**: `velocity_on_tick()` runs off TIM6 but advances only when `encoder_velocity_seq()` changes, which is once per `enc window` (50 Hz at window 20). A loop running faster than its sensor updates would differentiate a staircase and integrate the same error twice. Feedforward comes from the inverse plant (`duty% = 1.251 × rpm + 3.028`) with the friction offset applied **with the sign of the setpoint**, so the PID only has to correct the fit's error rather than build the whole output. **The setpoint ramp lives here**, which is exactly what task 21 said it would: `drive.c` has no setpoint, and ramping the setpoint is what stops the loop winding up against its own ramp. Anti-windup freezes the integrator under four named conditions, and **which one fired is reported**. Gains ship at **¼ of textbook** (Kp 3.0 / Ki 10.0 against 1/K = 12.51 and 1/(K·τ) = 57.1) on purpose — the plant fit they derive from is the one flagged 4.5% optimistic. Nine `cfg` keys in **milli-units**, because config is int32-only. ⚠️ **A real defect was found in what had just been committed: not one of `velocity.c`'s ISR-written statics was `volatile`** — latent while nothing copied them out, load-bearing the moment a snapshot did. Fixed before the snapshot was added. **Then the telemetry, which is the half that makes tuning possible at all.** The `T,` line says what the *bridge and plant* did; it says nothing about what the *loop decided*. So a second opt-in record, **`V,seq,ms,sp_mrpm,meas_mrpm,out,ff,p,i,d,flags`** — a separate record rather than more columns on `T,`, because `Telem.parse()` length-checks and every committed run directory holds a 7-field `telemetry.csv`, so a widened `T,` would mean two incompatible things depending on the reader. **Published once per control step, not on the `telem` timer**: riding that timer would alias the loop (duplicates at 100 Hz, beats at 30 Hz), and the integrator and derivative only mean anything per step. **One slot with overrun reporting, not a ring** — an unpublished step sets a sticky bit that is OR'd into the next line, because a silently decimated stream reads as a *slow control loop*, which is the wrong conclusion for someone about to change a gain. The flag set **splits the freeze reason three ways**: frozen-alone is anti-windup working, frozen-plus-slewing or frozen-plus-no-bridge is the loop being held off by something else — identical in `out`, opposite corrections. `telem on` stays the master switch, so `telem off` remains a complete stop. Host side: `node.py` parses both records from **one regex alternation** (the echo-reassembly logic needs ordered non-overlapping matches, which two iterators cannot promise), `bench.py` writes `velocity.csv` and gained **`run step`** — rise time, overshoot, settling to ±2%, steady-state error, saturation and freeze fractions, and **the integrator's resting value, which is how much the feedforward missed by**. Two profile defaults that are not copied from `sweep` and must not be: **`enc window 20`, not 100** (window 100 is a 10 Hz loop with 100 ms of lag that would dominate the response being measured) and **`cfg ramp_pmps 0`** (with drv's limiter armed, `drive_slewing()` is true almost continuously and the integrator is frozen for the whole run). ⚠️ **The finding worth carrying forward: arming a control loop invalidates every host-side stop sequence that addresses the layer below it.** `safe_stop()` sent `drv duty 0`, `drv coast`, `drv disable`, `telem off` — with the loop armed the first two are overwritten 20 ms later, and only the third actually stopped anything. `vel off` now goes first. This is task 21's watchdog-defeat problem one layer up, and it will recur again at CAN and at the rover supervisor. Firmware builds clean under `-Wall -Wextra` at **27.14% flash, 4.35% RAM**.
 - **Sep 26** — **TASK 21: THE DUTY SLEW LIMITER IS IN THE FIRMWARE.** `drive.c` gained a per-mille slew limiter on the existing 1 kHz TIM6 tick — `drv ramp <o/oo per s>`, `drv ramp floor <o/oo>`, both backed by config keys (`ramp_pmps`, `ramp_floor`) and both **0 = off**, so nothing behaves differently until armed. Also `drv duty <n>p`, a per-mille command form that **unblocks the 1%-step stiction bracket**. ⚠️ **The placement reverses what this file said.** Task 21 had it in the control layer; reading the code showed that cannot work, because **`drive_set_duty()` calls `drive_kick()`** on purpose — a duty command is evidence of a live host — so any ramp module above `drive.c` would refresh the command watchdog a thousand times a second and a dead host would never be detected again. It is therefore the **command watchdog's own split**: mechanism in `drive.c`, policy above. Secondary reason: a limiter callers can route around is advisory; inside, the invariant is unconditional. **Coast and brake are deliberately NOT ramped** — coast is the safe stop and the watchdog's action, brake is an explicit act — so the standing "ramp duty down before braking" policy is written above as `drive_set_duty(0)` → `!drive_slewing()` → `drive_brake()`, which is what the new accessor is for; a tightened `drive_set_limit()` is immediate too, being protection rather than a command. `drive_duty()` now reports what the **bridge is running**, not the target, so a ramp shows up in telemetry as a ramp. The accumulator is in **milli-per-mille** because 5%/s is 0.05 per-mille per tick, and that scaling collapses to an identity — **the per-tick step in milli-per-mille IS the rate in per-mille per second** — so there is no division in the ISR and a ramp lands exactly on its target. Arithmetic verified offline against a transcription of the C before the board was touched (floor jump, no floor re-trigger at a reversal's zero crossing, cap-tightening instant and sticky, 50 CCR writes/s not 1000). Builds clean at 96 972 B flash. **Two things learned from reading `cfg` first:** the bench board has **never had `cfg save` run** (`slot 0/1024`, no overrides), so adding keys cost no calibration — but in general **adding a config key discards the stored record**, since `config.c` rejects a record whose key count differs, and `CONFIG_VERSION` is not what guards that. ✅ **Verified on the loaded rig the same day**, 1462 telemetry lines with no seq gaps: slew rate **50.00 o/oo/s** fitted over 340 samples, 120→290 in **3400 ms against 3400 predicted**, floor jump in one sample and the encoder turning 10 ms later, sync setting at duty 145 as always, **peak 581 mA against the host prototype's 572**. **The A/B against `drv ramp 0` is the evidence:** the un-ramped step read **1582 mA against a 1579 mA trip** — the clamp value, not the demand — and held the driver in regulation ~40 ms, so **the ramp cuts peak inrush 2.7×**; ⚠️ it latched **no fault and no ADC saturation**, meaning an un-ramped start relies on ITRIP silently and nothing in the telemetry would ever have shown it. **The watchdog test was repeated with the motor live and passed**: the 10 s deadline landed on the exact millisecond and duty went 290→0 in one sample (coast, not ramp). ⚠️ Both runs settled at **19.82 / 19.97 rpm against the fit's 20.76**, 4.5% low and mutually consistent — **the loaded plant line needs re-fitting, not explaining**.
@@ -2857,7 +2860,9 @@ placement instead of by guessing.
       - ⚠️ **The ±1 rpm ripple is MECHANICAL, and the run proves it.**
         **11.91 ± 0.19 events per output revolution** across all 21 holds, while
         the *period* swept 500 → 260 ms. Identifying the feature is a mechanical
-        inspection, not a telemetry one.
+        inspection, not a telemetry one. *(Refined below to* **11.998 ± 0.017**
+        *— same holds, same data, sub-bin peak interpolation. The ±0.19 here is
+        the 20 ms lag grid, not the feature's spread.)*
       - **No drift** within a hold (+0.0005 rpm / −0.04 o/oo over 60 s), and the
         low-end current U-shape is **not** warm-up — a 90 s re-take 22 minutes
         later reproduced it. ⚠️ It sits near the 145 o/oo synchronised-sense
@@ -2877,6 +2882,86 @@ placement instead of by guessing.
       ⚠️ **Still unexercised after all this:** bit 64 (MISSED) never fired;
       **`cfg save` has still never been run**, so every gain above is RAM-live;
       and a true loop rise time needs **`--slew 0`**, which has not been run.
+
+    - ✅ **THE SAME STAIRCASE IN REVERSE — 21 more minutes, and the asymmetry is
+      the integrator.** Identical profile at −10.0 → −20.0 rpm
+      (`runs/2026-09-26T11-02-46_stair`), same gains, same rig, **67 min after
+      the forward run**. **63,203 `V` rows, 0 gaps, 0 unpublished steps,
+      0 tx_dropped**; `outcome=ok`, not SUSPECT. Reverse is not a symmetry
+      check you can skip — the rover reverses, and the feedforward's sign
+      handling ([`velocity.c:346`](../../firmware/RobertUN_ModuleNode/Core/Src/velocity.c#L346))
+      takes the sign of the *setpoint*, so it is symmetric **by construction**
+      and cannot absorb a plant that is not.
+      - **Tracking is as good or better: worst settled error 0.006 rpm**
+        (forward 0.015), per-point sem 0.019. **0% saturation at all 21 holds**,
+        peak **277 of 300 o/oo** — ⚠️ **this corrects a prediction I made** from
+        the single −10 rpm direction check, that the top of the reverse range
+        would saturate. It does not, because the asymmetry **changes sign**.
+      - **The headline: `corr(Δ|out|, Δi) = 0.9986`, 0.62 o/oo rms apart.**
+        The feedforward is bit-identical in both runs, so every bit of direction
+        dependence has nowhere to land except the integrator — which makes
+        **the integrator a direct readout of the model's direction error**.
+        That is how a separate reverse `ff_b` gets *measured* rather than
+        guessed.
+      - ⚠️ **"Reverse is x% harder" is false.** The asymmetry spans
+        **−10.0 to +1.7 o/oo** (mean −2.74) and **changes sign at 14.3 rpm** —
+        reverse costs *more* below it and *less* above. It clears the
+        comparison's own **±2.16 o/oo noise floor** (quadrature sum of the two
+        fits' residuals) at only **9 of 21 setpoints**. Reverse inverse
+        **`out = 11.503 × |rpm| + 43.65`** (rms 1.54) vs forward
+        `12.559 × rpm + 30.54` — different slope *and* intercept, which is why
+        no single scalar describes it.
+      - **The ripple is the same mechanical feature, and it is 12.00 per
+        revolution.** **11.998 ± 0.017** forward, **11.978 ± 0.017** reverse;
+        paired difference **−0.0204 ± 0.0030**, negative at 20 of 21 setpoints
+        — resolved, but 0.17%, far too small to be a different feature.
+        ⚠️ **This needed an estimator fix to be honest.** On the raw grid an
+        autocorrelation period is an integer count of 20 ms control steps, worth
+        **±0.72 events/rev** at these speeds — so both directions returned
+        *identical digits* at all 21 holds, and reporting that as agreement
+        would have claimed a precision the method does not have. Sub-bin
+        parabolic peak refinement (opt-in, so the forward figure's published
+        numbers do not move) tightens it 11×. The ripple's **amplitude** is
+        *not* the same: 0.87 → 1.21 rpm forward, 0.88 → 1.00 reverse.
+      - ⚠️ **Reverse draws +8.1% current (292 vs 270 mA) while commanding LESS
+        output** at the top of the range. More current for less duty is either a
+        real direction-dependent load or a **sign-dependent offset in the
+        current sense**; these two runs cannot tell which, and the low end sits
+        inside the 145 o/oo sense floor's reach anyway. Still wants an
+        independent ammeter.
+
+      ![the same staircase both ways, forward and reverse](figures/velocity_loop_stair_direction.png)
+
+      *Regenerate with `python3 figures/plot_velocity_loop_stair_direction.py`;
+      shares `figures/stairdata.py` with the forward figure and likewise
+      transcribes nothing. A: the difference curves — Δ|out| and Δi lying on top
+      of each other, against the ±2.16 o/oo floor, with the unchanged tracking
+      error inset. B: both inverse fits against the 300 o/oo ceiling and the
+      shipped feedforward. C: events per revolution both ways against exactly
+      12, with the amplitude inset that does *not* agree. D: current vs output
+      with the sense floor.*
+
+      ⚠️ **THE CONFOUND, carried on the figure itself:** the two runs are
+      **67 min apart and NOT interleaved**, so temperature, belt tension and
+      where the carriage sits on the belt — which travels the *other way* in
+      reverse — are all aliased into "direction". **An A/B/A staircase would
+      separate them, and has not been run.** Until it is, "direction" is the
+      honest label for the difference but not a proven cause of it.
+
+    **Open work the two staircases leave behind:**
+    - ⬜ **An A/B/A staircase, to un-alias "direction" from everything that
+      drifted between the two runs.** Forward, reverse, forward again, in one
+      session: if the return leg reproduces the first, direction is the cause;
+      if it lands between them, drift is. ~63 min, no rewiring, and it settles
+      the one caveat on every number in the comparison figure. Run this before
+      anyone acts on the reverse `ff_b` the integrator is pointing at.
+    - ⬜ **Identify the ~12-per-revolution mechanical feature.** Now pinned at
+      **exactly 12.00 per output revolution** in both directions, to 0.02%. That
+      is a count, not a frequency, so it is a mechanical inspection — gear teeth,
+      a coupling, or the wheel-to-belt contact — and not a telemetry question.
+    - ⬜ **An independent ammeter on the low-duty end.** The +8.1% reverse
+      current and the low-end U-shape both sit near the 145 o/oo synchronised
+      sense floor, and neither can be trusted from the board's own reading.
 
     **Two constraints inherited from Sep 20, to be designed around rather than
     discovered during tuning:**
@@ -2908,6 +2993,59 @@ placement instead of by guessing.
       not as a low reading.
 
 ## KEY LEARNINGS & GOTCHAS
+
+⚠️ **AN ESTIMATOR THAT RETURNS THE SAME ANSWER TWICE HAS NOT AGREED WITH
+ITSELF — CHECK ITS RESOLUTION BEFORE YOU BELIEVE IT.** Found Sep 26, 2026 while
+drawing the forward/reverse comparison. Two independent 21-minute runs returned
+ripple counts **identical to every digit** — 11.91 ± 0.19 both ways. That reads
+as a beautiful confirmation and is actually the opposite: the autocorrelation
+period is quantised to an integer number of 20 ms control periods, so the
+smallest difference the method can express is **±0.72 events/rev**, four times
+the "spread" being quoted. Both runs simply selected the same bin at all 21
+holds. **Suspicion should rise, not fall, when two measurements agree better
+than their own quoted uncertainty** — the agreement is then a property of the
+instrument, not of the thing. The test is arithmetic and takes a minute: work
+out what one quantum of the estimator is worth in the units being plotted, and
+compare it to the difference being claimed. The fix here (parabolic sub-bin peak
+refinement) tightened the estimate 11× and turned a non-claim into a real one —
+**exactly 12.00 per revolution**, with a resolved 0.17% direction offset. Add
+any such refinement **opt-in**, and md5-baseline every figure that shares the
+loader, so already-published numbers cannot move underneath you.
+
+⚠️ **A GUARD WRITTEN WITH `max()` OVER SIGNED VALUES STOPS GUARDING THE MOMENT
+THE SIGN FLIPS — AND IT FAILS SILENTLY, IN THE NEW DIRECTION, ON THE FIRST RUN.**
+Found Sep 26, 2026 in the `stair` profile, before it was ever run. The 30% duty
+ceiling was enforced as `max(setpoints) > max_rpm`. For a reverse staircase that
+expression evaluates to **−10**, which is below every conceivable ceiling, so
+the check passes trivially and any speed at all goes through — in exactly the
+direction being tested for the first time. **A limit on a magnitude must be
+tested on a magnitude** (`max(abs(s))`). The structural fix is to keep sign out
+of the quantities being bounded altogether: `--lo`/`--hi` are magnitudes and
+`--dir` carries the sign, so there is only one place a sign error can live.
+Generalises to every `min`/`max`/`>`/`<` guard that will one day see a negative
+setpoint — current limits, position limits, and the rover's own speed clamps.
+
+⚠️ **A FEEDFORWARD THAT IS SYMMETRIC BY CONSTRUCTION TURNS ITS INTEGRATOR INTO A
+MEASUREMENT INSTRUMENT.** Sep 26, 2026. `velocity.c`'s friction feedforward
+takes the sign of the *setpoint* and is therefore identical in both directions
+by construction — it cannot absorb a plant that is not symmetric. That sounds
+like a limitation and is actually the useful property: whatever the plant does
+differently in reverse has **nowhere to land except the integrator**, so
+`corr(Δ|out|, Δi) = 0.9986` is not a coincidence, it is arithmetic. The
+integrator's resting value therefore reads out **the model's error, per
+direction, per operating point** — which is how a separate reverse `ff_b` gets
+measured instead of guessed. Whenever a term is fixed by construction, the term
+downstream of it becomes the instrument for everything that term got wrong.
+
+⚠️ **TWO RUNS AN HOUR APART ARE NOT AN A/B TEST — WHATEVER ELSE DRIFTED IS NOW
+CALLED "DIRECTION".** Sep 26, 2026. The forward and reverse staircases are 67
+minutes apart and not interleaved, so temperature, belt tension, and where the
+carriage sits on a treadmill belt that travels the *other way* in reverse are
+all aliased into the one variable that was deliberately changed. The difference
+is real and the label is the honest one available, but it is **not a proven
+cause**, and the figure says so in its own panel rather than in a footnote.
+**An A/B/A ordering costs one extra run and separates them** — the return leg
+either reproduces the first or it does not, and that is the whole answer.
 
 ⚠️ **A METRIC WITH A RATE LIMITER UPSTREAM OF IT MEASURES THE LIMITER, NOT THE
 THING UNDER TEST — AND IT WILL NOT LOOK BROKEN.** Found Sep 26, 2026 in

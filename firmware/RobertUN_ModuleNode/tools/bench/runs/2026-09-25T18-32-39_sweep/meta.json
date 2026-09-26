@@ -1,0 +1,156 @@
+{
+  "profile": "sweep",
+  "args": {
+    "cmd": "run",
+    "profile": "sweep",
+    "port": "/dev/ttyUSB0",
+    "duty": "5,8,11,14,17,20,23,26,29,32,35,39",
+    "dir": "cw",
+    "dwell": 4.0,
+    "settle": 0.5,
+    "rate": 50,
+    "window": 100,
+    "trip": 1580,
+    "max_duty": 40.0
+  },
+  "started": "2026-09-25T18:33:29",
+  "duration_s": 49.3,
+  "outcome": "ok",
+  "error": null,
+  "counts_per_rev": 8403.2,
+  "samples": 2414,
+  "seq_gaps": 0,
+  "echo_mismatches": 0,
+  "tx_dropped": 0,
+  "suspect": false,
+  "conditions_at_connect": {
+    "info": "firmware  : Sep 25 2026 13:40:56\nSYSCLK    : 180000000 Hz\nHCLK      : 180000000 Hz\nAPB1      : 45000000 Hz  (bxCAN)\nAPB2      : 90000000 Hz  (USART1)\nCAN1      : 250000 bps, 15 tq (BRP 12, BS1 12, BS2 2, SJW 2)\n            sample point 86.7%\nCAN mode  : normal, error-active\nheartbeat : off, ID 0x500\nmonitor   : off",
+    "cfg": "config v2, 9 keys, slot 0/1024 used\n    vdda_mv         3325 mV    (default 3325, 2000..3600)\n    r_ipropi        1465 ohm   (default 1465, 100..10000)\n    a_ipropi         450 uA/A  (default 450, 100..2000)\n    trip_ma         1000 mA    (default 1000, 0..1600)\n    duty_limit      1000 o/oo  (default 1000, 0..1000)\n    rail_mv        12000 mV    (default 12000, 0..40000)\n    isense_avg        32       (default 32, 1..1024)\n    sat_raw         4050       (default 4050, 1000..4095)\n    vref_div           3       (default 3, 1..4)\n  (* = differs from the compiled default)\n  sub: <key> [value] | save | revert | default [<key>] | help",
+    "drv": "nSLEEP low (disabled)  duty +0%  decay slow (drive-brake)  limit 100%  nFAULT ASSERTED\ntrip 1579 mA (VREF 3123 mV, DAC 3847, buffer on)  ADC ceiling 5043 mA\n  FAULT SEEN: 308044 ms asserted, first at duty +0% - 'drv clearfault' to reset\n  watchdog 2000 ms armed, 0 ms remaining  - HAS EXPIRED\n  sub: enable | disable | duty <+/-pct> | brake | coast\n       decay slow|fast | limit <pct> | current [n] | zero\n       iscan [n] [from] [to] [step]  (diagnostic: IPROPI vs PWM phase)\n       trip [<mA> | buf on|off] | clearfault | timeout [ms]",
+    "enc": "count 22251  rev 2.6479  rpm 0.00  raw 22251  d 0  down\n  8403.2 counts per output revolution, window 100 ticks\n  ticks since zero: 1003701\n  sub: zero | watch on|off | window <ticks> | probe [ms]"
+  },
+  "result": {
+    "points": [
+      {
+        "duty_pct": 5.0,
+        "rpm": 2.073,
+        "rpm_filtered": 2.057,
+        "mA_mean": 246.7,
+        "mA_min": 62,
+        "mA_max": 526,
+        "current_is_motor": false,
+        "samples": 100
+      },
+      {
+        "duty_pct": 8.0,
+        "rpm": 5.046,
+        "rpm_filtered": 5.035,
+        "mA_mean": 192.0,
+        "mA_min": 55,
+        "mA_max": 499,
+        "current_is_motor": false,
+        "samples": 100
+      },
+      {
+        "duty_pct": 11.0,
+        "rpm": 7.519,
+        "rpm_filtered": 7.525,
+        "mA_mean": 154.4,
+        "mA_min": 57,
+        "mA_max": 550,
+        "current_is_motor": false,
+        "samples": 100
+      },
+      {
+        "duty_pct": 14.0,
+        "rpm": 10.17,
+        "rpm_filtered": 10.17,
+        "mA_mean": 152.0,
+        "mA_min": 73,
+        "mA_max": 288,
+        "current_is_motor": false,
+        "samples": 100
+      },
+      {
+        "duty_pct": 17.0,
+        "rpm": 12.66,
+        "rpm_filtered": 12.645,
+        "mA_mean": 225.0,
+        "mA_min": 173,
+        "mA_max": 301,
+        "current_is_motor": true,
+        "samples": 100
+      },
+      {
+        "duty_pct": 20.0,
+        "rpm": 15.214,
+        "rpm_filtered": 15.194,
+        "mA_mean": 263.8,
+        "mA_min": 155,
+        "mA_max": 321,
+        "current_is_motor": true,
+        "samples": 100
+      },
+      {
+        "duty_pct": 23.0,
+        "rpm": 17.68,
+        "rpm_filtered": 17.662,
+        "mA_mean": 213.1,
+        "mA_min": 160,
+        "mA_max": 320,
+        "current_is_motor": true,
+        "samples": 100
+      },
+      {
+        "duty_pct": 26.0,
+        "rpm": 20.122,
+        "rpm_filtered": 20.127,
+        "mA_mean": 232.6,
+        "mA_min": 148,
+        "mA_max": 321,
+        "current_is_motor": true,
+        "samples": 100
+      },
+      {
+        "duty_pct": 29.0,
+        "rpm": 22.607,
+        "rpm_filtered": 22.614,
+        "mA_mean": 227.9,
+        "mA_min": 163,
+        "mA_max": 320,
+        "current_is_motor": true,
+        "samples": 100
+      },
+      {
+        "duty_pct": 32.0,
+        "rpm": 25.132,
+        "rpm_filtered": 25.138,
+        "mA_mean": 226.4,
+        "mA_min": 161,
+        "mA_max": 313,
+        "current_is_motor": true,
+        "samples": 100
+      },
+      {
+        "duty_pct": 35.0,
+        "rpm": 27.52,
+        "rpm_filtered": 27.514,
+        "mA_mean": 229.7,
+        "mA_min": 153,
+        "mA_max": 327,
+        "current_is_motor": true,
+        "samples": 100
+      },
+      {
+        "duty_pct": 39.0,
+        "rpm": 30.99,
+        "rpm_filtered": 30.966,
+        "mA_mean": 231.6,
+        "mA_min": 171,
+        "mA_max": 312,
+        "current_is_motor": true,
+        "samples": 100
+      }
+    ]
+  }
+}

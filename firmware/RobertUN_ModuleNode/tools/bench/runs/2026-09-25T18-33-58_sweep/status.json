@@ -1,0 +1,20 @@
+{
+  "profile": "sweep",
+  "state": "stopped",
+  "elapsed_s": 61.4,
+  "samples": 3015,
+  "seq_gaps": 0,
+  "echo_mismatches": 0,
+  "last": {
+    "duty_pct": 2.0,
+    "rpm_filtered": 0.0,
+    "mA": 116,
+    "count": 249667,
+    "sync": false,
+    "fault": false,
+    "saturated": false,
+    "watchdog_expired": false
+  },
+  "outcome": "ok",
+  "suspect": false
+}

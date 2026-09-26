@@ -1,0 +1,37 @@
+host_s,kind,detail
+0.1018,connect,/dev/ttyUSB0
+0.2801,preflight,captured info/cfg/drv/enc
+0.2998,preflight,"driver awake, fault latch cleared"
+1.1953,telem_on,50 Hz
+1.2020,ramp_start,+12 -> +29 @ 5%/s
+5.7261,ramp_end,+29
+5.7305,duty,+29
+35.7349,point,"{""duty_pct"": 29.0, ""rpm"": 20.484, ""rpm_filtered"": 20.468, ""mA_mean"": 313.2, ""mA_min"": 167, ""mA_max"": 648, ""current_is_motor"": true, ""samples"": 1125}"
+35.7415,duty,+27
+65.7429,point,"{""duty_pct"": 27.0, ""rpm"": 19.047, ""rpm_filtered"": 19.045, ""mA_mean"": 308.6, ""mA_min"": 160, ""mA_max"": 624, ""current_is_motor"": true, ""samples"": 1125}"
+65.7494,duty,+25
+95.7524,point,"{""duty_pct"": 25.0, ""rpm"": 17.412, ""rpm_filtered"": 17.421, ""mA_mean"": 292.2, ""mA_min"": 131, ""mA_max"": 605, ""current_is_motor"": true, ""samples"": 1125}"
+95.7592,duty,+23
+125.7644,point,"{""duty_pct"": 23.0, ""rpm"": 15.919, ""rpm_filtered"": 15.902, ""mA_mean"": 270.8, ""mA_min"": 104, ""mA_max"": 555, ""current_is_motor"": true, ""samples"": 1125}"
+125.7695,duty,+21
+155.7726,point,"{""duty_pct"": 21.0, ""rpm"": 14.456, ""rpm_filtered"": 14.445, ""mA_mean"": 259.3, ""mA_min"": 113, ""mA_max"": 525, ""current_is_motor"": true, ""samples"": 1125}"
+155.7800,duty,+19
+185.7823,point,"{""duty_pct"": 19.0, ""rpm"": 12.751, ""rpm_filtered"": 12.742, ""mA_mean"": 264.2, ""mA_min"": 105, ""mA_max"": 506, ""current_is_motor"": true, ""samples"": 1125}"
+185.7889,duty,+17
+215.7917,point,"{""duty_pct"": 17.0, ""rpm"": 10.998, ""rpm_filtered"": 11.017, ""mA_mean"": 268.1, ""mA_min"": 109, ""mA_max"": 538, ""current_is_motor"": true, ""samples"": 1125}"
+215.7988,duty,+15
+245.8012,point,"{""duty_pct"": 15.0, ""rpm"": 9.383, ""rpm_filtered"": 9.382, ""mA_mean"": 313.1, ""mA_min"": 144, ""mA_max"": 576, ""current_is_motor"": true, ""samples"": 1125}"
+245.8077,duty,+13
+275.8096,point,"{""duty_pct"": 13.0, ""rpm"": 7.75, ""rpm_filtered"": 7.749, ""mA_mean"": 254.6, ""mA_min"": 61, ""mA_max"": 560, ""current_is_motor"": false, ""samples"": 1125}"
+275.8162,duty,+11
+305.8193,point,"{""duty_pct"": 11.0, ""rpm"": 6.0, ""rpm_filtered"": 6.015, ""mA_mean"": 169.1, ""mA_min"": 39, ""mA_max"": 694, ""current_is_motor"": false, ""samples"": 1125}"
+305.8259,duty,+9
+335.8294,point,"{""duty_pct"": 9.0, ""rpm"": 0.0, ""rpm_filtered"": 0.0, ""mA_mean"": 466.9, ""mA_min"": 386, ""mA_max"": 866, ""current_is_motor"": false, ""samples"": 1125}"
+335.8340,duty,+7
+365.8360,point,"{""duty_pct"": 7.0, ""rpm"": 0.0, ""rpm_filtered"": 0.0, ""mA_mean"": 387.0, ""mA_min"": 275, ""mA_max"": 778, ""current_is_motor"": false, ""samples"": 1125}"
+365.8410,duty,+5
+395.8424,point,"{""duty_pct"": 5.0, ""rpm"": 0.0, ""rpm_filtered"": 0.0, ""mA_mean"": 275.7, ""mA_min"": 188, ""mA_max"": 630, ""current_is_motor"": false, ""samples"": 1125}"
+395.8467,ramp_start,+5 -> +0 @ 5%/s
+396.8874,ramp_end,+0
+396.9307,safe_stop,"duty 0, coast, disable"
+396.9527,poststats,"uart tx   : 2656598 bytes, 0 dropped | uart rx   : 43132 bytes, high-water 10, 0 overruns, 3 errors | can  tx   : 0 frames, 0 dropped (no free mailbox) | can  rx   : 0 frames, 0 FIFO-full, 0 overrun events"

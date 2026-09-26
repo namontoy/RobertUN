@@ -1,0 +1,44 @@
+# Host dependencies for the wheel-node bench tooling.
+#
+#     python3 -m pip install -r requirements.txt
+#
+# Floors, not pins. These are lower bounds chosen so a distro's own packages
+# normally satisfy them without a virtualenv - the bench machine runs the
+# system Python and nothing here needs to be newer than what apt ships.
+# Versions verified working are noted per line.
+#
+# TAKING A RUN NEEDS ONLY pyserial. bench.py and node.py import nothing else
+# outside the standard library - the least-squares slope in rpm_from_counts()
+# is hand-rolled rather than handed to numpy, deliberately, so that a bench
+# box can be minimal and a missing analysis library can never cost a run.
+# Everything below pyserial is for looking at the data afterwards.
+
+# --- required to take a run --------------------------------------------------
+
+# Serial link to the node's USART1 console. Required by node.py.
+# The user must also be in the `dialout` group, or /dev/ttyUSB* is unreadable:
+#     sudo usermod -aG dialout $USER     # then log out and back in
+pyserial>=3.5                # verified 3.5
+
+# --- analysis and figures only -----------------------------------------------
+
+# Array maths and least-squares fits in the plotting/analysis scripts
+# (docs/environment/figures/plot_plant_12v.py, and analyze.py when it exists).
+numpy>=1.21                  # verified 2.2.6
+
+# Figures.
+matplotlib>=3.5              # verified 3.10.8
+
+# Exponential fits for the planned `coastdown` and `step` profiles, which
+# extract the mechanical time constant tau = J/b. curve_fit is the right tool:
+# log-transforming the decay and using polyfit instead biases the result by
+# over-weighting the noisy tail. Not yet imported by anything.
+scipy>=1.7                   # verified 1.15.3
+
+# Deliberately NOT required:
+#   pandas  - the run CSVs are small and regular; numpy.genfromtxt reads them
+#             without adding a heavy dependency to a bench tool.
+#   nodejs  - nothing here is JavaScript. (The dataviz palette validator that
+#             ships with Claude's tooling is JS, but the checks it performs
+#             were ported to Python, so no JS runtime is needed for the
+#             figures either.)

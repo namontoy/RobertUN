@@ -10,9 +10,44 @@ in the same commit.
 
 ## Requirements
 
-- `pyserial` (3.5 present on the bench machine), user in the `dialout` group.
-- Firmware with the `telem` and `drv timeout` commands. Older images will fail
-  pre-flight with "no telemetry received" — that means reflash, not a bug.
+**Host** — see `requirements.txt`, which carries the reasoning per line:
+
+```sh
+python3 -m pip install -r requirements.txt
+```
+
+| package | why | needed to take a run? |
+|---|---|---|
+| `pyserial` | the serial link to USART1 | **yes — and it is the only one** |
+| `numpy` | array maths in the analysis and figure scripts | no |
+| `matplotlib` | figures | no |
+| `scipy` | exponential fits for the planned `coastdown` / `step` profiles | not yet |
+
+Specs are **floors, not pins**, so a distro's own packages normally satisfy
+them and no virtualenv is needed. Verified on Python 3.10.12 with pyserial
+3.5, numpy 2.2.6, matplotlib 3.10.8, scipy 1.15.3.
+
+**`bench.py` and `node.py` import nothing outside the standard library except
+pyserial.** The least-squares slope in `rpm_from_counts()` is hand-rolled
+rather than handed to numpy, deliberately: a bench box stays minimal, and a
+missing analysis library can never cost you a run. So on a machine that only
+needs to *take* data:
+
+```sh
+python3 -m pip install pyserial
+```
+
+The user must be in the `dialout` group or `/dev/ttyUSB*` is unreadable:
+
+```sh
+sudo usermod -aG dialout $USER     # then log out and back in
+```
+
+**Firmware** — an image with the `telem` and `drv timeout` commands. Older
+images fail pre-flight with "no telemetry received" — that means reflash, not
+a bug.
+
+**No Node.js.** Nothing here is JavaScript.
 
 ## Wiring
 

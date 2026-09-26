@@ -1813,6 +1813,15 @@ connect — the conditions, recorded rather than typed), `console.log`,
   persists each trial burns 5% of the log per scan. W5's config bump needs a
   **volatile set-for-this-session path**, with `cfg save` only for a keeper.
 
+- **Taking a run needs exactly one third-party package: `pyserial`.** `bench.py`
+  and `node.py` import nothing else outside the standard library — the
+  least-squares slope in `rpm_from_counts()` is hand-rolled rather than handed
+  to numpy, deliberately, so a bench box stays minimal and a missing analysis
+  library can never cost a run. numpy / matplotlib / scipy are for looking at
+  the data afterwards and are listed in `tools/bench/requirements.txt` as
+  floors, not pins. **No Node.js anywhere** — nothing in this project is
+  JavaScript.
+
 **Profiles:** `sweep` (done). `coastdown`, `step`, `hold`, `stiction` planned —
 `coastdown` and `step` are the two that actually unblock gain selection, since
 together they give a first-order model and therefore starting gains by pole

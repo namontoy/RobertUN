@@ -1,5 +1,5 @@
 # RobertUN — Wheel Controller Firmware: Full Progress Log
-**Last updated:** September 26, 2026 (task 21's duty slew limiter implemented inside `drive.c` and **verified on the loaded rig** — per-mille on the 1 kHz tick, off by default; measured 50.00 o/oo/s against 50 commanded, peak 581 mA where the un-ramped step clamps at the 1579 mA trip, and the command watchdog still fires on the exact millisecond with the motor live. Previously: September 25, 2026 — loaded-rig pass taken on the treadmill belt at 1047 g — pooled `rpm = 0.7993 d − 2.420` over 11–29%, load costs only 4.3% of slope, breakaway 9–11% duty which is the **same terminal voltage** as Sep 15's 12–14% at 9.35 V; and **τ was wrong** — the plant is two-pole, τ_fast **0.219 ± 0.007 s** verified against an independent ramp-lag measurement at 0.207 s, with the earlier 0.65–0.70 s exposed as a one-pole fit-window artifact)
+**Last updated:** September 26, 2026 (**W5's velocity PID module written, plus the `V,` telemetry channel and `bench.py run step` that exist to tune it** — branch `w5-velocity-pid`, nothing run on hardware yet. Key findings: the loop steps at the *measurement* rate not the tick rate; arming it **invalidates every host-side stop sequence that addresses `drive.c`**; and it had shipped with no `volatile` on its ISR-written statics. Previously: task 21's duty slew limiter implemented inside `drive.c` and verified on the loaded rig — 50.00 o/oo/s measured against 50 commanded, peak 581 mA where the un-ramped step clamps at the 1579 mA trip)
 
 **Referenced from:** `PROJECT_CONTEXT_WHEEL_FW.md`, which carries a one-line-per-entry version of this log. This file is the verbatim, unedited detail behind each entry — pull it in when you need the exact numbers, register values, or reasoning chain, not for routine session start.
 
@@ -13,6 +13,265 @@
 > the split: that file gets read every session, this one only on demand.
 
 ## Progress log (most recent first) — full detail
+
+- **Sep 26 (later) — W5's VELOCITY PID IS WRITTEN, AND SO IS THE INSTRUMENT
+  THAT WILL TUNE IT. Branch `w5-velocity-pid`. Two commits' worth of work:
+  the loop itself, then the telemetry channel and host profile that make it
+  tunable. NOTHING HERE HAS TOUCHED HARDWARE — every claim below is a code or
+  build claim, and the bench pass is owed.**
+
+  ### The module — `Core/Src/velocity.c`, `Core/Inc/velocity.h`
+
+  - **It is a policy layer above `drive.c`, and the split is the same one the
+    project has now settled on twice.** `drive.c` actuates and protects; it
+    decides nothing. `velocity.c` decides — what speed, how fast to get there,
+    what to do when the bridge is unavailable — and reaches the bridge only
+    through `drive_set_duty()`. Nothing in `drive.c` changed.
+  - **It steps at the MEASUREMENT rate, not the tick rate.** `velocity_on_tick()`
+    is called from the TIM6 1 kHz callback, but the first thing it does is
+    compare `encoder_velocity_seq()` against the last one it saw and return if
+    it has not moved. The encoder's velocity is a boxcar over
+    `ENCODER_VELOCITY_WINDOW_DEFAULT` = 20 ticks, so the loop actually runs at
+    **50 Hz**, and at `enc window 5` it would run at 200 Hz. **A loop that runs
+    faster than its sensor updates is differentiating a staircase and
+    integrating the same error several times over** — the derivative term would
+    be reading quantisation and the integral would be counting one real error as
+    twenty. `encoder_velocity_seq()` was added to `encoder.c` for this: it bumps
+    on window closure, which is the only honest "new measurement" event
+    available. The tick-callback order is `encoder_on_tick()` →
+    `drive_on_tick()` → `velocity_on_tick()`, velocity last and deliberately so:
+    it acts on the measurement taken this millisecond, not last.
+  - **Feedforward from the inverse plant.** `duty‰ = ff_a × rpm + ff_b`, with
+    `ff_a` = 12510 milli-o/oo-per-rpm from the loaded fit's inverse
+    `duty% = 1.251 × rpm + 3.028`, and `ff_b` = 30 o/oo applied **with the sign
+    of the setpoint** — friction opposes motion, so its compensation has to flip
+    with direction, which a slope term alone cannot do. The PID therefore only
+    corrects the fit's error rather than building the whole output from scratch,
+    which is what keeps the integrator small and its resting value diagnostic.
+  - **The setpoint ramp lives here, exactly as this project predicted it would.**
+    Task 21's note said "ramping the setpoint, once the velocity loop exists, is
+    a *different* ramp and does still belong to the control layer — `drive.c`
+    has no setpoint." That held: `vel_slew` (milli-rpm/s, default 4000 = 4 rpm/s)
+    ramps `sp_rpm` toward the commanded target inside `velocity.c`. Limiting the
+    setpoint rather than the output is what stops the loop winding up against
+    its own ramp.
+  - **Anti-windup freezes the integrator under four conditions, and reports
+    which.** Output saturated in the direction the error is pushing; `drive.c`'s
+    own limiter slewing; the bridge disabled or a fault latched; and the
+    setpoint watchdog expired. Lumping them into one "frozen" bit would have
+    been the easy thing and would have been useless — see the telemetry section.
+  - **Kd defaults to 0, is taken on the measurement rather than the error, and
+    is low-passed** (`D_FILTER_ALPHA` in `velocity.c`, deliberately *not* a
+    config key — a filter constant that can be set live invites tuning the
+    filter instead of the loop). Derivative on measurement means a setpoint step
+    does not produce a derivative kick.
+  - **Stopping is coasting.** `vel stop` walks the setpoint down and then coasts;
+    it is explicitly **not** an emergency stop, and `drv coast` stays the
+    immediate one. Same reasoning as `drive.c`'s watchdog action: braking from
+    speed drives I = E/R through the low-side FETs.
+  - **Gains ship at about a quarter of textbook, on purpose.** For K = 0.07993
+    rpm per o/oo and τ_fast = 0.219 s, the textbook pair is Kp = 1/K = **12.51**
+    and Ki = 1/(K·τ) = **57.1**. Shipped: **Kp 3.0, Ki 10.0**. The derate is not
+    conservatism for its own sake — the plant fit those numbers come from is the
+    one flagged 4.5% optimistic and due a re-take, and the rig is 2.87× light in
+    inertia against the rover. Gains derived from a model that is known wrong
+    should not be shipped at their full value.
+  - **Nine `cfg` keys, all in milli-units** because the store is int32-only:
+    `vel_kp` 3000, `vel_ki` 10000, `vel_kd` 0, `vel_ff_a` 12510, `vel_ff_b` 30,
+    `vel_ilim` 150, `vel_max` 300, `vel_slew` 4000, `vel_tmo` 1000. `vel_max` is
+    300 o/oo — **the 30% ceiling, in the loop's own units.** Each key is
+    live-applied by `cfg <key> <val>` with no save, which is the
+    set-for-this-session path the Sep 25 note asked for: the config log is
+    append-only with 1024 slots and one full snapshot per save, so a 50-point
+    gain scan that persisted every trial would burn 5% of the log. Adding the
+    keys cost nothing because **`cfg save` has still never been run on this
+    board** — the key-count gotcha would otherwise have discarded the record.
+
+  ### ⚠️ The loop defeats `drive.c`'s command watchdog, by construction
+
+  `drive_set_duty()` calls `drive_kick()` deliberately — a duty command is
+  evidence of a live host, which is the reasoning task 21 settled on. The
+  velocity loop calls `drive_set_duty()` fifty times a second, forever. So
+  **arming the loop means `drive.c`'s command watchdog can never expire again.**
+
+  This is not a bug to fix in `drive.c`; it is the necessary consequence of
+  putting a controller above it, and the answer is the same one the layering
+  already implies: the layer that can defeat a watchdog carries its own.
+  `velocity.c` has a **setpoint watchdog** (`vel_tmo`, default 1000 ms, **armed
+  by default — the opposite of `drv timeout`'s default-off**), and **only
+  `vel target` kicks it.** A setpoint arriving is evidence that something
+  upstream is still *choosing*, which is the thing actually worth watching once
+  the loop below is being kept alive unconditionally. On expiry it **coasts
+  immediately** rather than ramping down — matching `drive.c`'s precedent, on
+  the grounds that a dead host is not the moment to ease off over six seconds —
+  and the expired flag is **sticky**: a kick refreshes the countdown but never
+  clears the latch, which again matches `drive.c`. Only `velocity_enable()`
+  clears it.
+
+  ### ⚠️ A real defect in what had just been committed: no `volatile`
+
+  `velocity.c` was committed with **not one `volatile`** on any static written
+  by the TIM6 ISR and read from thread context — the whole loop-state block and
+  the whole watchdog block. `encoder.c` and `drive.c`, the two modules it sits
+  between and the two it was written by reading, both mark theirs correctly.
+
+  It was latent: nothing yet copied that state out in a way the compiler could
+  reorder or cache badly. The very next change — the telemetry snapshot — is
+  exactly what would have made it bite. Fixed as the first step of that change.
+  The **cached gain floats are deliberately left non-volatile**, with a comment
+  saying so: thread context writes them, the ISR only reads, and each is a
+  single word.
+
+  The generalisable part is in KEY LEARNINGS: a new module hanging off an
+  existing ISR does not inherit that ISR's concurrency discipline just by
+  sitting next to code that has it.
+
+  ### The telemetry channel — `V,`
+
+  **Why it was needed at all.** The `vel` console command prints loop state at
+  console pace, one line at a time for a human. A step response is a 1–2 second
+  event at 50 Hz. The existing `T,` line carries `duty`, `count`, `mrpm`, `ma`
+  and `flags` — what the **bridge and plant** did — and says nothing about what
+  the **loop decided**: no setpoint, no error, no term breakdown, no saturation
+  or anti-windup state. Tuning against `T,` alone means inferring the
+  controller's internals from its output.
+
+  ```
+  V,<seq>,<ms>,<sp_mrpm>,<meas_mrpm>,<out>,<ff>,<p>,<i>,<d>,<flags>
+  ```
+
+  - **A separate record, not more columns on `T,`.** `TELEM_RE` in `node.py` is
+    unanchored, so an extended `T,` would still match its first seven groups —
+    but `Telem.parse()` checks the field count and would reject it, and every
+    committed run directory holds a 7-field `telemetry.csv` header. A widened
+    `T,` would therefore mean **two incompatible things depending on which code
+    path read it**. A new record type breaks nothing: old logs parse unchanged,
+    and a reader that does not know about `V,` ignores it.
+  - **One line per control step, not on the `telem` timer.** The loop advances
+    at `1000 / enc window` Hz. Riding the telem scheduler would alias it — at
+    100 Hz every step appears twice, at 30 Hz they beat — and neither is
+    readable as a step response. The integrator and the derivative **only mean
+    anything per step**. So the loop publishes a snapshot and the main loop
+    drains it: exactly one row per control decision, self-limiting by
+    construction.
+  - **All four terms carried separately, and before the clamp.** `out` differing
+    from `ff + p + i + d` is then *exactly* the saturation, and an oscillation
+    says in the data which term is driving it. This was a deliberate choice over
+    a narrower 7-field line — the line is wider, and the bandwidth note below is
+    the price.
+  - **One slot with overrun reporting, not a ring.** A step the main loop failed
+    to drain before the next one overwrote it sets a sticky `pub_missed`, OR'd
+    into the **next** published line as bit 64. A ring would have hidden the
+    problem; silent decimation is worse than a gap, because **a decimated stream
+    reads as a slow control loop** — the wrong conclusion for someone about to
+    change a gain. Note this is a *different* failure from a `seq` gap: a gap is
+    lines lost on the wire and shows up as a missing number, while an unpublished
+    step leaves no hole to find, which is why it is flagged in-band and counted
+    separately (`veloc_steps_missed`).
+  - **The flag set splits the freeze reason three ways** (bit 2 frozen, bit 4
+    because drv is slewing, bit 8 because the bridge is unavailable). **Bit 2
+    alone is anti-windup doing its job under saturation; bit 2 with 4 or 8 is
+    the loop being held off by something else.** They are identical in `out` and
+    they want opposite corrections — one says the gains are fine and the output
+    is limited, the other says the run measured an obstruction. That distinction
+    is the entire reason the bits are separate.
+  - **`telem on` stays the master switch**: `V` requires `telem_on &&
+    telem_vel_on`, so `telem off` — which every host stop sequence already sends
+    — remains a complete stop for both channels.
+  - ⚠️ **Bandwidth is the binding constraint.** 115200 8N1 is 11.52 kB/s. A `T,`
+    line is ~45–59 bytes and a `V,` line ~50–76. `T` at 100 Hz plus `V` at 50 Hz
+    is **~9.7 kB/s, 84% of the link**, before the echo of anything typed —
+    and the console echoes each character as its own write. **`telem rate 50` is
+    the pairing that fits**, and `telem vel on` warns when `telem_ms < 20`.
+    The TX ring is 1024 bytes with a `tx_dropped` counter, which is the check.
+
+  ### Host side — `node.py`, `bench.py`
+
+  - **Both records are parsed from ONE regex alternation, not two `finditer`s.**
+    `_consume()`'s residual-rejoining — the logic that reassembles a command echo
+    a telemetry line landed inside of — depends on matches arriving **ordered and
+    non-overlapping**. One regex guarantees that; two merged iterators do not.
+    Dispatch is on `m.group(0)[0]`. Verified offline against a synthetic stream
+    with a `V,` line cutting `drv timeout 2000` in half: the echo reassembles
+    intact and both records come out.
+  - `Veloc` dataclass with `sp_rpm` / `meas_rpm` / `error_rpm` and a boolean
+    property per flag, plus `freeze_reason` returning the *reason*, not the bit.
+  - `velocity.csv` in every run directory; `veloc_samples`, `veloc_gaps` and
+    `veloc_steps_missed` in `meta.json` and `status.json`, and **either of the
+    last two now marks a run `suspect`** alongside the existing `seq` gaps and
+    `tx_dropped`.
+  - **`dwell()` gained `vel_kick`.** The velocity watchdog is armed at 1000 ms
+    and **only `vel target` refreshes it** — `drv timeout` kicks the layer below
+    and does nothing for it. Without this a 6 s dwell would coast the wheel one
+    second in, in the middle of the measurement, and the data would look like a
+    plant that cannot hold speed.
+
+  ### ⚠️ THE FINDING THAT GENERALISES: `safe_stop()` did not stop the loop
+
+  `node.safe_stop()` had sent `drv duty 0` → `drv coast` → `drv disable` →
+  `telem off` since the tool was written. **With the velocity loop armed, the
+  first two are overwritten by the loop about 20 ms after they land.** Only
+  `drv disable`, cutting nSLEEP, actually stopped anything. The sequence still
+  worked — by accident, and only because of its last step. `vel off` now goes
+  first.
+
+  The general form: **arming a control loop invalidates every stop sequence that
+  addresses the layer below it.** This is task 21's watchdog-defeat problem seen
+  from the other side — there the loop's continuous calls *kept alive* a
+  watchdog meant to detect a dead host; here they *overrode* a stop. Both are
+  one layer holding another's state open. It will recur at CAN and again at the
+  rover supervisor, and it is worth checking for deliberately each time rather
+  than finding it.
+
+  ### `bench.py run step`
+
+  Commands a setpoint step and reduces the `V,` rows to: rise time (10→90% of
+  the commanded change), overshoot, settling to ±2%, steady-state error,
+  saturation fraction, freeze fraction split by reason, and **the integrator's
+  resting value — which is how much the feedforward missed by**. A large steady
+  `i` with a small steady-state error says `ff_a`/`ff_b` want re-fitting, not
+  that Ki wants raising; without the term breakdown those two look the same.
+
+  - **Settling is the LAST moment outside the band, not the first moment inside
+    it.** A response that dips back out is not settled, and the first-crossing
+    definition would call it settled anyway.
+  - **`enc window` defaults to 20 here, NOT the sweep's 100.** This is the one
+    argument default that must not be copied across: the loop advances once per
+    window, so window 100 is a **10 Hz control loop with 100 ms of measurement
+    lag**, which would dominate the very response being measured — gains chosen
+    against it are gains for a different plant. `--window` therefore has no
+    single default any more; it is per-profile, and `step` warns above 40.
+  - **`cfg ramp_pmps 0` is sent unconditionally.** `drv ramp` and `vel_slew` are
+    two slew limiters in series and must not both be armed: with drv's running,
+    `drive_slewing()` is true almost continuously, the integrator is frozen for
+    essentially the whole run, and the step measures the limiter.
+  - **`--max-rpm 22`** is the 30% duty ceiling pushed through the plant fit
+    (0.7993 × 300/10 − 2.42 = 21.6 rpm), expressed in the units this profile
+    commands. Same explicit-raise pattern as `--max-duty`.
+  - **`--return`** steps back down, and is not symmetry-checking for its own
+    sake: the feedforward applies its friction offset **with the sign of the
+    setpoint**, so the down-step is the one place a wrong `ff_b` shows up as a
+    different *response* rather than as a constant error.
+  - ⚠️ **Every metric is computed from `meas_mrpm`**, the boxcar the controller
+    acted on. That is the right frame for choosing gains — it describes the
+    closed loop as the loop experienced it — and the **wrong** frame for a plant
+    time constant. The standing warning about fitting `mrpm` applies with more
+    force inside a loop, because the filter's lag is now in the feedback path.
+    Plant-side timing still comes from the `T,` rows and `rpm_from_counts()`.
+
+  ### State
+
+  Firmware builds clean under `-Wall -Wextra` at **27.14% flash (106 728 B of
+  the 384 kB application region), 4.35% RAM (5696 B)**. Both Python files parse; the parser and the metrics
+  reducer were exercised offline against synthetic streams (interleaved echo,
+  gapped `seq`, a missed-step flag, an overshooting up-step and a decaying
+  down-step) before any of it is pointed at a board. **The bench pass is owed,
+  desk first and one step at a time:** bridge disabled to prove the publish/drain
+  path and that the loop will not wind up against a dead bridge; `enc window 5`
+  to force bit 64 and confirm overrun is reported; the 1000 ms watchdog at the
+  desk; the parser against `run step --rpm 0`; a `run sweep` non-regression;
+  and only then the rig, `--rpm 10` before `--rpm 20`, watching `ma` against the
+  1580 mA trip before trusting any gain.
 
 - **Sep 26 — TASK 21: THE DUTY SLEW LIMITER IS IMPLEMENTED, INSIDE `drive.c`,
   which reverses the placement this project had written down. Code is complete

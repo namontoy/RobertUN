@@ -13,9 +13,10 @@ telemetry lines as if they were part of the reply, or worse, mistake a telemetry
 line for a reply and return nonsense.
 
 So there is exactly one reader. Every complete line it sees is classified once:
-a line starting with "T," goes to the telemetry sink, everything else goes to
-the pending-reply buffer. command() drains the same pump while it waits for its
-prompt, which is why a command issued mid-stream loses no samples.
+a "T," record goes to the telemetry sink, a "V," record to the velocity sink,
+everything else goes to the pending-reply buffer. command() drains the same
+pump while it waits for its prompt, which is why a command issued mid-stream
+loses no samples.
 
 THE CONSOLE'S WIRE PROTOCOL
 ---------------------------
@@ -56,7 +57,26 @@ PROMPT = "> "
 # record routinely lands in the MIDDLE of the echo of a command -
 # "drv t" + "T,226,575448,200,...\r\n" + "imeout 2000". Anchoring at the line
 # start loses that record and corrupts the command echo behind it.
-TELEM_RE = re.compile(r"T,(\d+),(\d+),(-?\d+),(-?\d+),(-?\d+),(\d+),(\d+)")
+_TELEM_PAT = r"T,(\d+),(\d+),(-?\d+),(-?\d+),(-?\d+),(\d+),(\d+)"
+
+# The velocity channel — one record per CONTROL STEP, emitted by
+# print_velocity_line() when `telem vel on`. A separate record type rather than
+# more columns on T: Telem.parse() below rejects anything without exactly eight
+# fields, and every run directory already committed holds a telemetry.csv with
+# the seven-field header, so a widened T would mean two incompatible things
+# depending on which reader saw it.
+_VELOC_PAT = (r"V,(\d+),(\d+),(-?\d+),(-?\d+),(-?\d+),"
+              r"(-?\d+),(-?\d+),(-?\d+),(-?\d+),(\d+)")
+
+# ONE alternation, not two finditers. _dispatch() rebuilds the command echo from
+# the text BETWEEN matches, which requires them to arrive ordered and
+# non-overlapping; a single regex guarantees that, and merging two independent
+# iterators only appears to. Dispatch on the leading letter.
+RECORD_RE = re.compile(f"(?:{_TELEM_PAT})|(?:{_VELOC_PAT})")
+
+# Kept as its own name because analysis scripts import it.
+TELEM_RE = re.compile(_TELEM_PAT)
+VELOC_RE = re.compile(_VELOC_PAT)
 
 # Bit meanings in the telemetry `flags` field. Must match print_telem_line()
 # in Core/Src/console.c — that is the authority, this is the mirror.
@@ -65,6 +85,20 @@ FLAG_ENABLED = 0x02   # nSLEEP high
 FLAG_FAULT = 0x04     # nFAULT has been seen low since the last clear
 FLAG_SATURATED = 0x08 # the ADC reading hit its ceiling
 FLAG_WATCHDOG = 0x10  # the command watchdog has expired since arming
+
+# Bit meanings in the VELOCITY `flags` field — a different set on a different
+# record. print_velocity_line() in console.c is the authority; this is the
+# mirror. VFLAG_FROZEN without SLEWING or NOBRIDGE means the integrator was
+# held because the output was clamped and the error pushed further into the
+# clamp: that is anti-windup working, and it wants no correction. FROZEN with
+# either of those two means something outside the loop held it off.
+VFLAG_SATURATED = 0x01  # output hit min(vel_max, drv limit)
+VFLAG_FROZEN = 0x02     # the integrator did not advance this step
+VFLAG_SLEWING = 0x04    # ...because drive_slewing() — drv ramp is fighting it
+VFLAG_NOBRIDGE = 0x08   # ...because the bridge is disabled or faulted
+VFLAG_WATCHDOG = 0x10   # the SETPOINT watchdog has expired since arming
+VFLAG_RAMPING = 0x20    # ramped setpoint has not reached the commanded one
+VFLAG_MISSED = 0x40     # a control step was lost before this line — see below
 
 
 class NodeError(RuntimeError):
@@ -130,6 +164,85 @@ class Telem:
         return cls(f[0], f[1], f[2], f[3], f[4], f[5], f[6], host_t)
 
 
+@dataclass(frozen=True)
+class Veloc:
+    """One control step: V,seq,ms,sp_mrpm,meas_mrpm,out,ff,p,i,d,flags
+
+    This is the CONTROLLER's record, and it is paced by the control loop
+    (1000 / `enc window` Hz), not by `telem rate`. Join it to the Telem stream
+    on `.ms` when you need current or encoder count alongside it.
+    """
+
+    seq: int
+    ms: int             # board time, HAL_GetTick() at the step
+    sp_mrpm: int        # the RAMPED setpoint — what the loop actually chased
+    meas_mrpm: int      # what the loop measured; see .meas_rpm
+    out: int            # per-mille written to drive_set_duty()
+    ff: int             # feedforward contribution, per-mille
+    p: int              # proportional
+    i: int              # integrator
+    d: int              # derivative
+    flags: int
+    host_t: float       # host monotonic time at arrival, for cross-checking only
+
+    @property
+    def sp_rpm(self) -> float:
+        return self.sp_mrpm / 1000.0
+
+    @property
+    def meas_rpm(self) -> float:
+        """What the LOOP saw — deliberately the boxcar-filtered figure, because
+        that is what the controller acted on. Judge the loop with this; fit the
+        PLANT from Telem.count, which is exact and unfiltered."""
+        return self.meas_mrpm / 1000.0
+
+    @property
+    def error_rpm(self) -> float:
+        return (self.sp_mrpm - self.meas_mrpm) / 1000.0
+
+    @property
+    def saturated(self) -> bool:
+        return bool(self.flags & VFLAG_SATURATED)
+
+    @property
+    def frozen(self) -> bool:
+        return bool(self.flags & VFLAG_FROZEN)
+
+    @property
+    def slewing(self) -> bool:
+        return bool(self.flags & VFLAG_SLEWING)
+
+    @property
+    def nobridge(self) -> bool:
+        return bool(self.flags & VFLAG_NOBRIDGE)
+
+    @property
+    def watchdog(self) -> bool:
+        return bool(self.flags & VFLAG_WATCHDOG)
+
+    @property
+    def ramping(self) -> bool:
+        return bool(self.flags & VFLAG_RAMPING)
+
+    @property
+    def missed(self) -> bool:
+        """A control step was published and overwritten before the board's main
+        loop could send it. The HOST is not at fault — this happens inside the
+        firmware — but the stream is decimated, which looks exactly like a slow
+        control loop if you do not check this."""
+        return bool(self.flags & VFLAG_MISSED)
+
+    @property
+    def freeze_reason(self) -> str | None:
+        if not self.frozen:
+            return None
+        if self.nobridge:
+            return "no_bridge"
+        if self.slewing:
+            return "drv_slewing"
+        return "anti_windup"     # clamped, and the error pushed further in
+
+
 def find_port() -> str:
     """Guess the node's port. Raises if it is not a single obvious choice —
     picking one of several silently is how you drive the wrong board."""
@@ -150,10 +263,12 @@ def find_port() -> str:
 class Node:
     """One open console session. Use as a context manager."""
 
-    def __init__(self, port: str | None = None, raw_log=None, on_telem=None):
+    def __init__(self, port: str | None = None, raw_log=None, on_telem=None,
+                 on_veloc=None):
         self.port = port or find_port()
         self.raw_log = raw_log          # file object, or None
         self.on_telem = on_telem        # callable(Telem), or None
+        self.on_veloc = on_veloc        # callable(Veloc), or None
         self.ser: serial.Serial | None = None
         self._buf = ""                  # bytes seen but not yet a complete line
         self._replies: list[str] = []   # non-telemetry lines awaiting a reader
@@ -163,6 +278,13 @@ class Node:
         self.telem_count = 0
         self.telem_gaps = 0             # missing seq numbers — dropped lines
         self._last_seq: int | None = None
+        self.veloc_count = 0
+        self.veloc_gaps = 0             # missing V seq — lines lost on the wire
+        self.veloc_steps_missed = 0     # V lines carrying VFLAG_MISSED — steps
+                                        # lost inside the firmware, a different
+                                        # failure from a gap and worth its own
+                                        # counter
+        self._last_vseq: int | None = None
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -229,7 +351,7 @@ class Node:
         full = self._partial + raw
         self._partial = ""
 
-        matches = list(TELEM_RE.finditer(full))
+        matches = list(RECORD_RE.finditer(full))
         if not matches:
             if full:
                 self._replies.append(full)
@@ -239,12 +361,25 @@ class Node:
         for m in matches:
             residual.append(full[last_end:m.start()])
             last_end = m.end()
-            f = [int(g) for g in m.groups()]
-            sample = Telem(f[0], f[1], f[2], f[3], f[4], f[5], f[6], now)
-            self._note_seq(sample.seq)
-            self.telem_count += 1
-            if self.on_telem is not None:
-                self.on_telem(sample)
+            # One alternation matched, so exactly one arm's groups are non-None.
+            # The leading letter says which, and is cheaper and clearer than
+            # counting Nones.
+            f = [int(g) for g in m.groups() if g is not None]
+            if m.group(0)[0] == "T":
+                sample = Telem(f[0], f[1], f[2], f[3], f[4], f[5], f[6], now)
+                self._note_seq(sample.seq)
+                self.telem_count += 1
+                if self.on_telem is not None:
+                    self.on_telem(sample)
+            else:
+                v = Veloc(f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7], f[8],
+                          f[9], now)
+                self._note_vseq(v.seq)
+                self.veloc_count += 1
+                if v.missed:
+                    self.veloc_steps_missed += 1
+                if self.on_veloc is not None:
+                    self.on_veloc(v)
 
         text = "".join(residual) + full[last_end:]
         if last_end == len(full):
@@ -259,6 +394,13 @@ class Node:
         if self._last_seq is not None and seq > self._last_seq + 1:
             self.telem_gaps += seq - self._last_seq - 1
         self._last_seq = seq
+
+    def _note_vseq(self, seq: int) -> None:
+        # Same rule as _note_seq: V's seq restarts at 0 on `telem on` too, so a
+        # decrease is a restart and not a gap.
+        if self._last_vseq is not None and seq > self._last_vseq + 1:
+            self.veloc_gaps += seq - self._last_vseq - 1
+        self._last_vseq = seq
 
     def idle(self, seconds: float) -> None:
         """Pump for a while, doing nothing else. This is how a dwell is spent —
@@ -282,6 +424,7 @@ class Node:
         self._prompt_seen = False
         if text.startswith("telem on"):
             self._last_seq = None        # seq restarts at 0 on every `telem on`
+            self._last_vseq = None       # ...and so does the velocity channel's
 
         self.ser.write((text + "\r").encode())
         self.ser.flush()
@@ -327,8 +470,21 @@ class Node:
         """Bring the motor to rest. Coast, never brake — braking from speed
         drives I = E/R through the low-side FETs (drive.h has the table: 50 rpm
         is 3.6 A). Best-effort: each step is attempted even if an earlier one
-        raised, because a half-executed stop is the worst outcome."""
-        for cmd in ("drv duty 0", "drv coast", "drv disable", "telem off"):
+        raised, because a half-executed stop is the worst outcome.
+
+        `vel off` COMES FIRST, and that ordering is not cosmetic. With the
+        velocity loop armed, drive_set_duty() is called fifty times a second
+        from the board's own tick, so "drv duty 0" and "drv coast" are both
+        overwritten roughly 20 ms after they land. `drv disable` would still
+        cut nSLEEP and stop the motor, but a stop sequence whose first three
+        steps are silently undone is a stop sequence that works by accident.
+
+        The general form of this, worth remembering at the next layer up:
+        arming a control loop invalidates every stop sequence that addresses
+        the layer below it. The loop has to be disarmed first, or not at all.
+        """
+        for cmd in ("vel off", "drv duty 0", "drv coast", "drv disable",
+                    "telem off"):
             try:
                 self.command(cmd, timeout=1.0)
             except Exception:

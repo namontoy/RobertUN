@@ -5,6 +5,7 @@ Bench runner for the RobertUN wheel node.
     ./bench.py list
     ./bench.py run sweep --duty 5,10,15,20,25,30 --dwell 4
     ./bench.py run sweep --dir ccw
+    ./bench.py run step --rpm 20           # velocity-loop step response
     ./bench.py status                      # last run
     ./bench.py status runs/2026-...._sweep
 
@@ -42,12 +43,16 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from node import Node, NodeError, Telem  # noqa: E402
+from node import Node, NodeError, Telem, Veloc  # noqa: E402
 
 COUNTS_PER_REV = 8403.2          # TIM2 quadrature, at the output shaft
 RUNS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs")
 
 DEFAULT_MAX_DUTY = 30.0          # percent; the rover runs slow — 30% is the stated ceiling
+# The setpoint ceiling is the duty ceiling pushed through the plant fit:
+# 0.7993 x 300 o/oo / 10 - 2.42 = 21.6 rpm at 30% duty. 22 is that, rounded up.
+# Ask for more only the way --max-duty is asked for: explicitly.
+DEFAULT_MAX_RPM = 22.0
 WATCHDOG_MS = 2000
 KICK_INTERVAL = 0.5
 
@@ -84,11 +89,24 @@ class Run:
             ["host_s", "seq", "board_ms", "duty_permille", "count", "mrpm", "ma", "flags"]
         )
 
+        # The V channel gets its own file rather than more columns on
+        # telemetry.csv: the two streams are sampled on different clocks (T on
+        # the telem timer, V once per control step) and every committed run
+        # directory holds a 7-field telemetry.csv. Joining them is the
+        # analysis's job, on board_ms, and only when an analysis wants both.
+        self._veloc_f = open(os.path.join(self.dir, "velocity.csv"), "w", newline="")
+        self.veloc = csv.writer(self._veloc_f)
+        self.veloc.writerow(
+            ["host_s", "seq", "board_ms", "sp_mrpm", "meas_mrpm",
+             "out", "ff", "p", "i", "d", "flags"]
+        )
+
         self._events_f = open(os.path.join(self.dir, "events.csv"), "w", newline="")
         self.events = csv.writer(self._events_f)
         self.events.writerow(["host_s", "kind", "detail"])
 
         self.samples: list[Telem] = []
+        self.velocs: list[Veloc] = []
         self.state = "starting"
         self._status_due = 0.0
 
@@ -102,6 +120,16 @@ class Run:
         self.samples.append(s)
         self.telem.writerow(
             [f"{s.host_t - self.t0:.4f}", s.seq, s.ms, s.duty, s.count, s.mrpm, s.ma, s.flags]
+        )
+
+    def veloc_sink(self, v: Veloc) -> None:
+        """Called by Node for every V line. Same contract as sink(): written
+        through immediately, and kept so a profile can compute its metrics
+        without re-reading its own file."""
+        self.velocs.append(v)
+        self.veloc.writerow(
+            [f"{v.host_t - self.t0:.4f}", v.seq, v.ms, v.sp_mrpm, v.meas_mrpm,
+             v.out, v.ff, v.p, v.i, v.d, v.flags]
         )
 
     def event(self, kind: str, detail: str = "") -> None:
@@ -128,6 +156,9 @@ class Run:
             "samples": node.telem_count,
             "seq_gaps": node.telem_gaps,
             "echo_mismatches": node.echo_mismatches,
+            "veloc_samples": node.veloc_count,
+            "veloc_gaps": node.veloc_gaps,
+            "veloc_steps_missed": node.veloc_steps_missed,
             "last": None
             if last is None
             else {
@@ -147,6 +178,7 @@ class Run:
         # buffering that was ~2 s of samples. console.log is line-buffered and
         # keeps them regardless, but the CSV should not need recovering from it.
         self._telem_f.flush()
+        self._veloc_f.flush()
         # Write-then-rename, so a reader never catches a half-written file.
         tmp = os.path.join(self.dir, "status.json.tmp")
         with open(tmp, "w") as f:
@@ -156,6 +188,8 @@ class Run:
     def close(self) -> None:
         self._telem_f.flush()
         self._telem_f.close()
+        self._veloc_f.flush()
+        self._veloc_f.close()
         self._events_f.close()
         self.raw.close()
 
@@ -163,10 +197,19 @@ class Run:
 # -- shared mechanics ------------------------------------------------------
 
 
-def dwell(node: Node, run: Run, seconds: float, **status_extra) -> None:
-    """Spend time. Pumps the serial link, kicks the board watchdog, and keeps
+def dwell(node: Node, run: Run, seconds: float, vel_kick: int | None = None,
+          **status_extra) -> None:
+    """Spend time. Pumps the serial link, kicks the board watchdogs, and keeps
     status.json current. Never time.sleep() alone — that would let the OS
-    buffer fill and destroy the arrival timing of everything in the gap."""
+    buffer fill and destroy the arrival timing of everything in the gap.
+
+    `vel_kick` is the current setpoint in MILLI-rpm, and must be passed for
+    every dwell taken with the velocity loop armed. The loop carries its own
+    setpoint watchdog (`vel_tmo`, 1000 ms by default) and **only `vel target`
+    refreshes it** — `drv timeout` kicks the layer below and does nothing for
+    it. Without this a 6 s dwell coasts the wheel one second in, in the middle
+    of the measurement, and the data looks like a plant that cannot hold speed.
+    """
     end = time.monotonic() + seconds
     next_kick = time.monotonic() + KICK_INTERVAL
     while True:
@@ -176,6 +219,11 @@ def dwell(node: Node, run: Run, seconds: float, **status_extra) -> None:
             break
         if now >= next_kick:
             node.command(f"drv timeout {WATCHDOG_MS}", timeout=1.0)
+            if vel_kick is not None:
+                # Re-commanding the same setpoint is a no-op to the loop other
+                # than refreshing the countdown: velocity_set_setpoint() writes the
+                # target and refreshes the countdown, and touches nothing else.
+                node.command(f"vel target {vel_kick}m", timeout=1.0)
             next_kick = now + KICK_INTERVAL
         run.write_status(node, **status_extra)
         time.sleep(0.002)
@@ -294,6 +342,7 @@ def preflight(node: Node, run: Run, expect_duty_zero: bool = True) -> dict:
         raise NodeError(f"motor is already commanded to {s.duty_pct:+.1f}% — stop it first.")
 
     run.samples.clear()             # pre-flight samples are not run data
+    run.velocs.clear()
     return conditions
 
 
@@ -319,7 +368,9 @@ def profile_sweep(node: Node, run: Run, a: argparse.Namespace) -> dict:
             f"explicitly with --max-duty if that is really intended."
         )
 
-    node.command(f"enc window {a.window}")
+    window = 100 if a.window is None else a.window
+    a.window = window               # so meta.json records what actually ran
+    node.command(f"enc window {window}")
     # The boot default is 999 mA, which is BELOW the from-rest stall current
     # (12 V / 1.87 Ohm = 6.4 A demanded at the instant of a step), so current
     # regulation would chop every breakaway. Set it explicitly and record it,
@@ -393,10 +444,257 @@ def profile_sweep(node: Node, run: Run, a: argparse.Namespace) -> dict:
     return {"points": results}
 
 
+def step_metrics(rows: list[Veloc], from_rpm: float, to_rpm: float) -> dict:
+    """Reduce one step segment to the four numbers a tuning decision is made
+    from, plus the three that say whether those numbers mean anything.
+
+    READ THE CAVEAT BEFORE READING THE NUMBERS. Every timing here is computed
+    from `meas_mrpm`, which is encoder_rpm() — the boxcar over `enc window`
+    ticks. That is deliberate: it is what the controller actually saw and acted
+    on, so these figures describe the closed loop as the loop experienced it,
+    which is the right frame for choosing gains. It is NOT the frame for a
+    plant time constant: the same warning that governs rpm_from_counts() applies
+    with more force inside a loop, because the filter's lag is now inside the
+    feedback path. Plant-side timing comes from the T rows and `count`.
+
+    Time is board `ms`, relative to the first row after the step command, so
+    host scheduling and USB latency are outside every figure below.
+    """
+    out: dict = {
+        "from_rpm": round(from_rpm, 3),
+        "to_rpm": round(to_rpm, 3),
+        "samples": len(rows),
+    }
+    if not rows:
+        return out
+
+    t0 = rows[0].ms
+    t = [(r.ms - t0) / 1000.0 for r in rows]
+    y = [r.meas_rpm for r in rows]
+    change = to_rpm - from_rpm
+    sign = 1.0 if change >= 0 else -1.0
+
+    # Health of the segment first. These are fractions of the steps taken, and
+    # they are what says whether the timing figures are describing the
+    # controller or describing something that got in its way.
+    n = float(len(rows))
+    frozen = [r for r in rows if r.frozen]
+    out["sat_fraction"] = round(sum(1 for r in rows if r.saturated) / n, 4)
+    out["freeze_fraction"] = round(len(frozen) / n, 4)
+    # Split by reason, because they want opposite corrections. Anti-windup
+    # freezing under saturation is the mechanism working; freezing because the
+    # bridge is unavailable or drv's own slew limiter is active means the run
+    # measured the obstruction, not the loop.
+    out["freeze_antiwindup"] = round(
+        sum(1 for r in frozen if not r.slewing and not r.nobridge) / n, 4)
+    out["freeze_drv_slewing"] = round(sum(1 for r in frozen if r.slewing) / n, 4)
+    out["freeze_no_bridge"] = round(sum(1 for r in frozen if r.nobridge) / n, 4)
+    out["watchdog_expired"] = any(r.watchdog for r in rows)
+    out["steps_missed"] = sum(1 for r in rows if r.missed)
+
+    # The settled tail: the last quarter of the segment.
+    tail = rows[int(len(rows) * 0.75):] or rows[-1:]
+    mean_tail = sum(r.meas_rpm for r in tail) / len(tail)
+    out["final_rpm"] = round(mean_tail, 3)
+    out["ss_error_rpm"] = round(mean_tail - to_rpm, 3)
+    # How much the integrator is carrying once everything has settled is how
+    # much the feedforward missed by, in the units the output is written in.
+    # A large steady i with a small ss error means ff_a/ff_b want re-fitting,
+    # not that Ki wants raising.
+    out["i_at_rest_permille"] = round(sum(r.i for r in tail) / len(tail), 1)
+    out["ff_at_rest_permille"] = round(sum(r.ff for r in tail) / len(tail), 1)
+    out["out_at_rest_permille"] = round(sum(r.out for r in tail) / len(tail), 1)
+
+    if abs(change) < 1e-6:
+        # A zero-magnitude step — `--rpm 0` from rest, which is the parser and
+        # plumbing check. There is no rise time or overshoot to report, and
+        # inventing one from noise would be worse than saying so.
+        return out
+
+    def first_at(frac: float) -> float | None:
+        level = from_rpm + frac * change
+        for ti, yi in zip(t, y):
+            if sign * (yi - level) >= 0.0:
+                return ti
+        return None
+
+    t10, t90 = first_at(0.10), first_at(0.90)
+    out["t10_s"] = None if t10 is None else round(t10, 4)
+    out["t90_s"] = None if t90 is None else round(t90, 4)
+    out["rise_s"] = None if (t10 is None or t90 is None) else round(t90 - t10, 4)
+
+    peak = max(y, key=lambda v: sign * v)
+    out["peak_rpm"] = round(peak, 3)
+    out["overshoot_pct"] = round(max(0.0, sign * (peak - to_rpm)) / abs(change) * 100.0, 2)
+
+    # Settling: the last moment it was outside the band, not the first moment
+    # it was inside one. A response that dips back out is not settled, and the
+    # first-crossing definition would call it settled anyway.
+    ref = abs(to_rpm) if abs(to_rpm) > 1e-6 else abs(change)
+    band = 0.02 * ref
+    out["settle_band_rpm"] = round(band, 4)
+    last_out = None
+    for ti, yi in zip(t, y):
+        if abs(yi - to_rpm) > band:
+            last_out = ti
+    if last_out is None:
+        out["settle_s"] = 0.0          # inside the band from the first sample
+    elif last_out >= t[-1] - 1e-9:
+        out["settle_s"] = None         # never settled within the dwell
+    else:
+        out["settle_s"] = round(last_out, 4)
+    return out
+
+
+def profile_step(node: Node, run: Run, a: argparse.Namespace) -> dict:
+    """Command a setpoint step and measure what the loop does about it.
+
+    This is the profile the velocity PID exists to be tuned against. The three
+    setup lines below are not boilerplate and each has a reason:
+
+    `enc window` defaults to 20 here, NOT the sweep's 100. The loop advances
+    once per encoder window, so window 100 is a 10 Hz control loop with 100 ms
+    of measurement lag — it would dominate the very response being measured,
+    and the gains chosen against it would be gains for a different plant.
+
+    `cfg ramp_pmps 0` disarms drive.c's slew limiter. `vel_slew` is the loop's
+    own setpoint ramp and the two must not both be armed: with drv's limiter
+    running, drive_slewing() is true almost continuously, the integrator is
+    frozen for essentially the whole run, and the step measures the limiter.
+
+    `vel_tmo` is set to WATCHDOG_MS so the loop's setpoint watchdog and the
+    drive watchdog have the same period, both refreshed by the same 0.5 s kick
+    in dwell().
+    """
+    sign = -1.0 if a.dir == "ccw" else 1.0
+    to_rpm = sign * a.rpm
+    from_rpm = sign * a.step_from
+
+    over = [r for r in (a.rpm, a.step_from) if abs(r) > a.max_rpm]
+    if over:
+        raise NodeError(
+            f"setpoint {over} rpm exceeds the {a.max_rpm:.0f} rpm ceiling, which is "
+            f"the {DEFAULT_MAX_DUTY:.0f}% duty ceiling pushed through the plant fit. "
+            f"Raise it explicitly with --max-rpm if that is really intended."
+        )
+
+    window = 20 if a.window is None else a.window
+    a.window = window               # so meta.json records what actually ran
+    if window > 40:
+        print(f"  warning: enc window {window} gives a {1000.0 / window:.0f} Hz loop — "
+              f"the measurement lag will dominate the step response", file=sys.stderr)
+    node.command(f"enc window {window}")
+    node.command("cfg ramp_pmps 0")
+    for key, val in (("vel_kp", a.kp), ("vel_ki", a.ki), ("vel_kd", a.kd),
+                     ("vel_ff_a", a.ff_a), ("vel_ff_b", a.ff_b),
+                     ("vel_slew", a.slew)):
+        if val is not None:
+            node.command(f"cfg {key} {val}")
+            run.event("gain", f"{key}={val}")
+    node.command(f"cfg vel_tmo {WATCHDOG_MS}")
+
+    node.command(f"drv trip {a.trip}")
+    node.command(f"drv timeout {WATCHDOG_MS}")
+    node.command("drv decay slow")
+    node.command("drv enable")
+    node.command("drv clearfault")
+
+    node.command(f"telem rate {a.rate}")
+    node.command("telem on")
+    node.command("telem vel on")
+    run.event("telem_on", f"T {a.rate} Hz + V per control step")
+
+    gains = node.ask("vel gains")
+    run.event("gains", gains.replace("\n", " | "))
+
+    node.command("vel on")
+    run.event("vel_on", "")
+
+    segments = []
+
+    # Baseline at rest, with the loop armed. Worth its own dwell: it shows the
+    # loop holding zero, and it is where a stiction-driven limit cycle would be
+    # visible before any step muddies it.
+    run.state = "baseline"
+    dwell(node, run, a.baseline, vel_kick=0, point="baseline 0 rpm")
+
+    if abs(from_rpm) > 1e-6:
+        run.state = f"pre-step {from_rpm:+.1f} rpm"
+        node.command(f"vel target {int(round(from_rpm * 1000))}m")
+        run.event("pre_step", f"{from_rpm:+.3f}")
+        dwell(node, run, a.pre, vel_kick=int(round(from_rpm * 1000)),
+              point=f"pre-step {from_rpm:+.1f} rpm")
+
+    run.state = f"step {from_rpm:+.1f} -> {to_rpm:+.1f} rpm"
+    mark = len(run.velocs)
+    node.command(f"vel target {int(round(to_rpm * 1000))}m")
+    run.event("step", f"{from_rpm:+.3f} -> {to_rpm:+.3f}")
+    dwell(node, run, a.dwell, vel_kick=int(round(to_rpm * 1000)),
+          point=f"step {to_rpm:+.1f} rpm")
+    seg = step_metrics(run.velocs[mark:], from_rpm, to_rpm)
+    seg["segment"] = "up" if abs(to_rpm) >= abs(from_rpm) else "down"
+    segments.append(seg)
+
+    # The return step is not symmetry-checking for its own sake. The
+    # feedforward carries a friction offset applied with the sign of the
+    # setpoint, so the down-step is the one place a wrong ff_b shows up as a
+    # different response rather than as a constant error.
+    if a.ret:
+        run.state = f"return {to_rpm:+.1f} -> {from_rpm:+.1f} rpm"
+        mark = len(run.velocs)
+        node.command(f"vel target {int(round(from_rpm * 1000))}m")
+        run.event("step", f"{to_rpm:+.3f} -> {from_rpm:+.3f} (return)")
+        dwell(node, run, a.dwell, vel_kick=int(round(from_rpm * 1000)),
+              point=f"return {from_rpm:+.1f} rpm")
+        seg = step_metrics(run.velocs[mark:], to_rpm, from_rpm)
+        seg["segment"] = "return"
+        segments.append(seg)
+
+    run.state = "stopping"
+    # `vel stop` ramps the setpoint down and then coasts. The dwell after it is
+    # for the ramp, and it still needs the kick: the watchdog is running until
+    # the loop is disarmed.
+    node.command("vel stop")
+    dwell(node, run, a.stop_dwell, vel_kick=0, point="ramp down")
+    node.command("vel off")
+    node.command("telem vel off")
+    node.command("telem off")
+
+    order = ["segment", "from_rpm", "to_rpm", "samples", "rise_s", "t10_s", "t90_s",
+             "overshoot_pct", "peak_rpm", "settle_s", "settle_band_rpm",
+             "final_rpm", "ss_error_rpm", "i_at_rest_permille",
+             "ff_at_rest_permille", "out_at_rest_permille", "sat_fraction",
+             "freeze_fraction", "freeze_antiwindup", "freeze_drv_slewing",
+             "freeze_no_bridge", "watchdog_expired", "steps_missed"]
+    fields = order + [k for s in segments for k in s if k not in order]
+    with open(os.path.join(run.dir, "step.csv"), "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fields, restval="")
+        w.writeheader()
+        w.writerows(segments)
+
+    for seg in segments:
+        print(f"  {seg['segment']:<7s} {seg['from_rpm']:+6.2f} -> {seg['to_rpm']:+6.2f} rpm"
+              f"  rise {_fmt(seg.get('rise_s'), 's')}"
+              f"  over {_fmt(seg.get('overshoot_pct'), '%')}"
+              f"  settle {_fmt(seg.get('settle_s'), 's')}"
+              f"  sserr {_fmt(seg.get('ss_error_rpm'), ' rpm')}"
+              f"  sat {seg['sat_fraction'] * 100:.0f}%")
+
+    return {"segments": segments, "gains": gains}
+
+
+def _fmt(v, unit: str) -> str:
+    return "  n/a" if v is None else f"{v:5.2f}{unit}"
+
+
 PROFILES = {
     "sweep": (
         profile_sweep,
         "duty list, dwell at each, settled rpm + current — the task-17 table, automated",
+    ),
+    "step": (
+        profile_step,
+        "setpoint step against the velocity loop — rise, overshoot, settling, ss error",
     ),
 }
 
@@ -419,6 +717,13 @@ def _meta(a, run, node, outcome, error, conditions, dropped, suspect, result=Non
         "samples": node.telem_count,
         "seq_gaps": node.telem_gaps,
         "echo_mismatches": node.echo_mismatches,
+        "veloc_samples": node.veloc_count,
+        "veloc_gaps": node.veloc_gaps,
+        # Steps the firmware computed but never published, because the main
+        # loop did not drain the slot in time. Distinct from veloc_gaps, which
+        # is lines lost on the wire — this one is a hole in the control record
+        # with no missing seq to reveal it, which is exactly why it is counted.
+        "veloc_steps_missed": node.veloc_steps_missed,
         "tx_dropped": dropped,
         "suspect": suspect,
         "conditions_at_connect": conditions,
@@ -433,7 +738,8 @@ def cmd_run(a: argparse.Namespace) -> int:
 
     signal.signal(signal.SIGTERM, _on_sigterm)
 
-    node = Node(port=a.port, raw_log=run.raw, on_telem=run.sink)
+    node = Node(port=a.port, raw_log=run.raw, on_telem=run.sink,
+                on_veloc=run.veloc_sink)
     outcome, error = "ok", None
     result: dict = {}
     conditions: dict = {}
@@ -480,7 +786,8 @@ def cmd_run(a: argparse.Namespace) -> int:
         except Exception:
             pass
 
-        suspect = bool(node.telem_gaps) or bool(dropped)
+        suspect = (bool(node.telem_gaps) or bool(dropped)
+                   or bool(node.veloc_gaps) or bool(node.veloc_steps_missed))
         run.write_meta(
             _meta(a, run, node, outcome, error, conditions, dropped, suspect, result)
         )
@@ -490,7 +797,8 @@ def cmd_run(a: argparse.Namespace) -> int:
 
     if suspect:
         print(
-            f"\nSUSPECT: {node.telem_gaps} seq gaps, tx_dropped={dropped}. "
+            f"\nSUSPECT: {node.telem_gaps} T seq gaps, {node.veloc_gaps} V seq gaps, "
+            f"{node.veloc_steps_missed} unpublished control steps, tx_dropped={dropped}. "
             "The stream has holes — do not fit this run without looking at why.",
             file=sys.stderr,
         )
@@ -562,11 +870,46 @@ def main() -> int:
     r.add_argument("--settle", type=float, default=0.5,
                    help="fraction of each dwell discarded as transient")
     r.add_argument("--rate", type=int, default=50, help="telemetry Hz (1..100)")
-    r.add_argument("--window", type=int, default=100, help="enc window, in 1 ms ticks")
+    r.add_argument("--window", type=int, default=None,
+                   help="enc window, in 1 ms ticks. Defaults PER PROFILE: 100 for "
+                        "sweep, 20 for step — the loop advances once per window, so "
+                        "100 would make step a 10 Hz loop and measure the filter")
     r.add_argument("--trip", type=int, default=1580,
                    help="current-regulation trip in mA (boot default 999 is below stall)")
     r.add_argument("--max-duty", type=float, default=DEFAULT_MAX_DUTY,
                    help="refuse any duty above this (percent)")
+
+    # -- step profile --
+    g = r.add_argument_group("step profile")
+    g.add_argument("--rpm", type=float, default=10.0,
+                   help="setpoint stepped TO, rpm (default 10)")
+    g.add_argument("--from", dest="step_from", type=float, default=0.0,
+                   help="setpoint stepped FROM. Non-zero gives a small-signal step "
+                        "from a turning wheel, which is a different plant from rest")
+    g.add_argument("--return", dest="ret", action="store_true",
+                   help="step back down afterwards. The feedforward's friction offset "
+                        "is applied with the sign of the setpoint, so the down-step is "
+                        "where a wrong ff_b shows as a different response")
+    g.add_argument("--max-rpm", type=float, default=DEFAULT_MAX_RPM,
+                   help="refuse any setpoint above this (rpm)")
+    g.add_argument("--baseline", type=float, default=1.0,
+                   help="seconds held at 0 rpm with the loop armed, before the step")
+    g.add_argument("--pre", type=float, default=3.0,
+                   help="seconds held at --from before the step (ignored if --from 0)")
+    g.add_argument("--stop-dwell", type=float, default=2.0,
+                   help="seconds after `vel stop`, for the setpoint ramp to run out")
+    # Gains are in MILLI-units because config.c stores int32 only: --kp 5000 is
+    # Kp = 5.0. Left at None, the board keeps whatever it has, which is what a
+    # repeat run of the same gains wants.
+    g.add_argument("--kp", type=int, default=None, help="cfg vel_kp, milli-units")
+    g.add_argument("--ki", type=int, default=None, help="cfg vel_ki, milli-units")
+    g.add_argument("--kd", type=int, default=None, help="cfg vel_kd, milli-units")
+    g.add_argument("--ff-a", type=int, default=None,
+                   help="cfg vel_ff_a, milli o/oo per rpm (feedforward slope)")
+    g.add_argument("--ff-b", type=int, default=None,
+                   help="cfg vel_ff_b, o/oo (feedforward friction offset)")
+    g.add_argument("--slew", type=int, default=None,
+                   help="cfg vel_slew, milli-rpm/s. 0 makes it a true step")
     r.set_defaults(func=cmd_run)
 
     s = sub.add_parser("status", help="print a run's status.json (default: latest)")

@@ -331,6 +331,75 @@ bool velocity_saturated(void);
   *        alone. The thing to do after changing a gain mid-run. */
 void velocity_reset(void);
 
+/* --- the published snapshot, for telemetry -------------------------------
+ *
+ * The accessors above are fine for a human at a console reading one line at a
+ * time. They are useless for TUNING: a step response is a one-second event at
+ * 50 Hz, and polling nine separate functions from the main loop would sample
+ * each at a different moment and stitch together a state the loop never
+ * actually had.
+ *
+ * So the loop publishes instead. At the end of each control step it fills one
+ * slot with a coherent snapshot of that step, and the main loop drains it.
+ *
+ * WHY PER STEP AND NOT ON THE TELEMETRY SCHEDULE. The loop advances only when
+ * encoder_velocity_seq() changes — 50 Hz at the default window. Sampling that
+ * on the `telem` timer would alias it: at 100 Hz every step appears twice, at
+ * 30 Hz they beat against each other. Neither reads as a step response, and
+ * the integrator and the derivative only mean anything per step. Publishing
+ * per step gives exactly one record per control decision and is self-limiting
+ * — the rate is whatever the loop's rate is, by construction.
+ *
+ * WHEN THE READER FALLS BEHIND. There is one slot, so a main loop that does
+ * not drain fast enough loses steps. It is told: the overwrite sets a sticky
+ * flag that appears as VELOCITY_SAMPLE_MISSED on the NEXT snapshot taken. A
+ * silently decimated stream would look like a slow loop rather than a slow
+ * host, which is exactly the wrong conclusion to hand somebody tuning gains.
+ */
+
+#define VELOCITY_SAMPLE_SATURATED   0x01u  /*!< output hit the ceiling        */
+#define VELOCITY_SAMPLE_FROZEN      0x02u  /*!< integrator did not advance    */
+#define VELOCITY_SAMPLE_SLEWING     0x04u  /*!< ...because drive_slewing()    */
+#define VELOCITY_SAMPLE_NOBRIDGE    0x08u  /*!< ...because disabled/faulted   */
+#define VELOCITY_SAMPLE_WD_EXPIRED  0x10u  /*!< setpoint watchdog has fired   */
+#define VELOCITY_SAMPLE_RAMPING     0x20u  /*!< ramped setpoint != commanded  */
+#define VELOCITY_SAMPLE_MISSED      0x40u  /*!< a step was lost before this   */
+
+/**
+  * @brief One control step, as a coherent set.
+  *
+  * FROZEN without SLEWING or NOBRIDGE means the integrator was held because
+  * the output was clamped and the error pushed further into the clamp — that
+  * is anti-windup working. FROZEN with one of the other two means the loop was
+  * held off by something outside it. Keeping them apart is the point: the two
+  * look identical in the output and want opposite responses.
+  */
+typedef struct
+{
+  uint32_t step;       /*!< control-step index; restarts at 0 on enable       */
+  uint32_t ms;         /*!< HAL_GetTick() at the step                         */
+  int32_t  sp_mrpm;    /*!< the RAMPED setpoint, milli-rpm — what was chased  */
+  int32_t  meas_mrpm;  /*!< encoder_rpm() x1000, what the loop acted on       */
+  int16_t  out;        /*!< per-mille handed to drive_set_duty()              */
+  int16_t  ff;         /*!< feedforward contribution, per-mille               */
+  int16_t  p;          /*!< proportional contribution, per-mille              */
+  int16_t  i;          /*!< integrator, per-mille                             */
+  int16_t  d;          /*!< derivative contribution, per-mille                */
+  uint8_t  flags;      /*!< VELOCITY_SAMPLE_* above                           */
+} velocity_sample_t;
+
+/**
+  * @brief  Take the pending snapshot, if there is one that has not been taken.
+  * @param  dst  filled only when the return is true.
+  * @retval true if a NEW step was copied; false if nothing has happened since
+  *         the last call.
+  *
+  * Copies under a critical section, so the struct is always one step's worth
+  * of state and never a mixture of two. Safe to call from the main loop at any
+  * rate; calling faster than the loop runs simply returns false.
+  */
+bool velocity_take_sample(velocity_sample_t *dst);
+
 /* --- setpoint watchdog -------------------------------------------------- */
 
 /**

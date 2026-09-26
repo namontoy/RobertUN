@@ -60,6 +60,17 @@ static uint16_t telem_ms   = 20u;   /* period, not rate - see cmd_telem()     */
 static uint32_t telem_next;         /* HAL_GetTick() at which the next is due */
 static uint32_t telem_seq;          /* +1 per line; gaps = dropped lines      */
 
+/* The velocity channel. A SECOND record type on the same wire rather than more
+   columns on T: node.py's Telem.parse() rejects any line without exactly eight
+   fields, and every committed run directory holds a telemetry.csv with the
+   seven-field header, so a widened T would mean two incompatible things
+   depending on which reader saw it. A new letter breaks nothing.
+
+   It is gated behind telem_on as well as its own switch, so `telem off` - what
+   every host stop sequence already sends - remains a complete stop. */
+static bool     telem_vel_on = false;
+static uint32_t telem_vseq;         /* +1 per V line; restarts with telem on  */
+
 /** @brief Fastest stream the wire can carry. A ~55-byte line at 100 Hz is
   *        5.5 kB/s against 11.52 kB/s at 115200 8N1 - under half. At 200 Hz it
   *        is ~95%, where the TX ring stops keeping up and lines vanish into
@@ -1948,6 +1959,56 @@ static void print_telem_line(void)
                     (unsigned)flags);
 }
 
+/* -----------------------------------------------------------------------------
+ * THE VELOCITY RECORD
+ *
+ *   V,<seq>,<ms>,<sp_mrpm>,<meas_mrpm>,<out>,<ff>,<p>,<i>,<d>,<flags>
+ *
+ * One line per CONTROL STEP, not per telemetry period. velocity_on_tick()
+ * advances only when the encoder's velocity window closes - 50 Hz at the
+ * default window 20 - and the loop publishes a snapshot each time it does.
+ * This drains that. Sampling it on the `telem` timer instead would alias it:
+ * at 100 Hz every step would appear twice and at 30 Hz they would beat, and
+ * the integrator and the derivative only mean anything per step.
+ *
+ *   seq   uint32, +1 per LINE, restarting at 0 on `telem on` - exactly T's
+ *         semantics, so the same gap detector works. A gap means the line was
+ *         dropped on the wire. A dropped STEP is a different failure and is
+ *         reported separately, by flag bit 64.
+ *   ms    HAL_GetTick() at the step. The join key against the T stream.
+ *   sp    the RAMPED setpoint in milli-rpm - what the loop actually chased,
+ *         which during a ramp is not what was commanded. Bit 32 says which.
+ *   meas  encoder_rpm() x1000 AS THE LOOP SAW IT. This is deliberately the
+ *         boxcar-filtered figure and not a fresh differentiation of `count`:
+ *         the question this stream answers is what the controller did, and
+ *         the controller acted on the filtered value. Fit the PLANT from T's
+ *         `count`; judge the LOOP from this.
+ *   out   per-mille handed to drive_set_duty(). T's `duty` is what the bridge
+ *         then ran - they differ while drv's own slew limiter is armed.
+ *   ff p i d  the four contributions, per-mille, summing to the unclamped
+ *         output. Separated because "it oscillates" and "it winds up" look
+ *         identical in `out` and want opposite corrections.
+ *   flags 1 saturated  2 integrator frozen  4 ...slewing  8 ...no bridge
+ *         16 watchdog expired  32 setpoint ramping  64 a step was dropped
+ *
+ * Integer fields throughout, for the reason above print_telem_line().
+ * -------------------------------------------------------------------------- */
+
+static void print_velocity_line(const velocity_sample_t *s)
+{
+  debug_uart_printf("V,%lu,%lu,%ld,%ld,%d,%d,%d,%d,%d,%u\r\n",
+                    (unsigned long)telem_vseq++,
+                    (unsigned long)s->ms,
+                    (long)s->sp_mrpm,
+                    (long)s->meas_mrpm,
+                    (int)s->out,
+                    (int)s->ff,
+                    (int)s->p,
+                    (int)s->i,
+                    (int)s->d,
+                    (unsigned)s->flags);
+}
+
 static void cmd_telem(int argc, char **argv)
 {
   if (argc < 2)
@@ -1962,7 +2023,62 @@ static void cmd_telem(int argc, char **argv)
                     "  16 watchdog\r\n");
     debug_uart_puts("  count is the measurement; milli_rpm is filtered by"
                     " 'enc window' and lags\r\n");
-    debug_uart_puts("  sub: on | off | rate <1..100 hz>\r\n");
+
+    debug_uart_printf("velocity channel %s, vseq %lu\r\n",
+                      telem_vel_on ? "on" : "off",
+                      (unsigned long)telem_vseq);
+    debug_uart_puts("  V,seq,ms,sp_mrpm,meas_mrpm,out,ff,p,i,d,flags\r\n");
+    debug_uart_puts("  flags: 1 saturated  2 frozen  4 slewing  8 no bridge"
+                    "  16 watchdog  32 ramping  64 step dropped\r\n");
+    debug_uart_puts("  one line per CONTROL STEP (1000/'enc window' Hz),"
+                    " not per telem period\r\n");
+
+    debug_uart_puts("  sub: on | off | rate <1..100 hz> | vel on|off\r\n");
+    return;
+  }
+
+  if (strcmp(argv[1], "vel") == 0)
+  {
+    bool von;
+
+    if ((argc < 3) || !parse_on_off(argv[2], &von))
+    {
+      debug_uart_printf("velocity channel is %s\r\n",
+                        telem_vel_on ? "on" : "off");
+      return;
+    }
+
+    telem_vel_on = von;
+    debug_uart_printf("velocity channel %s\r\n", von ? "on" : "off");
+
+    if (von)
+    {
+      if (!velocity_enabled())
+      {
+        debug_uart_puts("  the loop is off, so nothing will be emitted -"
+                        " 'vel on' to arm it\r\n");
+      }
+
+      /* 100 Hz of T plus 50 Hz of V is ~9.7 kB/s of an 11.52 kB/s wire, and
+         the echo of anything typed then comes out of what is left. The board
+         will not refuse it - a short burst is fine and tx_dropped counts the
+         damage - but the pairing that actually fits is said out loud. */
+      if (telem_ms < 20u)
+      {
+        debug_uart_printf("  WARNING: T is at %u Hz. Both channels together"
+                          " will outrun 115200.\r\n"
+                          "  'telem rate 50' is the pairing that fits;"
+                          " check 'stats' for tx_dropped\r\n",
+                          (unsigned)(1000u / telem_ms));
+      }
+
+      if (!telem_on)
+      {
+        debug_uart_puts("  'telem on' is still the master switch - nothing"
+                        " streams until it is on\r\n");
+      }
+    }
+
     return;
   }
 
@@ -1999,7 +2115,8 @@ static void cmd_telem(int argc, char **argv)
 
   if (!parse_on_off(argv[1], &on))
   {
-    debug_uart_puts("usage: telem on|off | telem rate <hz>\r\n");
+    debug_uart_puts("usage: telem on|off | telem rate <hz>"
+                    " | telem vel on|off\r\n");
     return;
   }
 
@@ -2008,10 +2125,12 @@ static void cmd_telem(int argc, char **argv)
   if (on)
   {
     telem_seq  = 0u;
+    telem_vseq = 0u;
     telem_next = HAL_GetTick();
 
-    debug_uart_printf("telem on at %u Hz - seq restarted at 0\r\n",
-                      (unsigned)(1000u / telem_ms));
+    debug_uart_printf("telem on at %u Hz - seq restarted at 0%s\r\n",
+                      (unsigned)(1000u / telem_ms),
+                      telem_vel_on ? ", velocity channel on" : "");
 
     if (monitor_on)
     {
@@ -2023,8 +2142,9 @@ static void cmd_telem(int argc, char **argv)
   }
   else
   {
-    debug_uart_printf("telem off - %lu lines sent\r\n",
-                      (unsigned long)telem_seq);
+    debug_uart_printf("telem off - %lu T lines, %lu V lines sent\r\n",
+                      (unsigned long)telem_seq,
+                      (unsigned long)telem_vseq);
   }
 }
 
@@ -2340,6 +2460,25 @@ void console_report_telem(void)
   if (!telem_on)
   {
     return;
+  }
+
+  /* The velocity channel FIRST, and outside the schedule below. It is paced by
+     the control loop, not by telem_ms - draining it inside the period check
+     would throttle a 50 Hz loop to whatever T happens to be set to, and the
+     whole reason this is a separate record is that it must not be resampled.
+
+     One per call: there is only ever one slot, so a second call would return
+     false anyway. The main loop runs far faster than any loop rate we can
+     configure, and when it does not, the dropped step comes back as flag 64
+     rather than as silence. */
+  if (telem_vel_on)
+  {
+    velocity_sample_t vs;
+
+    if (velocity_take_sample(&vs))
+    {
+      print_velocity_line(&vs);
+    }
   }
 
   uint32_t now = HAL_GetTick();

@@ -1,5 +1,5 @@
 # RobertUN — Wheel Controller Firmware Context
-**Last updated:** September 26, 2026 (**TASK 21's DUTY SLEW LIMITER IS IMPLEMENTED AND VERIFIED ON THE LOADED RIG — the task is closed.** `drv ramp <o/oo per s>` + `drv ramp floor <o/oo>`, per-mille on the existing 1 kHz TIM6 tick, **off by default**; plus `drv duty <n>p` for per-mille commands, which unblocks the 1%-step stiction bracket. **It went INSIDE `drive.c`, reversing the "control layer, not `drive.c`" position** — because `drive_set_duty()` kicks the command watchdog, so a ramp module above it would refresh that watchdog 1000×/s and a dead host would never be detected again. Same mechanism-not-policy split as the watchdog itself. **Coast and brake stay immediate**; "ramp down then brake" is written above via the new `drive_slewing()`. Rate and floor are config keys; the arithmetic was checked offline first — the per-tick step in **milli-per-mille equals the rate in per-mille/s**, exactly. ✅ **The bench pass is done.** Measured slew rate **50.00 o/oo/s** against 50 commanded and the 120→290 climb took **3400 ms against 3400 predicted**; floor jumped 0→120 in one sample with the encoder moving **10 ms** later; **peak motor current 581 mA** against the host prototype's 572 mA. **The A/B is the result that matters: un-ramped, the same 0→29% step read 1582 mA against a trip programmed at 1579 — the driver was in ITRIP regulation for ~40 ms — so the ramp cuts peak inrush 2.7×.** ⚠️ **And it never set the fault flag**, so an un-ramped start silently leans on the hardware current limit. **The watchdog non-regression test passed with the motor live** — after 10 s of the ramp writing the CCR, the deadline landed on the exact millisecond and duty dropped 290→0 in a single sample, so `emit()` is not kicking it and the placement argument holds. ⚠️ **Both runs settled at 19.82 and 19.97 rpm against the Sep 25 loaded fit's 20.76 — 4.5% low, two runs agreeing with each other and disagreeing with the fit, so the loaded plant line is due a re-take**)
+**Last updated:** September 26, 2026 (**W5's VELOCITY PID MODULE IS WRITTEN, AND SO IS THE INSTRUMENT TO TUNE IT WITH — both on `w5-velocity-pid`, neither yet run on hardware.** `velocity.c`/`.h` is a **policy layer above `drive.c`**, stepping at the *measurement* rate (once per `enc window`, 50 Hz default) rather than on the 1 kHz tick, with feedforward from the inverse plant, the **setpoint ramp that task 21 said belongs up here**, four named anti-windup freeze conditions, and nine `cfg` keys in milli-units. Then the telemetry: a second opt-in **`V,` record — one line per control step**, carrying setpoint, measurement, output and **all four terms separately**, plus a flag set that splits *why* the integrator froze. Host side gained the parser, `velocity.csv`, and **`bench.py run step`** — rise time, overshoot, settling, steady-state error, and the integrator's resting value, which is how much the feedforward missed by. ⚠️ **The finding that generalises: arming a control loop invalidates every host-side stop sequence that talks to the layer below it.** `safe_stop()`'s `drv duty 0` / `drv coast` were being overwritten by the loop 20 ms later; `vel off` now goes first. Same shape as task 21's watchdog-defeat problem, one layer up. ⚠️ Also fixed: **`velocity.c` shipped with no `volatile` on any ISR-written static** — caught while adding the snapshot, before it cost anything)
 
 **Previously:** September 25, 2026 (**LOADED-RIG PASS TAKEN, AND THE PLANT'S TIME CONSTANT MEASURED TWICE BY TWO INDEPENDENT ROUTES.** Two clean 30 s/point sweeps in 2% steps on the treadmill belt at 1047 g: pooled **`rpm = 0.7993 d − 2.420`** over 11–29%, **the load costs only 4.3% of the free-wheel slope** and 0.85 rpm of intercept. **Breakaway 9–11% duty is the SAME TERMINAL VOLTAGE** as Sep 15's 12–14% on the 9.35 V rail (1.203 V vs 1.216 V) — breakaway is a voltage threshold, not a duty one. Current separates **Coulomb (free, flat) from viscous (loaded, +4.4 mA/%)**; above ~31% the wheel bounces on the belt and the slope lifts 16.3%, which is the rig and not the plant. **⚠️ THE τ ≈ 0.65–0.70 s REPORTED EARLIER THIS SESSION IS WRONG** — the plant is **two-pole**: **τ_fast 0.219 ± 0.007 s** (84%) + **τ_slow 2.75 s** (16%, the belt), verified against an independent ramp-tracking lag of **0.207 ± 0.007 s** — **5.7% apart**. A one-pole fit returns a window-dependent artifact that climbs to 0.724 s at a 10 s horizon. **The model stays linear**; the 25% gain droop is carried as a PID design constraint. Rig inertia is **2.87× light** vs the rover, so τ there will be longer)
 
@@ -25,6 +25,7 @@
 
 One line per entry. Full detail (exact numbers, register values, reasoning chains) is in `PROJECT_CONTEXT_WHEEL_FW_LOG.md`.
 
+- **Sep 26 (later)** — **W5's VELOCITY PID IS WRITTEN, AND SO IS THE INSTRUMENT TO TUNE IT.** Branch `w5-velocity-pid`; **nothing here has been run on hardware yet.** `velocity.c`/`velocity.h` is a **policy layer above `drive.c`** — it decides, `drive.c` actuates — and it **steps at the measurement rate, not the tick rate**: `velocity_on_tick()` runs off TIM6 but advances only when `encoder_velocity_seq()` changes, which is once per `enc window` (50 Hz at window 20). A loop running faster than its sensor updates would differentiate a staircase and integrate the same error twice. Feedforward comes from the inverse plant (`duty% = 1.251 × rpm + 3.028`) with the friction offset applied **with the sign of the setpoint**, so the PID only has to correct the fit's error rather than build the whole output. **The setpoint ramp lives here**, which is exactly what task 21 said it would: `drive.c` has no setpoint, and ramping the setpoint is what stops the loop winding up against its own ramp. Anti-windup freezes the integrator under four named conditions, and **which one fired is reported**. Gains ship at **¼ of textbook** (Kp 3.0 / Ki 10.0 against 1/K = 12.51 and 1/(K·τ) = 57.1) on purpose — the plant fit they derive from is the one flagged 4.5% optimistic. Nine `cfg` keys in **milli-units**, because config is int32-only. ⚠️ **A real defect was found in what had just been committed: not one of `velocity.c`'s ISR-written statics was `volatile`** — latent while nothing copied them out, load-bearing the moment a snapshot did. Fixed before the snapshot was added. **Then the telemetry, which is the half that makes tuning possible at all.** The `T,` line says what the *bridge and plant* did; it says nothing about what the *loop decided*. So a second opt-in record, **`V,seq,ms,sp_mrpm,meas_mrpm,out,ff,p,i,d,flags`** — a separate record rather than more columns on `T,`, because `Telem.parse()` length-checks and every committed run directory holds a 7-field `telemetry.csv`, so a widened `T,` would mean two incompatible things depending on the reader. **Published once per control step, not on the `telem` timer**: riding that timer would alias the loop (duplicates at 100 Hz, beats at 30 Hz), and the integrator and derivative only mean anything per step. **One slot with overrun reporting, not a ring** — an unpublished step sets a sticky bit that is OR'd into the next line, because a silently decimated stream reads as a *slow control loop*, which is the wrong conclusion for someone about to change a gain. The flag set **splits the freeze reason three ways**: frozen-alone is anti-windup working, frozen-plus-slewing or frozen-plus-no-bridge is the loop being held off by something else — identical in `out`, opposite corrections. `telem on` stays the master switch, so `telem off` remains a complete stop. Host side: `node.py` parses both records from **one regex alternation** (the echo-reassembly logic needs ordered non-overlapping matches, which two iterators cannot promise), `bench.py` writes `velocity.csv` and gained **`run step`** — rise time, overshoot, settling to ±2%, steady-state error, saturation and freeze fractions, and **the integrator's resting value, which is how much the feedforward missed by**. Two profile defaults that are not copied from `sweep` and must not be: **`enc window 20`, not 100** (window 100 is a 10 Hz loop with 100 ms of lag that would dominate the response being measured) and **`cfg ramp_pmps 0`** (with drv's limiter armed, `drive_slewing()` is true almost continuously and the integrator is frozen for the whole run). ⚠️ **The finding worth carrying forward: arming a control loop invalidates every host-side stop sequence that addresses the layer below it.** `safe_stop()` sent `drv duty 0`, `drv coast`, `drv disable`, `telem off` — with the loop armed the first two are overwritten 20 ms later, and only the third actually stopped anything. `vel off` now goes first. This is task 21's watchdog-defeat problem one layer up, and it will recur again at CAN and at the rover supervisor. Firmware builds clean under `-Wall -Wextra` at **27.14% flash, 4.35% RAM**.
 - **Sep 26** — **TASK 21: THE DUTY SLEW LIMITER IS IN THE FIRMWARE.** `drive.c` gained a per-mille slew limiter on the existing 1 kHz TIM6 tick — `drv ramp <o/oo per s>`, `drv ramp floor <o/oo>`, both backed by config keys (`ramp_pmps`, `ramp_floor`) and both **0 = off**, so nothing behaves differently until armed. Also `drv duty <n>p`, a per-mille command form that **unblocks the 1%-step stiction bracket**. ⚠️ **The placement reverses what this file said.** Task 21 had it in the control layer; reading the code showed that cannot work, because **`drive_set_duty()` calls `drive_kick()`** on purpose — a duty command is evidence of a live host — so any ramp module above `drive.c` would refresh the command watchdog a thousand times a second and a dead host would never be detected again. It is therefore the **command watchdog's own split**: mechanism in `drive.c`, policy above. Secondary reason: a limiter callers can route around is advisory; inside, the invariant is unconditional. **Coast and brake are deliberately NOT ramped** — coast is the safe stop and the watchdog's action, brake is an explicit act — so the standing "ramp duty down before braking" policy is written above as `drive_set_duty(0)` → `!drive_slewing()` → `drive_brake()`, which is what the new accessor is for; a tightened `drive_set_limit()` is immediate too, being protection rather than a command. `drive_duty()` now reports what the **bridge is running**, not the target, so a ramp shows up in telemetry as a ramp. The accumulator is in **milli-per-mille** because 5%/s is 0.05 per-mille per tick, and that scaling collapses to an identity — **the per-tick step in milli-per-mille IS the rate in per-mille per second** — so there is no division in the ISR and a ramp lands exactly on its target. Arithmetic verified offline against a transcription of the C before the board was touched (floor jump, no floor re-trigger at a reversal's zero crossing, cap-tightening instant and sticky, 50 CCR writes/s not 1000). Builds clean at 96 972 B flash. **Two things learned from reading `cfg` first:** the bench board has **never had `cfg save` run** (`slot 0/1024`, no overrides), so adding keys cost no calibration — but in general **adding a config key discards the stored record**, since `config.c` rejects a record whose key count differs, and `CONFIG_VERSION` is not what guards that. ✅ **Verified on the loaded rig the same day**, 1462 telemetry lines with no seq gaps: slew rate **50.00 o/oo/s** fitted over 340 samples, 120→290 in **3400 ms against 3400 predicted**, floor jump in one sample and the encoder turning 10 ms later, sync setting at duty 145 as always, **peak 581 mA against the host prototype's 572**. **The A/B against `drv ramp 0` is the evidence:** the un-ramped step read **1582 mA against a 1579 mA trip** — the clamp value, not the demand — and held the driver in regulation ~40 ms, so **the ramp cuts peak inrush 2.7×**; ⚠️ it latched **no fault and no ADC saturation**, meaning an un-ramped start relies on ITRIP silently and nothing in the telemetry would ever have shown it. **The watchdog test was repeated with the motor live and passed**: the 10 s deadline landed on the exact millisecond and duty went 290→0 in one sample (coast, not ramp). ⚠️ Both runs settled at **19.82 / 19.97 rpm against the fit's 20.76**, 4.5% low and mutually consistent — **the loaded plant line needs re-fitting, not explaining**.
 - **Sep 25 (later)** — **LOADED-RIG PASS, AND τ MEASURED TWICE FROM TWO INDEPENDENT ROUTES.** Two integrity-clean sweeps on the treadmill belt (wheel + carriage **1047 g**, 12 V rail, **2% steps, 30 s dwell**, 1125 settled samples/point; the descending run entered on a **host-side 12→29% ramp at 5%/s**, standing in for the firmware slew limiter that still does not exist). **Steady state, 11–29%: pooled `rpm = 0.7993 d − 2.420`** against the free wheel's `0.8356 d − 1.573` — **the load costs 4.3% of slope and 0.85 rpm of intercept**, so the Sep 25 mounting rule holds from the other side. Repeatability floor **±0.174 rpm**. **Breakaway and dropout both land in 9–11% duty**, and that is the *same terminal voltage* as Sep 15's 12–14% on the 9.35 V rail (**1.203 V vs 1.216 V, 1.0% apart**) — **breakaway is a voltage threshold, and breakaway duty is not portable across rails**; the Stribeck cliff moved below 11% with it. Current finally separates the two friction terms: **free wheel flat at 232.5 ± 18.5 mA (slope −0.85 mA/%, Coulomb), loaded rising 266→313 mA at +4.4 mA/% (viscous)**. **Above ~31% the wheel bounces on the belt** — slope lifts from 0.7924 to **0.9219 rpm/% (+16.3%)**, which is the rig and not the plant, and is why 30% is the characterisation ceiling. The band's curvature is **real, not thermal**: asc/desc residuals correlate **+0.718** where drift would anti-correlate. **The model stays linear anyway** — a quadratic buys 0.063 rpm of rms against a 0.174 rpm floor — and the **25% gain droop** (0.899 → 0.700 rpm/%) is carried as a PID design constraint instead. **⚠️ THE BIG CORRECTION: the τ ≈ 0.65–0.70 s reported earlier today is wrong.** The plant is **two-pole** — **τ_fast 0.219 ± 0.007 s (84%)** plus **τ_slow 2.75 ± 0.05 s (16%, belt and contact settling, which is why the 30 s dwell was needed)**. A one-pole fit returns a **window-dependent artifact**: 0.290 s at 1 s, 0.496 s at 3 s, **0.724 s at 10 s** — never settling, and the last is essentially the number first quoted. **Verified from two independent measurements: an ensemble of 42 stacked 2% steps gives 0.219 s, and the ramp-tracking lag on the entry ramp gives 0.207 ± 0.007 s — 5.7% apart**, from different excitation, different data and a different estimator. Two supporting errors were also found and fixed (the ramp rate was 4.814 %/s, not 3.75, and the end-of-ramp speed had been read off `mrpm` instead of `count`). ⚠️ **The rig loads the wheel but does not carry the rover's inertia** — 1047 g is normal force, and the rover is ~3 kg/wheel, so the rig is **2.87× light**: friction transfers, τ does not, and τ on the rover will be longer. Two figures and their scripts added under `docs/environment/figures/`.
 - **Sep 25** — **BENCH HOST TOOLING, end of the hand-transcription era.** Firmware gained **`telem`** (`T,seq,ms,duty,count,milli_rpm,mA,flags` at 1–100 Hz, integer fields only, emitted from the main loop) and **`drv timeout`** (a command watchdog that was simply absent — it **coasts** on expiry, and is checked *before* the fault path's early return). `tools/bench/` (`node.py` + `bench.py`) drives profiles, logs raw-before-parsed, and rewrites `status.json` once a second so a run can be left alone and checked on by reading one small file. Proven at the wire with the motor stopped: **31 lines in 3.0 s, zero seq gaps, board-stamped intervals 99–100 ms against a nominal 100.** One real bug found and fixed: the prompt carries no newline, so a telemetry line landing behind it merged in the buffer and the prompt was never seen again. **The tool then found a second bug in itself** — the pre-flight fault gate would have refused every run, because nFAULT reads low the whole time nSLEEP is low, so a reset board always reports a latched fault; it now wakes the driver and clears the latch before looking. **First motor run: no 12 V rail.** Board accepted 20% duty and was genuinely switching (`flags=3`), but zero counts and 11 mA across 150 samples — diagnosed from the recorded run in one look, no re-run. After the rail was repaired, **a third bug surfaced only on real hardware**: the console echoes each typed character as its own one-byte write while a telemetry line is one atomic write, so a `T,` record lands *inside* a command echo — the parser now extracts records anywhere in a line and reassembles the echo around them, and an echo mismatch is counted rather than fatal. **Then four clean sweeps re-took the plant** (0 seq gaps, 0 echo mismatches, 0 `tx_dropped` on all four), with the **wheel clamped to the table** instead of hand-held: CW asc `0.8327 d − 1.524`, CW desc `0.8187 d − 0.752`, CCW `0.8618 d − 1.164`, CW full range `0.8186 d − 0.833`, every R² ≥ 0.9999. **The validation gate passed at −0.18%** against the Sep 23 hand-typed table over the same 20–100% points, and **CCW closed task 17's last free-wheel item at +3.49%**, matching Aug 26's +3.5% from a different method. Two findings worth keeping: **mounting moves the intercept and leaves the slope alone**, and the asc/desc gap is **the motor warming, not hysteresis** — it tracks elapsed time, not direction. Loaded rig and the deliberate `kill -9` watchdog test still owed.
@@ -2594,6 +2595,16 @@ placement instead of by guessing.
     driver is not 12 V at the motor.
 
     **Can start now, without the bench:**
+    - ✅ **PID gains as `config` keys BEFORE tuning starts — DONE Sep 26, 2026.**
+      Nine keys, all in **milli-units** because the store is int32-only:
+      `vel_kp` 3000, `vel_ki` 10000, `vel_kd` 0, `vel_ff_a` 12510, `vel_ff_b` 30,
+      `vel_ilim` 150, `vel_max` 300, `vel_slew` 4000, `vel_tmo` 1000. Each is
+      live-applied by `cfg <key> <val>` without a save, which **is** the
+      volatile set-for-this-session path the note below asked for: the log is
+      append-only with 1024 slots, so a 50-point gain scan that persisted each
+      trial would burn 5% of it. `cfg save` persists only a keeper.
+      **Adding them cost nothing** — `cfg save` has still never been run on this
+      board, so there was no stored record to discard. (Original note follows.)
     - ⬜ **PID gains as `config` keys BEFORE tuning starts** (task 18 flags this
       as the biggest payoff, and it is right — re-flashing to change a gain makes
       tuning miserable). `kp`, `ki`, `kd`, output clamp, integral limit. **Do it
@@ -2608,8 +2619,30 @@ placement instead of by guessing.
       2026). `telem` streams at up to 100 Hz with a board timestamp and a
       sequence number, which is what makes a step response or a coast-down
       measurable at all — the console's 5 Hz hand-read pace never could.
-    - ⬜ Control-loop skeleton on the existing TIM6 1 kHz tick: velocity estimate
-      from the TIM2 delta, the sign convention above, duty clamp.
+    - ✅ **Control-loop skeleton — DONE Sep 26, 2026, `velocity.c`/`velocity.h`.**
+      It hangs off the TIM6 1 kHz tick but **advances at the measurement rate,
+      not the tick rate**: it runs only when `encoder_velocity_seq()` changes,
+      which is once per `enc window` — 50 Hz at the default 20. Running a loop
+      faster than its sensor updates differentiates a staircase and integrates
+      the same error repeatedly; the encoder's boxcar sets the honest rate.
+      Includes feedforward from the inverse plant with a sign-of-setpoint
+      friction offset, the setpoint ramp (see the next bullet — it belongs here,
+      as this file predicted), a four-condition anti-windup freeze that reports
+      *which* condition fired, and its own setpoint watchdog. **Untested on
+      hardware.**
+      - ⚠️ **It defeats `drive.c`'s command watchdog by construction, and that
+        is deliberate but must be remembered.** `drive_set_duty()` kicks that
+        watchdog, and the loop calls it 50×/s forever, so **arming the loop
+        means drive.c's watchdog can never expire**. That is why `velocity.c`
+        carries its own setpoint watchdog — armed by default, the opposite of
+        drive's — and why only `vel target` kicks it: a setpoint is evidence
+        something upstream is still choosing, which is the thing actually worth
+        watching once the loop is keeping the layer below alive.
+      - ⚠️ **Shipped with no `volatile` on any ISR-written static.** Caught the
+        same day while adding the telemetry snapshot. Harmless until something
+        copied the state out; the lesson is that a new module written against
+        an existing tick does not inherit the tick's discipline automatically —
+        `encoder.c` and `drive.c` both had it right and it still got missed.
     - ✅ **DUTY SLEW-RATE LIMITER — ramp the speed command, never step it
       (raised Sep 23, 2026, at the bench).** `drv duty 60` from rest is a step
       change, and because back-EMF is zero at t=0 it is a stall-current event
@@ -2727,8 +2760,45 @@ placement instead of by guessing.
         ramp lands on its target rather than near it. The accumulator has to be
         milli-per-mille because 5%/s is **0.05 per-mille per tick** — an integer
         per-mille accumulator would stall at zero or run 20× fast.
-    - ⬜ Telemetry path. OpenOCD RTT is the standing candidate; decide before
-      it is needed, because tuning without a trace is guesswork.
+    - ✅ **Telemetry path — DONE Sep 26, 2026, and RTT was not needed.** A
+      second opt-in console record, **`V,seq,ms,sp_mrpm,meas_mrpm,out,ff,p,i,d,flags`**,
+      behind `telem vel on`. Integer fields only, like `T,`. The four terms are
+      carried **separately and before the clamp**, so `out` differing from their
+      sum is exactly the saturation, and an oscillation says in the data which
+      term is driving it.
+      - **One line per control step, not on the `telem` timer.** The loop runs
+        at `1000 / enc window` Hz; riding the telem schedule would alias it —
+        duplicates at 100 Hz, beats at 30 Hz — and the integrator and derivative
+        only mean anything per step.
+      - **A separate record, not more columns on `T,`.** `Telem.parse()`
+        length-checks its fields and every committed run directory holds a
+        7-field `telemetry.csv`, so a widened `T,` would silently mean two
+        incompatible things depending on which reader saw it.
+      - **Overrun is reported, not hidden.** One slot, and a step the main loop
+        failed to drain sets a sticky bit OR'd into the next line. A silently
+        decimated stream reads as a *slow control loop* — precisely the wrong
+        conclusion for someone about to change a gain.
+      - **The flag set splits the freeze reason.** Frozen alone is anti-windup
+        working; frozen with slewing or no-bridge is the loop held off by
+        something else. They look identical in `out` and want opposite
+        corrections.
+      - ⚠️ **Bandwidth is the real limit.** 115200 8N1 is 11.52 kB/s; `T` at
+        100 Hz plus `V` at 50 Hz is ~9.7 kB/s before the echo of anything typed.
+        **`telem rate 50` is the pairing that fits**, and `telem vel on` warns
+        below 20 ms.
+    - ✅ **`bench.py run step` — the profile the loop gets tuned against.**
+      Commands a setpoint step and reduces it to rise time (10→90%), overshoot,
+      settling to ±2%, steady-state error, saturation and freeze fractions split
+      by reason, and **the integrator's resting value — which is how much the
+      feedforward missed by**, a large steady `i` with a small error meaning
+      `ff_a`/`ff_b` want re-fitting rather than Ki raising. Two defaults that are
+      deliberately *not* the sweep's: **`enc window 20`** (100 makes it a 10 Hz
+      loop whose 100 ms lag would dominate the response being measured) and
+      **`cfg ramp_pmps 0`** (drv's limiter and `vel_slew` in series means
+      `drive_slewing()` is true almost continuously and the run measures the
+      limiter). Its metrics come from `meas_mrpm`, the boxcar the controller
+      acted on — the right frame for choosing gains, the wrong one for a plant
+      time constant.
 
     **Two constraints inherited from Sep 20, to be designed around rather than
     discovered during tuning:**
@@ -2760,6 +2830,36 @@ placement instead of by guessing.
       not as a low reading.
 
 ## KEY LEARNINGS & GOTCHAS
+
+⚠️ **ARMING A CONTROL LOOP INVALIDATES EVERY STOP SEQUENCE THAT ADDRESSES THE
+LAYER BELOW IT.** Found Sep 26, 2026, in `node.safe_stop()`, which had sent
+`drv duty 0` → `drv coast` → `drv disable` → `telem off` since the tool was
+written. With the velocity loop armed, the board calls `drive_set_duty()` fifty
+times a second from its own tick, so the first two commands are **overwritten
+about 20 ms after they land** and only `drv disable` — the third step, cutting
+nSLEEP — actually stopped anything. The sequence still worked, by accident, and
+would have kept working right up until someone shortened it or reordered it.
+The rule: **disarm the outermost active loop first, then walk down.** The
+general form of the trap is worth stating separately, because it is not about
+this one function: *whenever a new layer is added that drives an existing layer
+autonomously, every command path into the lower layer silently becomes advisory.*
+That is the same mechanism as task 21's watchdog problem seen from the other
+side — there, the loop's continuous calls **kept alive** a watchdog that exists
+to detect a dead host; here, they **overrode** a stop. Both are one layer
+holding another's state open, and the countermeasure is the same in both: the
+lower layer keeps its mechanism, and the layer that can defeat it carries its
+own equivalent (`velocity.c` has its own setpoint watchdog, armed by default).
+**Expect this again at CAN and again at the rover supervisor**, and check it
+deliberately each time rather than waiting to find it.
+
+⚠️ **A NEW MODULE DOES NOT INHERIT THE DISCIPLINE OF THE TICK IT HANGS OFF.**
+`velocity.c` was committed with **not one `volatile`** on statics written from
+the TIM6 ISR and read from thread context, while `encoder.c` and `drive.c` — the
+two modules it sits between, and the two it was written by reading — both mark
+theirs correctly. It was harmless only because nothing yet copied that state
+out; the very next change, a telemetry snapshot, is what would have made it bite.
+When adding a module to an existing ISR, the concurrency contract is a **checklist
+item**, not something the surrounding code confers.
 
 ⚠️ **CURRENT REGULATION IS SILENT — a clamped start looks identical to a normal
 one in telemetry.** Measured Sep 26, 2026: an un-ramped 0→29% duty step on the

@@ -8,6 +8,8 @@
   */
 #include "velocity.h"
 
+#include "main.h"        /* HAL_GetTick() for the published snapshot's stamp */
+
 #include "config.h"
 #include "drive.h"
 #include "encoder.h"
@@ -20,7 +22,10 @@
    nobody should be using is a trap, not a feature. */
 #define D_FILTER_ALPHA   0.2f
 
-/* --- configuration, cached as floats so the tick does no conversion ------ */
+/* --- configuration, cached as floats so the tick does no conversion ------
+   NOT volatile, and that is the deliberate half of the split below: thread
+   context writes these and the tick only ever reads them, each is a single
+   word, and a gain that lands one step late is of no consequence. */
 
 static float    kp        = 0.0f;   /* o/oo per rpm                          */
 static float    ki        = 0.0f;   /* o/oo per rpm-second                   */
@@ -34,35 +39,71 @@ static int32_t  slew_milli = 0;
 static uint16_t i_limit  = 0;       /* o/oo                                  */
 static uint16_t out_max  = 0;       /* o/oo                                  */
 
-/* --- loop state, written only by the tick -------------------------------- */
+/* --- loop state, written by the tick -------------------------------------
+   ALL volatile, matching encoder.c and drive.c. The TIM6 ISR writes these and
+   thread context - every accessor below, and print_velocity_line() through
+   velocity_take_sample() - reads them. Without it the compiler is entitled to
+   keep `armed` or `out_pm` in a register across a console call and report a
+   value the loop abandoned several steps ago. */
 
-static bool     armed      = false;
-static velocity_state_t state = VELOCITY_OFF;
+static volatile bool     armed      = false;
+static volatile velocity_state_t state = VELOCITY_OFF;
 
-static int32_t  target_mrpm = 0;    /* commanded; written from thread context */
-static float    sp_rpm      = 0.0f; /* ramped setpoint the PID chases         */
-static float    meas_rpm    = 0.0f;
-static float    integ       = 0.0f; /* o/oo                                   */
-static float    d_state     = 0.0f; /* filtered d(meas)/dt, rpm/s             */
-static float    prev_meas   = 0.0f;
-static bool     have_prev   = false;
+static volatile int32_t  target_mrpm = 0; /* written from thread context      */
+static volatile float    sp_rpm      = 0.0f; /* ramped setpoint the PID chases */
+static volatile float    meas_rpm    = 0.0f;
+static volatile float    integ       = 0.0f; /* o/oo                          */
+static volatile float    d_state     = 0.0f; /* filtered d(meas)/dt, rpm/s    */
+static volatile float    prev_meas   = 0.0f;
+static volatile bool     have_prev   = false;
 
-static int16_t  out_pm  = 0;
-static int16_t  t_ff = 0, t_p = 0, t_i = 0, t_d = 0;
-static bool     saturated = false;
-static bool     coasting  = false;
+static volatile int16_t  out_pm  = 0;
+static volatile int16_t  t_ff = 0, t_p = 0, t_i = 0, t_d = 0;
+static volatile bool     saturated = false;
+static volatile bool     coasting  = false;
 
-static uint32_t last_seq = 0u;
-static uint32_t period_us = 20000u;
+static volatile uint32_t last_seq = 0u;
+static volatile uint32_t period_us = 20000u;
 
 /* --- setpoint watchdog --------------------------------------------------- */
 
-static uint32_t wd_period_ms = 0u;
-static uint32_t wd_remaining = 0u;
-static bool     wd_expired   = false;   /* sticky; cleared by arming or by a
-                                           fresh setpoint */
+static volatile uint32_t wd_period_ms = 0u;
+static volatile uint32_t wd_remaining = 0u;
+static volatile bool     wd_expired   = false;  /* sticky; only velocity_enable()
+                                                   clears it */
+
+/* --- the published snapshot ----------------------------------------------
+   One slot, written at the end of each control step, drained by the main loop
+   through velocity_take_sample(). See velocity.h for why this is published per
+   STEP rather than sampled on the telemetry schedule. */
+
+static volatile velocity_sample_t pub;
+static volatile uint32_t pub_step   = 0u;  /* step index of what is in `pub`  */
+static volatile uint32_t pub_taken  = 0u;  /* step index the reader last took */
+static volatile bool     pub_missed = false; /* sticky until the next line    */
+static volatile uint32_t step_index = 0u;
 
 /* ------------------------------------------------------------------------ */
+
+/** @brief Enter a critical section that nests correctly — restoring the saved
+  *        PRIMASK rather than unconditionally re-enabling interrupts, so
+  *        calling from an ISR cannot silently turn them back on.
+  *
+  * Lifted verbatim from encoder.c rather than hoisted into a shared header:
+  * two copies of six lines is cheaper to read than one more include, and
+  * neither module should have to care that the other exists. */
+static inline uint32_t lock(void)
+{
+  uint32_t primask = __get_PRIMASK();
+  __disable_irq();
+  return primask;
+}
+
+static inline void unlock(uint32_t primask)
+{
+  __set_PRIMASK(primask);
+}
+
 
 static float clampf(float v, float lo, float hi)
 {
@@ -85,6 +126,77 @@ static float ceiling_pm(void)
      command duty through a bridge somebody had just pinned shut. */
   if (cap < lim) { lim = cap; }
   return (float)lim;
+}
+
+/**
+  * @brief Publish this control step's snapshot. Called from the ISR only.
+  *
+  * Every field is written through the volatile struct, so the compiler may not
+  * reorder them past each other, and `pub_step` is written LAST — a reader that
+  * sees a new step index is guaranteed to be looking at a complete record. The
+  * reader takes its copy with interrupts off, which is the other half.
+  *
+  * No lock is taken here. Nothing at this priority can preempt the ISR, and
+  * the reader's critical section already excludes it.
+  */
+static void publish(uint8_t flags)
+{
+  step_index++;
+
+  /* Overwriting a snapshot nobody took is data loss, and the host has to hear
+     about it or it will read a decimated stream as a slow control loop. The
+     flag is sticky so it survives to whichever record IS taken next. */
+  if (pub_step != pub_taken)
+  {
+    pub_missed = true;
+  }
+
+  if (pub_missed)
+  {
+    flags |= VELOCITY_SAMPLE_MISSED;
+  }
+
+  pub.ms        = HAL_GetTick();
+  pub.sp_mrpm   = (int32_t)(sp_rpm   * 1000.0f);
+  pub.meas_mrpm = (int32_t)(meas_rpm * 1000.0f);
+  pub.out       = out_pm;
+  pub.ff        = t_ff;
+  pub.p         = t_p;
+  pub.i         = t_i;
+  pub.d         = t_d;
+  pub.flags     = flags;
+  pub.step      = step_index;
+
+  pub_step = step_index;      /* LAST — this is what publishes the record */
+}
+
+bool velocity_take_sample(velocity_sample_t *dst)
+{
+  uint32_t primask;
+  bool     got = false;
+
+  if (dst == NULL)
+  {
+    return false;
+  }
+
+  primask = lock();
+
+  if (pub_step != pub_taken)
+  {
+    /* Cast away volatile for the copy: interrupts are off, so nothing can
+       change underneath it and the qualifier has no work left to do. Doing it
+       as one struct assignment rather than ten field reads keeps the critical
+       section to about a dozen instructions. */
+    *dst = *(const velocity_sample_t *)&pub;
+
+    pub_taken  = pub_step;
+    pub_missed = false;       /* reported on the record now being handed out */
+    got        = true;
+  }
+
+  unlock(primask);
+  return got;
 }
 
 static void clear_loop_state(void)
@@ -155,6 +267,13 @@ void velocity_on_tick(void)
       clear_loop_state();
       coasting = true;
       drive_coast();
+
+      /* Published even though this fired on a TICK rather than on a control
+         step: the exact millisecond the watchdog acted is the single most
+         valuable row in the stream when something has gone wrong, and losing
+         it to "that was not a real step" would be pedantry. meas_mrpm here is
+         the previous step's — nothing has re-read the encoder this tick. */
+      publish(VELOCITY_SAMPLE_WD_EXPIRED);
       return;
     }
   }
@@ -208,6 +327,11 @@ void velocity_on_tick(void)
       coasting = true;
       drive_coast();
     }
+
+    /* Still a control step, and still worth a row: this is where a coastdown
+       is recorded, and where a host watching for the wheel to reach standstill
+       gets its answer. */
+    publish(wd_expired ? VELOCITY_SAMPLE_WD_EXPIRED : 0u);
     return;
   }
 
@@ -287,6 +411,27 @@ void velocity_on_tick(void)
   {
     out_pm = 0;
   }
+
+  {
+    uint8_t f = 0u;
+
+    if (saturated)       { f |= VELOCITY_SAMPLE_SATURATED; }
+    if (freeze)          { f |= VELOCITY_SAMPLE_FROZEN;    }
+    if (drive_slewing()) { f |= VELOCITY_SAMPLE_SLEWING;   }
+    if (!bridge_ok)      { f |= VELOCITY_SAMPLE_NOBRIDGE;  }
+    if (wd_expired)      { f |= VELOCITY_SAMPLE_WD_EXPIRED; }
+
+    /* RAMPING is the ramped setpoint disagreeing with the commanded one. A
+       host reading a step response needs this to know where the command ends
+       and the loop's own response begins - without it, the setpoint ramp's
+       rate is indistinguishable from a sluggish controller. */
+    if ((int32_t)(sp_rpm * 1000.0f) != target_mrpm)
+    {
+      f |= VELOCITY_SAMPLE_RAMPING;
+    }
+
+    publish(f);
+  }
 }
 
 /* --- arming -------------------------------------------------------------- */
@@ -299,6 +444,15 @@ void velocity_enable(void)
   coasting  = false;
   armed     = true;
   state     = VELOCITY_HOLDING;
+
+  /* The step index restarts with the loop, so a host can tell one arming from
+     the next the same way telem's seq marks one stream from the next. Both
+     sides of the published slot are cleared too - a snapshot from the previous
+     arming is not a step of this one. */
+  step_index = 0u;
+  pub_step   = 0u;
+  pub_taken  = 0u;
+  pub_missed = false;
 
   /* Arm the setpoint watchdog with the loop, not with the first setpoint.
      Enabling is the moment drive.c's watchdog stops being able to fire. */

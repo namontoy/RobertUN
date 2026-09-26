@@ -94,6 +94,7 @@ current, elapsed time and the running dropped-sample count. That is the whole
 |---|---|---|
 | `sweep` | duty list, dwell at each, settled speed + current | the steady-state plant table, automated |
 | `step` | commands a setpoint step at the **velocity loop** and records every control step | rise time, overshoot, settling time, steady-state error — the numbers a gain choice is made from |
+| `stair` | holds a series of setpoints for a long dwell each, **on one arming** | settled mean, sd and standard error per setpoint, with the term breakdown — long-run tracking, drift and where the duty ceiling starts to bind |
 
 `coastdown`, `hold` and `stiction` are still planned.
 
@@ -146,6 +147,63 @@ drive watchdog, and `dwell()` refreshes **both** on the same 0.5 s beat. This
 matters: only `vel target` kicks the velocity watchdog — `drv timeout` does
 nothing for it — so a dwell that forgot it would coast the wheel one second in,
 in the middle of the measurement.
+
+### `stair` options
+
+`stair` is `step`'s long-run counterpart. Where `step` asks *how does the loop
+get there*, `stair` asks *what does it do once it is there, for a long time, at
+many speeds*.
+
+```sh
+./bench.py run stair                                  # +10.0 -> +20.0 rpm, 0.5 rpm steps, 60 s each (21 min)
+./bench.py run stair --dir ccw                        # the same range in reverse
+./bench.py run stair --lo 5 --hi 15 --hold 30         # a shorter, lower band
+```
+
+| flag | default | |
+|---|---|---|
+| `--lo` | `10` | first setpoint, rpm **magnitude** |
+| `--hi` | `20` | last setpoint, rpm **magnitude**. Below `--lo`, the staircase walks *down* |
+| `--dir` | `cw` | `ccw` makes every setpoint negative |
+| `--stair-step` | `0.5` | rpm between setpoints |
+| `--hold` | `60` | seconds at each setpoint. **This is the measurement** — see below |
+| `--hold-settle` | `10` | seconds discarded at the head of each hold, so the ramp in from the previous setpoint is not averaged into it |
+| `--abort-ma` | `1200` | ends the run if any point's peak current exceeds it. A soft guard under `--trip`, because this profile runs unattended for 20+ minutes |
+| `--max-rpm` | `22` | the same magnitude ceiling `step` enforces |
+| `--window` | `20` | as for `step`, and for the same reason |
+| `--stop-dwell`, `--rate`, `--trip`, and the gain flags | | shared with `step` |
+
+⚠️ **`--lo` and `--hi` are magnitudes; `--dir` carries the sign.** This is the
+same split `step` uses, and it is not a style choice. Written the obvious way,
+a reverse run reads `--lo -10 --hi -20` — which makes the step count negative
+and yields an *empty* setpoint list, and makes a ceiling guard written as
+`max(setpoints)` return −10 for a run going to −20, waving through any speed at
+all. The guard in `profile_stair` tests **magnitude** for exactly that reason.
+
+**Why a staircase and not N separate `run step` invocations.** The loop stays
+**armed** across the whole sweep. Re-arming between points would reset the
+integrator at every one and throw away precisely the slow drift — thermal,
+friction, integrator wind — that a long run exists to capture.
+
+**Why the long dwell buys the resolution.** At `enc window 20` one encoder
+count is 0.36 rpm, which on its own cannot resolve a 0.5 rpm increment. But the
+ripple decorrelates in ~0.4 s, so a 60 s dwell holds ~150 independent looks and
+the standard error of the mean lands near 0.08 rpm. `sem_rpm` in `stair.csv` is
+that figure, computed per point — **read it before believing any difference
+between adjacent setpoints.**
+
+The run ends itself on either guard rather than logging a note and carrying on:
+the remaining points would be taken under a condition the run header does not
+describe.
+
+| column in `stair.csv` | |
+|---|---|
+| `sp_rpm`, `t_start_s`, `n` | the setpoint, when its hold began, and how many samples survived `--hold-settle` |
+| `mean_rpm`, `sd_rpm`, `min_rpm`, `max_rpm` | the settled tail. `sd_rpm` on this rig is ~1 rpm of **mechanical** ripple at ~12 events per output revolution, not loop noise |
+| `err_rpm`, `sem_rpm` | tracking error, and the uncertainty on it |
+| `out_pm`, `ff_pm`, `p_pm`, `i_pm`, `d_pm` | the term breakdown, o/oo. `ff_pm` is the model; `i_pm` is **what the model missed**, and it is the most informative column here |
+| `sat_frac`, `freeze_frac`, `wd_frac` | fraction of control steps saturated, integrator-frozen, or past the setpoint watchdog |
+| `ma_mean`, `ma_max` | bridge current over the tail |
 
 ## The ramp is in the firmware now
 
@@ -226,10 +284,11 @@ runs/2026-09-25T14-03-11_sweep/
                     info / cfg / drv / enc taken at connect
     console.log     raw byte-for-byte transcript
     telemetry.csv   one row per T-line, plus host arrival time
-    velocity.csv    one row per V-line — one per control step (step profile)
+    velocity.csv    one row per V-line — one per control step (step, stair)
     events.csv      every command sent, with host time
     sweep.csv       the settled result per duty point
     step.csv        one row per step segment, with the metrics below
+    stair.csv       one row per setpoint held (stair profile)
     status.json     rewritten every second
 ```
 

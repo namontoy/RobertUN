@@ -39,6 +39,7 @@ import datetime
 import json
 import os
 import signal
+import statistics
 import sys
 import time
 
@@ -840,6 +841,157 @@ def _fmt(v, unit: str) -> str:
     return "  n/a" if v is None else f"{v:5.2f}{unit}"
 
 
+def profile_stair(node: Node, run: Run, a: argparse.Namespace) -> dict:
+    """Hold a series of setpoints for a long dwell each, one arming, one sweep.
+
+    Why a staircase and not N separate `run step` invocations: the question is
+    long-run behaviour, so the loop must stay ARMED across the whole sweep.
+    Tearing down and re-arming between points would reset the integrator at
+    every point and throw away exactly the slow drift — thermal, friction,
+    integrator wind — that a long run exists to capture.
+
+    Why a long dwell buys the resolution: at `enc window 20` one encoder count
+    is 0.36 rpm, which alone cannot resolve a 0.5 rpm increment. But the ripple
+    decorrelates in ~0.4 s, so a 60 s dwell holds ~150 independent looks and
+    the standard error of the mean lands near 0.08 rpm. The long dwell IS the
+    measurement, and `--hold-settle` seconds are discarded at the head of each
+    point so the ramp between setpoints is not averaged into it.
+
+    THE SIGN. `--lo`/`--hi` are MAGNITUDES and `--dir` carries the sign, the
+    same split `profile_step` uses. Getting this wrong is not cosmetic: a
+    literal `--lo -10 --hi -20` would make the step count negative and produce
+    an empty setpoint list, and a ceiling guard written as `max(setpoints)`
+    would read -10 for a reverse run and wave through any speed at all. The
+    guard below tests MAGNITUDE for that reason.
+    """
+    sign = -1.0 if a.dir == "ccw" else 1.0
+    lo, hi, stride = abs(a.lo), abs(a.hi), abs(a.stair_step)
+    if stride < 1e-6:
+        raise NodeError("--stair-step must be non-zero")
+    walk = 1.0 if hi >= lo else -1.0
+    setpoints = [round(sign * (lo + walk * stride * i), 3)
+                 for i in range(int(round(abs(hi - lo) / stride)) + 1)]
+
+    worst = max(abs(s) for s in setpoints)
+    if worst > a.max_rpm:
+        raise NodeError(
+            f"setpoint {worst} rpm exceeds the {a.max_rpm:.0f} rpm ceiling, which is "
+            f"the {DEFAULT_MAX_DUTY:.0f}% duty ceiling pushed through the plant fit. "
+            f"Raise it explicitly with --max-rpm if that is really intended."
+        )
+
+    window = 20 if a.window is None else a.window
+    a.window = window               # so meta.json records what actually ran
+    node.command(f"enc window {window}")
+    node.command("cfg ramp_pmps 0")          # drv slew and vel_slew must not both be armed
+    for key, val in (("vel_kp", a.kp), ("vel_ki", a.ki), ("vel_kd", a.kd),
+                     ("vel_ff_a", a.ff_a), ("vel_ff_b", a.ff_b),
+                     ("vel_slew", a.slew)):
+        if val is not None:
+            node.command(f"cfg {key} {val}")
+            run.event("gain", f"{key}={val}")
+    node.command(f"cfg vel_tmo {WATCHDOG_MS}")
+    node.command(f"drv trip {a.trip}")
+    node.command(f"drv timeout {WATCHDOG_MS}")
+    node.command("drv decay slow")
+    node.command("drv enable")
+    node.command("drv clearfault")
+    node.command(f"telem rate {a.rate}")
+    node.command("telem on")
+    node.command("telem vel on")
+    gains = node.ask("vel gains")
+    run.event("gains", gains.replace("\n", " | "))
+    node.command("vel on")
+    run.event("vel_on", f"staircase {setpoints[0]:+.1f} -> {setpoints[-1]:+.1f} rpm, "
+                        f"{a.hold:.0f}s each")
+
+    rows = []
+    t_run0 = run.elapsed()
+    print(f"  {len(setpoints)} points x {a.hold:.0f} s = "
+          f"{len(setpoints) * a.hold / 60:.0f} min\n")
+    print("    sp    mean    sd    err   out   ff    i   sat%  mA   n")
+
+    for sp in setpoints:
+        mrpm = int(round(sp * 1000))
+        run.state = f"hold {sp:+.1f} rpm"
+        vmark, tmark = len(run.velocs), len(run.samples)
+        t_start = run.elapsed()
+        node.command(f"vel target {mrpm}m")
+        run.event("setpoint", f"{sp:+.2f}")
+        dwell(node, run, a.hold, vel_kick=mrpm, point=f"{sp:+.1f} rpm")
+
+        # Statistics over the settled tail only. The head of each point is the
+        # vel_slew ramp from the previous setpoint plus whatever the loop does
+        # about it, which belongs to the step response, not to the hold.
+        vs = [v for v in run.velocs[vmark:]
+              if (v.host_t - run.t0) - t_start >= a.hold_settle]
+        ts = [s for s in run.samples[tmark:]
+              if (s.host_t - run.t0) - t_start >= a.hold_settle]
+        if not vs:
+            raise NodeError(
+                f"no velocity samples in the settled tail at {sp:+.1f} rpm — "
+                f"--hold {a.hold} must exceed --hold-settle {a.hold_settle}")
+        meas = [v.meas_rpm for v in vs]
+        ma = [s.ma for s in ts] or [0]
+        row = {
+            "sp_rpm": sp,
+            "t_start_s": round(t_start - t_run0, 1),
+            "n": len(vs),
+            "mean_rpm": round(statistics.fmean(meas), 4),
+            "sd_rpm": round(statistics.pstdev(meas), 4),
+            "min_rpm": round(min(meas), 3),
+            "max_rpm": round(max(meas), 3),
+            "err_rpm": round(statistics.fmean(meas) - sp, 4),
+            "sem_rpm": round(statistics.pstdev(meas) / (len(vs) ** 0.5), 4),
+            "out_pm": round(statistics.fmean([v.out for v in vs]), 1),
+            "ff_pm": round(statistics.fmean([v.ff for v in vs]), 1),
+            "p_pm": round(statistics.fmean([v.p for v in vs]), 2),
+            "i_pm": round(statistics.fmean([v.i for v in vs]), 2),
+            "d_pm": round(statistics.fmean([v.d for v in vs]), 2),
+            "sat_frac": round(sum(v.saturated for v in vs) / len(vs), 4),
+            "freeze_frac": round(sum(v.frozen for v in vs) / len(vs), 4),
+            "wd_frac": round(sum(v.watchdog for v in vs) / len(vs), 4),
+            "ma_mean": round(statistics.fmean(ma), 1),
+            "ma_max": max(ma),
+        }
+        rows.append(row)
+        print(f"  {sp:+5.1f} {row['mean_rpm']:7.3f} {row['sd_rpm']:5.3f} "
+              f"{row['err_rpm']:+6.3f} {row['out_pm']:5.0f} {row['ff_pm']:4.0f} "
+              f"{row['i_pm']:5.1f} {row['sat_frac'] * 100:4.0f} {row['ma_mean']:5.0f} "
+              f"{row['n']:5d}")
+
+        # A staircase is 20+ minutes unattended. Both of these end the run
+        # rather than logging a note, because the remaining points would be
+        # taken under a condition the header does not describe.
+        if row["ma_max"] > a.abort_ma:
+            raise NodeError(f"current {row['ma_max']} mA exceeded the "
+                            f"{a.abort_ma} mA soft guard at {sp:+.1f} rpm")
+        if row["wd_frac"] > 0:
+            raise NodeError(f"setpoint watchdog expired during the {sp:+.1f} rpm hold")
+
+    run.state = "stopping"
+    node.command("vel stop")
+    dwell(node, run, a.stop_dwell, vel_kick=0, point="ramp down")
+    node.command("vel off")
+    node.command("telem vel off")
+    node.command("telem off")
+
+    with open(os.path.join(run.dir, "stair.csv"), "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        w.writeheader()
+        w.writerows(rows)
+
+    sat = [r["sp_rpm"] for r in rows if r["sat_frac"] > 0]
+    if sat:
+        print(f"  note: output saturated at {len(sat)} of {len(rows)} setpoints, "
+              f"from {sat[0]:+.1f} rpm — the {DEFAULT_MAX_DUTY:.0f}% duty ceiling "
+              f"is binding, so those points measure the ceiling, not the loop.",
+              file=sys.stderr)
+
+    return {"setpoints": rows, "settle_excluded_s": a.hold_settle,
+            "hold_s": a.hold, "window": window, "dir": a.dir, "gains": gains}
+
+
 PROFILES = {
     "sweep": (
         profile_sweep,
@@ -848,6 +1000,10 @@ PROFILES = {
     "step": (
         profile_step,
         "setpoint step against the velocity loop — rise, overshoot, settling, ss error",
+    ),
+    "stair": (
+        profile_stair,
+        "long-run staircase — one arming, a long dwell at each setpoint, settled stats",
     ),
 }
 
@@ -1063,6 +1219,25 @@ def main() -> int:
                    help="cfg vel_ff_b, o/oo (feedforward friction offset)")
     g.add_argument("--slew", type=int, default=None,
                    help="cfg vel_slew, milli-rpm/s. 0 makes it a true step")
+
+    # -- stair profile --  (also uses --dir, --window, --rate, --trip,
+    #                       --max-rpm, --stop-dwell and the gain options above)
+    h = r.add_argument_group("stair profile")
+    h.add_argument("--lo", type=float, default=10.0,
+                   help="first setpoint, rpm MAGNITUDE — --dir carries the sign")
+    h.add_argument("--hi", type=float, default=20.0,
+                   help="last setpoint, rpm MAGNITUDE. Below --lo walks the staircase down")
+    h.add_argument("--stair-step", type=float, default=0.5,
+                   help="rpm between setpoints (default 0.5)")
+    h.add_argument("--hold", type=float, default=60.0,
+                   help="seconds at each setpoint. This is the measurement: the "
+                        "standard error of the mean falls as its square root")
+    h.add_argument("--hold-settle", type=float, default=10.0,
+                   help="seconds discarded at the head of each hold, so the ramp "
+                        "in from the previous setpoint is not averaged into it")
+    h.add_argument("--abort-ma", type=int, default=1200,
+                   help="end the run if any point's peak current exceeds this. A soft "
+                        "guard under --trip, because a staircase runs for 20+ minutes")
     r.set_defaults(func=cmd_run)
 
     s = sub.add_parser("status", help="print a run's status.json (default: latest)")

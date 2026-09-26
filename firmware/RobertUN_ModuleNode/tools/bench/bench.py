@@ -47,7 +47,7 @@ from node import Node, NodeError, Telem  # noqa: E402
 COUNTS_PER_REV = 8403.2          # TIM2 quadrature, at the output shaft
 RUNS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs")
 
-DEFAULT_MAX_DUTY = 40.0          # percent; the rover's real band is 5-39%
+DEFAULT_MAX_DUTY = 30.0          # percent; the rover runs slow — 30% is the stated ceiling
 WATCHDOG_MS = 2000
 KICK_INTERVAL = 0.5
 
@@ -74,6 +74,7 @@ class Run:
         self.profile = profile
         self.args = args
         self.t0 = time.monotonic()
+        self.started_iso = datetime.datetime.now().isoformat(timespec="seconds")
 
         self.raw = open(os.path.join(self.dir, "console.log"), "w", buffering=1)
 
@@ -141,6 +142,11 @@ class Run:
             },
         }
         status.update(extra)
+        # Flush the telemetry buffer on the same beat. A SIGKILL runs no Python,
+        # so whatever is still sitting in stdio is lost; at 8 kB of default
+        # buffering that was ~2 s of samples. console.log is line-buffered and
+        # keeps them regardless, but the CSV should not need recovering from it.
+        self._telem_f.flush()
         # Write-then-rename, so a reader never catches a half-written file.
         tmp = os.path.join(self.dir, "status.json.tmp")
         with open(tmp, "w") as f:
@@ -173,6 +179,46 @@ def dwell(node: Node, run: Run, seconds: float, **status_extra) -> None:
             next_kick = now + KICK_INTERVAL
         run.write_status(node, **status_extra)
         time.sleep(0.002)
+
+
+def ramp(node: Node, run: Run, start: float, end: float, rate: float,
+         hold_s: float = 0.0) -> None:
+    """Walk duty from `start` to `end` at `rate` percent per second.
+
+    A host-side stand-in for the firmware slew-rate limiter, which is still
+    owed. Two honest limitations: `drv duty` takes integer PERCENT, so the
+    finest available step is 1% and this is a staircase rather than a ramp;
+    and each step costs a console round-trip, so the achieved rate is a little
+    slower than the one asked for. The firmware could do both properly on the
+    1 kHz tick at per-mille resolution.
+
+    It exists because a step to a high duty from rest demands 12 V / 1.87 Ohm
+    at the instant of the step, which is what fired the trip on every duty step
+    in the Sep 23 session.
+
+    `start` is stepped to directly and held: below breakaway the wheel does not
+    move at all, so there is nothing for a ramp to do down there — it has to be
+    crossed in one step, and then the ramp begins from a turning wheel.
+
+    Telemetry through the ramp is recorded like any other. A ramp slow against
+    the mechanical time constant is a quasi-static sweep in its own right, and
+    can be read back against the settled points.
+    """
+    run.state = f"ramp {start:+.0f}% -> {end:+.0f}%"
+    node.command(f"drv duty {int(round(start))}")
+    run.event("ramp_start", f"{start:+.0f} -> {end:+.0f} @ {rate:g}%/s")
+    if hold_s > 0:
+        dwell(node, run, hold_s, point=f"ramp hold {start:+.0f}%")
+
+    d, target = int(round(start)), int(round(end))
+    step = 1 if target >= d else -1
+    interval = 1.0 / rate if rate > 0 else 0.0
+    while d != target:
+        d += step
+        node.command(f"drv duty {d}")
+        if interval:
+            dwell(node, run, interval, point=f"ramp {d:+.0f}%")
+    run.event("ramp_end", f"{end:+.0f}")
 
 
 def rpm_from_counts(samples: list[Telem]) -> float | None:
@@ -265,6 +311,8 @@ def profile_sweep(node: Node, run: Run, a: argparse.Namespace) -> dict:
     sign = -1.0 if a.dir == "ccw" else 1.0
 
     over = [d for d in duties if abs(d) > a.max_duty]
+    if a.ramp_from is not None and abs(a.ramp_from) > a.max_duty:
+        over.append(a.ramp_from)
     if over:
         raise NodeError(
             f"duty {over} exceeds the {a.max_duty:.0f}% ceiling. Raise it "
@@ -282,6 +330,11 @@ def profile_sweep(node: Node, run: Run, a: argparse.Namespace) -> dict:
     node.command(f"telem rate {a.rate}")
     node.command("telem on")
     run.event("telem_on", f"{a.rate} Hz")
+
+    # The entry ramp runs after `telem on`, so the ramp is in the data rather
+    # than in the gap before it.
+    if a.ramp_from is not None:
+        ramp(node, run, sign * a.ramp_from, sign * duties[0], a.ramp, hold_s=1.0)
 
     results = []
     for duty in duties:
@@ -325,6 +378,10 @@ def profile_sweep(node: Node, run: Run, a: argparse.Namespace) -> dict:
         )
 
     run.state = "stopping"
+    # The braking half. safe_stop() in the runner's finally block stays a hard
+    # stop on purpose — that is the emergency path, and it must not be slow.
+    if a.ramp and duties:
+        ramp(node, run, sign * duties[-1], 0.0, a.ramp)
     node.command("drv duty 0")
     node.command("telem off")
 
@@ -347,6 +404,28 @@ PROFILES = {
 # -- driver ----------------------------------------------------------------
 
 
+def _meta(a, run, node, outcome, error, conditions, dropped, suspect, result=None) -> dict:
+    """The run's own record of itself. Written once at connect and again at the
+    end, so an interrupted run still says what it was and what it ran under."""
+    return {
+        "profile": a.profile,
+        "args": {k: v for k, v in vars(a).items() if k != "func"},
+        "note": getattr(a, "note", None),
+        "started": run.started_iso,
+        "duration_s": round(run.elapsed(), 1),
+        "outcome": outcome,
+        "error": error,
+        "counts_per_rev": COUNTS_PER_REV,
+        "samples": node.telem_count,
+        "seq_gaps": node.telem_gaps,
+        "echo_mismatches": node.echo_mismatches,
+        "tx_dropped": dropped,
+        "suspect": suspect,
+        "conditions_at_connect": conditions,
+        "result": result or {},
+    }
+
+
 def cmd_run(a: argparse.Namespace) -> int:
     fn, _ = PROFILES[a.profile]
     run = Run(a.profile, a)
@@ -364,6 +443,11 @@ def cmd_run(a: argparse.Namespace) -> int:
         node.open()
         run.event("connect", node.port)
         conditions = preflight(node, run)
+        # Provisional meta, written before the first duty command. The end-of-run
+        # write below supersedes it; this one exists so that a run that never
+        # reaches the end — SIGKILL, yanked cable, power loss — still carries the
+        # conditions it ran under. Conditions are known now; the outcome is not.
+        run.write_meta(_meta(a, run, node, "running", None, conditions, None, False))
         run.state = "running"
         result = fn(node, run, a)
     except (Aborted, KeyboardInterrupt) as e:
@@ -398,22 +482,7 @@ def cmd_run(a: argparse.Namespace) -> int:
 
         suspect = bool(node.telem_gaps) or bool(dropped)
         run.write_meta(
-            {
-                "profile": a.profile,
-                "args": {k: v for k, v in vars(a).items() if k != "func"},
-                "started": datetime.datetime.now().isoformat(timespec="seconds"),
-                "duration_s": round(run.elapsed(), 1),
-                "outcome": outcome,
-                "error": error,
-                "counts_per_rev": COUNTS_PER_REV,
-                "samples": node.telem_count,
-                "seq_gaps": node.telem_gaps,
-                "echo_mismatches": node.echo_mismatches,
-                "tx_dropped": dropped,
-                "suspect": suspect,
-                "conditions_at_connect": conditions,
-                "result": result,
-            }
+            _meta(a, run, node, outcome, error, conditions, dropped, suspect, result)
         )
         run.write_status(node, force=True, outcome=outcome, suspect=suspect)
         run.close()
@@ -471,11 +540,23 @@ def main() -> int:
     r = sub.add_parser("run", help="run a profile")
     r.add_argument("profile", choices=sorted(PROFILES))
     r.add_argument("--port", default=None, help="serial device (autodetected if omitted)")
-    # The rover's real operating band is 5-39% duty; the full range is taken
-    # for calibration only. Default to the band, so the common case is typed
-    # without arguments and the uncommon one is explicit.
-    r.add_argument("--duty", default="5,8,11,14,17,20,23,26,29,32,35,39",
-                   help="comma-separated duty percents (default: the 5-39%% operating band)")
+    r.add_argument("--note", default=None,
+                   help="free text recorded in meta.json — the physical setup this run "
+                        "was taken under (rig, load, wheel mounting, rail). The board "
+                        "cannot know any of it, so if it is not typed it is not recorded.")
+    # The rover runs slow: characterisation stays at or below 30% duty, walked
+    # in 2% steps so breakaway and the band's curvature are resolved rather than
+    # bracketed. Above ~31% the wheel starts to bounce on the rig belt, which
+    # makes those points a measurement of the rig and not of the plant.
+    r.add_argument("--duty", default="5,7,9,11,13,15,17,19,21,23,25,27,29",
+                   help="comma-separated duty percents (default: 5-29%% in 2%% steps)")
+    r.add_argument("--ramp", type=float, default=0.0,
+                   help="duty slew rate, percent per second, for the entry and exit "
+                        "ramps. 0 steps straight to the setpoint")
+    r.add_argument("--ramp-from", type=float, default=None,
+                   help="duty the entry ramp starts at. Stepped to directly and held "
+                        "1 s, because the wheel must break away before a ramp means "
+                        "anything — set it just above breakaway")
     r.add_argument("--dir", choices=("cw", "ccw"), default="cw")
     r.add_argument("--dwell", type=float, default=4.0, help="seconds at each point")
     r.add_argument("--settle", type=float, default=0.5,

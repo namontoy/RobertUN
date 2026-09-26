@@ -66,7 +66,7 @@ separate cable. Do not connect the adapter's Vcc.
 
 ```sh
 ./bench.py list                                   # profiles and recent runs
-./bench.py run sweep                              # CW, the 5-39% band, 4 s/point
+./bench.py run sweep                              # CW, 5-29% in 2% steps, 4 s/point
 ./bench.py run sweep --dir ccw                    # the other direction
 ./bench.py status                                 # latest run's status.json
 ```
@@ -100,13 +100,13 @@ three are what actually unblock PID gain selection.
 
 | flag | default | |
 |---|---|---|
-| `--duty` | `5,8,11,14,17,20,23,26,29,32,35,39` | comma-separated percents, always positive. The default **is the rover's 5-39% operating band**; a full-range sweep is for calibration and is asked for explicitly. |
+| `--duty` | `5,7,9,11,13,15,17,19,21,23,25,27,29` | comma-separated percents, always positive. **The rover runs slow: 30% duty is the ceiling for characterisation work**, and the default walks the band in 2% steps. Anything above it is calibration only and must be asked for explicitly. |
 | `--dir` | `cw` | `ccw` negates every duty |
 | `--dwell` | `4.0` | seconds held at each point |
 | `--settle` | `0.5` | leading fraction of each dwell discarded as transient |
 | `--rate` | `50` | telemetry Hz, 1..100 |
 | `--window` | `100` | `enc window`, in 1 ms ticks |
-| `--max-duty` | `40` | refuses anything above it |
+| `--max-duty` | `30` | refuses anything above it. **Raise it only for deliberate calibration** — the rover's working band tops out well below this, and above ~31% the wheel begins to bounce on the rig belt, which makes those points a property of the rig rather than of the plant. |
 | `--trip` | `1580` | mA; **set at run start**, so the trip is a recorded run condition rather than whatever the board happened to boot with |
 
 ### Echo mismatches are counted, not fatal

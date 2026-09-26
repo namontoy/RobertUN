@@ -394,11 +394,42 @@ format; the `VFLAG_*` constants in `node.py` are the mirror.
 
 One row per step segment (`up`, and `return` if `--return` was passed).
 
+⚠️ **READ `anchor_s` FIRST.** `vel_slew` ramps the *setpoint*, and it ships at
+4 rpm/s, so a `--rpm 10` "step" spends its first 2.5 s with the loop tracking a
+moving target and `--rpm 20` spends 5 s. **Nothing in that window is a step
+response.** Everything below is anchored accordingly, and the first version of
+this tool was not: it reported the limiter's properties under the loop's name,
+and the tell was that `rise_s` came back at 2.0 s for a 0 → 10 step *no matter
+what Kp was*. Run with **`--slew 0`** to measure the loop's own step response.
+
+**The setpoint ramp**
+
 | column | |
 |---|---|
-| `rise_s` | 10% → 90% of the commanded change |
-| `overshoot_pct` | peak excess past the final setpoint, as a percentage of the change |
-| `settle_s` | the **last** moment outside ±2%, not the first moment inside it. A response that dips back out is not settled, and the first-crossing definition would call it settled anyway. `null` means it never settled within the dwell |
+| `ramp_s` | how long `VFLAG_RAMPING` was set — the setpoint ramp's duration |
+| `slew_rpm_s` | the ramp rate recovered from the data; cross-check against `cfg vel_slew` |
+| `anchor_s` | when the ramp ended. **`overshoot_*` and `settle_s` are measured from here** |
+| `track_lag_rpm` | mean (setpoint − measured) over the back four-fifths of the ramp. While the setpoint moves, the loop's error *is* its bandwidth — **this is the number a gain change moves**, and it is the one to read when `ramp_limited` is set |
+
+**Rise**
+
+| column | |
+|---|---|
+| `rise_s` | 10% → 90% of the commanded change, **from the command instant** — deliberately not anchored, because it is what an operator actually waits |
+| `rise_slew_floor_s` | `0.8 × ramp_s`: the 10→90% time the ramp costs before the loop does anything at all |
+| `ramp_limited` | `rise_s` is within 30% of that floor, so **this segment measured `vel_slew`, not the loop**. A warning is printed |
+
+**Regulation**
+
+| column | |
+|---|---|
+| `overshoot_pct`, `overshoot_rpm`, `peak_rpm` | peak past the final setpoint, searched from `anchor_s` over `overshoot_window_s` |
+| `tail_sd_rpm` | sd of the settled tail — the ripple the peak has to be judged against |
+| `overshoot_above_ripple` | whether the peak clears **2 × `tail_sd_rpm`**. ⚠️ **`false` means there is no overshoot to attribute.** A maximum drawn from a rippling signal sits 2–3 sd high whatever the gains do; on this rig every peak so far is 4 encoder counts above target at *both* 10 and 20 rpm, which is quantisation and ripple, not a controller |
+| `overshoot_window_s`, `overshoot_window_truncated` | the peak is searched over 3 s (the plant's slow pole is 2.75 s) so a longer `--dwell` cannot manufacture a bigger overshoot. Truncated means the dwell was too short to fill the window and the peak **reads low and is not comparable** with a full run |
+| `settle_s` | the **last** moment outside ±2%, not the first moment inside it — a response that dips back out is not settled, and the first-crossing definition would call it settled anyway. Measured **from `anchor_s`**: this is the loop's own settling. `null` means it never settled within the dwell |
+| `settle_from_command_s` | the same instant measured from the command. Both are true; their difference is `vel_slew`, and reporting only the second is what the old metric did |
+| `settle_band_below_quantum` | the ±2% band is narrower than one encoder count at this `enc window`, so **`settle_s` cannot be computed honestly**. A warning is printed |
 | `ss_error_rpm` | mean of the last quarter of the dwell, minus the setpoint |
 | `i_at_rest_permille` | what the integrator is carrying once settled — **this is how much the feedforward missed by**. A large steady `i` with a small `ss_error` says `ff_a`/`ff_b` want re-fitting, not that Ki wants raising |
 | `sat_fraction` | fraction of control steps with the output clamped |

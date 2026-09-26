@@ -1,5 +1,5 @@
 # RobertUN — Wheel Controller Firmware: Full Progress Log
-**Last updated:** September 26, 2026 (**W5's velocity PID module written, plus the `V,` telemetry channel and `bench.py run step` that exist to tune it** — branch `w5-velocity-pid`, nothing run on hardware yet. Key findings: the loop steps at the *measurement* rate not the tick rate; arming it **invalidates every host-side stop sequence that addresses `drive.c`**; and it had shipped with no `volatile` on its ISR-written statics. Previously: task 21's duty slew limiter implemented inside `drive.c` and verified on the loaded rig — 50.00 o/oo/s measured against 50 commanded, peak 581 mA where the un-ramped step clamps at the 1579 mA trip)
+**Last updated:** September 26, 2026 (**THE VELOCITY LOOP RAN 21 CONTINUOUS MINUTES ON THE RIG AND THE SHIPPED GAINS ARE GOOD** — 21 setpoints × 60 s, 10→20 rpm: mean tracking error **+0.0008 rpm**, **0% saturation** at every hold, and a closed-loop plant inverse **0.39% from the Sep 25 open-loop sweep**, so the feedforward is carrying the load and the ¼-of-textbook derating costs nothing. The ±1 rpm ripple is **mechanical — 11.91 ± 0.19 events per output revolution across a 2:1 speed range**, which only a rotating feature can do. ⚠️ Then `bench.py run step`'s metric was found to be **measuring `vel_slew`, not the loop** — rise and settling are now anchored at the end of the setpoint ramp, and the "14% overshoot" turned out to be a **ripple peak**: 4 encoder counts at both 10 and 20 rpm, `overshoot_above_ripple` False on all three runs. Two figures added. Previously: W5's velocity PID module, the `V,` channel and `run step` written but unrun)
 
 **Referenced from:** `PROJECT_CONTEXT_WHEEL_FW.md`, which carries a one-line-per-entry version of this log. This file is the verbatim, unedited detail behind each entry — pull it in when you need the exact numbers, register values, or reasoning chain, not for routine session start.
 
@@ -13,6 +13,128 @@
 > the split: that file gets read every session, this one only on demand.
 
 ## Progress log (most recent first) — full detail
+
+- **Sep 26 (bench) — THE VELOCITY LOOP RAN FOR 21 CONTINUOUS MINUTES AND THE
+  GAINS ARE GOOD. Then the step metric that said otherwise turned out to be
+  measuring the slew limiter, and was rewritten. Two figures added.**
+
+  ### The 21-minute staircase — `runs/2026-09-26T09-55-08_stair`
+
+  21 setpoints 0.5 rpm apart, 10.0 → 20.0 rpm, **60 s each, uninterrupted**,
+  shipped gains, 12 V, loaded rig, `enc window 20`. Chosen over another short
+  step because a step says whether the loop is *stable* and says nothing about
+  whether it is *accurate*, whether it drifts, or whether the ¼-of-textbook
+  derating costs anything — and those are the questions that decide whether
+  these gains go to the rover.
+
+  - **Integrity first, as always.** 63,202 `V` rows and 63,214 `T` rows,
+    **0 sequence gaps on either channel, 0 unpublished control steps,
+    0 tx_dropped**, `suspect False`. The overrun bit added for exactly this
+    purpose never fired in 21 minutes at 50 Hz.
+  - **Tracking: mean error +0.0008 rpm, worst 0.015 rpm, sd 0.005 rpm**, against
+    a per-point standard error of ~0.020 rpm. **The loop is accurate to below
+    the noise floor of the instrument measuring it**, at all 21 speeds.
+  - **The 30% ceiling is not reached, and an earlier claim is corrected.**
+    0% saturation at every hold; peak output **284 of 300 o/oo** at 20 rpm. The
+    6% saturation a short step reported at 20 rpm was the **acceleration
+    transient**, not the operating point.
+  - **The derated gains are not costing accuracy, because the plant model behind
+    the feedforward is right.** Closed-loop inverse **`out = 12.559 × rpm +
+    30.54 o/oo`** (rms 1.51 o/oo, n=21) against Sep 25's open-loop sweep
+    inverted, `12.511 × rpm + 30.28` — **0.39% apart, from different
+    excitation, different data and a different estimator**. Shipped feedforward
+    error at 15 rpm: **−1.3 o/oo (−0.6%)**. The integrator therefore has almost
+    nothing to do: **mean +1.46 o/oo, range −0.6..+3.7, out of ~219 o/oo
+    commanded**. ⚠️ **The "~4.5% optimistic" caveat carried on that plant model
+    does not hold in this band.**
+  - **The ripple is MECHANICAL, and the run proves it rather than asserting it.**
+    **11.91 ± 0.19 events per output revolution**, range 11.5–12.2 across all
+    21 holds — held constant over a 2:1 speed range while the *period* swept
+    500 ms → 260 ms. **A control limit cycle holds a fixed period; only a
+    rotating feature holds a fixed count per revolution.** Amplitude grows
+    0.87 → 1.21 rpm (2.4 → 3.4 encoder counts). Which feature — gear, magnet
+    ring, coupling — is a mechanical inspection, not a telemetry one.
+  - **No thermal drift.** Within-hold drift over 60 s: **+0.0005 rpm,
+    −0.04 o/oo**. And the current U-shape is **not** a warm-up transient: a
+    90 s re-take 22 minutes later (`runs/2026-09-26T10-17-57_stair`) reproduced
+    **294→293 mA at 10.0 rpm and 274→278 mA at 10.5 rpm**. ⚠️ The low-end
+    current shape is the one number in that figure not to trust — it sits near
+    the 145 o/oo synchronised-sense floor and wants an independent ammeter.
+
+  ### The step metric was measuring `vel_slew`, not the loop
+
+  ⚠️ **`bench.py run step` reported "rise 2.0 s, overshoot 14%" for a 0 → 10 rpm
+  step. Both numbers were measurements of something other than the controller,
+  and both pointed at a gain change that would have made the loop worse.**
+
+  - **The setpoint is a ramp, not a step.** `vel_slew` ships at **4 rpm/s**, so
+    0 → 10 rpm spends its first **2.5 s** with the loop tracking a moving target
+    and 0 → 20 rpm spends **5 s**. Anchoring rise and settling at the command
+    instant charges that ramp to the loop. **The tell was that the answer did
+    not depend on Kp**: a 0 → 10 step returned 2.0 s whatever the gain, because
+    2.0 s is 0.8 × 2.5 s — the limiter's own 10→90% time.
+  - **The fix is an anchor, not a formula change.** `overshoot` and `settle_s`
+    are now measured **from the instant `VFLAG_RAMPING` clears**; `rise_s` is
+    still reported from the command (it is what an operator waits) but **next to
+    `rise_slew_floor_s`**, with `ramp_limited` set when it is within 30% of that
+    floor. New `track_lag_rpm` measures how far behind the moving setpoint the
+    loop sits *during* the ramp — **that is the quantity a gain change moves,
+    and the old metric had no slot for it**. `settle_from_command_s` is kept
+    alongside `settle_s` because both are true and they answer different
+    questions.
+  - **Verified by replaying all three committed step runs.** `slew_rpm_s`
+    recovers **3.97–3.98 rpm/s** against the configured 4.0. The 0 → 20 run
+    settles in **2.94 s from the ramp's end** versus **7.94 s from the
+    command** — and those are **the same instant**, 5.00 s apart only in what
+    they subtract. That 5.00 s is exactly `vel_slew`.
+  - ⚠️ **Then the corrected metric exposed a second defect: the "overshoot" is a
+    ripple peak.** A single maximum drawn from a signal carrying ~1.2 rpm sd of
+    mechanical ripple sits 2–3 sd high whatever the gains do. All three runs
+    peak **4 encoder counts (1.42 rpm) above target — the same distance at 10
+    and at 20 rpm**, which a controller's overshoot would not be. `step_metrics`
+    now reports `tail_sd_rpm` and sets `overshoot_above_ripple`, which is
+    **False for all three runs**: *no overshoot is resolvable on this rig.* The
+    peak search is also bounded to `OVERSHOOT_WINDOW_S` = 3 s (the plant's slow
+    pole is 2.75 s) so that a longer `--dwell` cannot manufacture a larger
+    overshoot, with `overshoot_window_truncated` set when a run was too short to
+    fill it — the 3 s-dwell run had only 0.48 s and is not comparable.
+  - **The honest verdict for all three step runs is "no overshoot resolvable,
+    and rise not measurable above the limiter".** That is less satisfying than
+    "14% overshoot, lower Kp" and it is the correct answer. A true step response
+    needs `--slew 0`, **which has not been run**.
+
+  ### Two figures
+
+  `docs/environment/figures/`, both following `rigdata.py`'s rule that the
+  loader **transcribes nothing** and every script ends by printing the same
+  numbers it drew:
+
+  - **`velocity_loop_stair_21min.png`** / `plot_velocity_loop_stair.py` /
+    `stairdata.py` — the 21 minutes, the closed-loop plant inverse against the
+    open-loop sweep, the ripple's events-per-revolution against a limit-cycle
+    null, and the current U-shape with its sense-floor caveat.
+  - **`velocity_step_slew_anchor.png`** / `plot_velocity_step_anchor.py` /
+    `stepdata.py` — what the metric fix corrected. ⚠️ **`stepdata.py` imports
+    `step_metrics` from `bench.py` and calls it rather than recomputing it**, so
+    the figure cannot drift from the tool it documents; if the tool's definition
+    of rise or overshoot changes, the figure changes with it or fails loudly.
+  - ⚠️ **Two bugs were found by drawing the data, not by reading the code.**
+    `stairdata.ripple_table()` returned 20 of 21 holds, because the last hold's
+    window ran to end-of-file and swallowed the `vel stop` ramp-down — a
+    monotonic collapse to zero whose autocorrelation never goes negative, so no
+    period was found at all. And the autocorrelation's **global** maximum picks
+    the **second harmonic** whenever the fundamental's peak is the shorter one;
+    it did so at 13.5, 18.5 and 20.0 rpm, inflating the spread from sd 0.19 to
+    sd 2.09. The fundamental is the first strong local maximum *after* the
+    correlation first goes negative.
+
+  ### Still owed
+
+  Bit 64 (MISSED) is still unexercised on hardware — 21 minutes at 50 Hz never
+  triggered it. `cfg save` has still never been run, so every setting above is
+  RAM-live. The ~12-per-revolution mechanical feature needs identifying. The
+  low-end current wants an independent ammeter. And a `--slew 0` step is the
+  only way to get a real loop rise time.
 
 - **Sep 26 (later) — W5's VELOCITY PID IS WRITTEN, AND SO IS THE INSTRUMENT
   THAT WILL TUNE IT. Branch `w5-velocity-pid`. Two commits' worth of work:

@@ -798,10 +798,17 @@ static void cmd_drv(int argc, char **argv)
 
     if (drive_timeout() != 0u)
     {
+      /* The latch is sticky and a kick does NOT clear it, so "expired" alone
+         is ambiguous: it is true both while the watchdog is down and long
+         after traffic resumed. Printed in the present tense beside a live
+         countdown it reads as a fault that is happening now. Split on the
+         countdown, which is what actually says whether it is down. */
       debug_uart_printf("  watchdog %lu ms armed, %lu ms remaining%s\r\n",
                         (unsigned long)drive_timeout(),
                         (unsigned long)drive_timeout_remaining(),
-                        drive_timeout_expired() ? "  - HAS EXPIRED" : "");
+                        (!drive_timeout_expired())        ? ""
+                        : (drive_timeout_remaining() == 0u) ? "  - EXPIRED NOW"
+                        : "  - timed out earlier (latched)");
     }
     else if (drive_timeout_expired())
     {
@@ -1417,10 +1424,16 @@ static void cmd_vel(int argc, char **argv)
     }
     else
     {
+      /* Same split as drv's above, and for the same reason: velocity.c's latch
+         is cleared only by velocity_enable(), so a loop that timed out once and
+         then recovered would otherwise report "HAS EXPIRED" beside a healthy
+         countdown for the rest of the arming. Seen on the bench. */
       debug_uart_printf("  setpoint watchdog %lu ms, %lu remaining%s\r\n",
                         (unsigned long)velocity_timeout(),
                         (unsigned long)velocity_timeout_remaining(),
-                        velocity_timeout_expired() ? "  <-- HAS EXPIRED" : "");
+                        (!velocity_timeout_expired())        ? ""
+                        : (velocity_timeout_remaining() == 0u) ? "  <-- EXPIRED NOW"
+                        : "  <-- timed out earlier (latched)");
     }
 
     debug_uart_puts("  sub: on | off | target <rpm|Nm> | stop | gains |"
@@ -1556,9 +1569,49 @@ static void cmd_reset(int argc, char **argv)
 
 /** @brief One table row. * marks unsaved, so a forgotten 'cfg save' is visible
   *        without having to remember what was typed. */
+/**
+  * @brief Let the wire catch up before queueing another line of a listing.
+  *
+  * The TX ring is 1024 bytes and `debug_uart_write()` DROPS the overflow rather
+  * than blocking — the right choice for a control loop, which must never be
+  * stalled by a debug facility, and the wrong one for a console listing, which
+  * is read by a person or parsed by a tool and is useless with a hole in it.
+  *
+  * A listing is emitted in a tight loop that fills the ring in microseconds,
+  * while the DMA drains it at 11.5 kB/s. Anything past ~1 kB in one command is
+  * therefore lost silently. `cfg` crossed that line the day the nine velocity
+  * keys were added: 20 keys is ~1.3 kB, and 538 bytes went in the bin — taking
+  * the last three keys, the legend, the sub-command line and the prompt with
+  * them. Nothing reported it but `stats`.
+  *
+  * So: before each line, wait until the ring has room for one. Bounded, because
+  * a console that can hang is worse than one that truncates, and DMA-driven, so
+  * it drains without the main loop. Safe here and only here — this is called
+  * from command handlers, which already run at the console's leisure.
+  *
+  * Call it from any loop that prints one line per item. The per-item printers
+  * below do it themselves, so adding a key or a command cannot re-open this.
+  */
+#define CONSOLE_PACE_TIMEOUT_MS  200u
+
+static void console_pace(size_t headroom)
+{
+  uint32_t start = HAL_GetTick();
+
+  while ((DEBUG_UART_TX_BUF_SIZE - debug_uart_tx_pending()) < headroom)
+  {
+    if ((HAL_GetTick() - start) >= CONSOLE_PACE_TIMEOUT_MS)
+    {
+      break;      /* give up and let it drop rather than hang the console */
+    }
+  }
+}
+
 static void cfg_print_key(config_key_t k)
 {
   int32_t now = config_get(k);
+
+  console_pace(96u);            /* one key line is ~60 bytes */
 
   debug_uart_printf("  %c %-11s %8ld %-5s (default %ld, %ld..%ld)\r\n",
                     (now == config_default(k)) ? ' ' : '*',
@@ -1642,6 +1695,10 @@ static void cmd_cfg(int argc, char **argv)
       cfg_print_key((config_key_t)i);
     }
 
+    /* The per-key pace above leaves only its own headroom, and this tail is
+       ~120 bytes. Pacing the loop but not what follows it is why the first
+       version of this fix held for one run and truncated on the next. */
+    console_pace(256u);
     debug_uart_puts(
       "  (* = differs from the compiled default)\r\n"
       "  sub: <key> [value] | save | revert | default [<key>] | help\r\n");
@@ -1699,6 +1756,9 @@ static void cmd_cfg(int argc, char **argv)
   {
     for (uint16_t i = 0u; i < (uint16_t)CFG_KEY_COUNT; i++)
     {
+      /* The worst offender of the lot: a help string is far longer than a
+         value line, so this listing is several times the ring. */
+      console_pace(160u);
       debug_uart_printf("  %-11s %s\r\n",
                         config_name((config_key_t)i),
                         config_help((config_key_t)i));
@@ -2180,6 +2240,8 @@ static void cmd_help(int argc, char **argv)
 
   for (size_t i = 0u; i < COMMAND_COUNT; i++)
   {
+    console_pace(128u);         /* see console_pace(): the ring drops, it does
+                                   not block, and this table outgrows it */
     debug_uart_printf("  %-10s %-12s %s\r\n",
                       commands[i].name, commands[i].args, commands[i].help);
   }
@@ -2227,6 +2289,15 @@ static void execute_line(void)
   dispatch(line);
   line_len  = 0u;
   burst_len = 0u;
+
+  /* Pace here and the prompt survives whatever the handler just did to the
+     ring, for every command that exists and every one added later. This is
+     not cosmetic: the host tooling's ask() keys on the prompt to know a reply
+     is complete, so a dropped prompt is the difference between a listing with
+     a cosmetic hole in it and a hard timeout that fails the run. Handlers
+     should still pace their own long listings -- this only protects the two
+     bytes below, not the output above it. */
+  console_pace(64u);
   debug_uart_puts(CONSOLE_PROMPT);
 }
 

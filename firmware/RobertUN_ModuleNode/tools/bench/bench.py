@@ -55,6 +55,13 @@ DEFAULT_MAX_DUTY = 30.0          # percent; the rover runs slow — 30% is the s
 DEFAULT_MAX_RPM = 22.0
 WATCHDOG_MS = 2000
 KICK_INTERVAL = 0.5
+# How long after the setpoint stops moving an overshoot peak is still an
+# overshoot. The loaded plant's slow pole is 2.75 s (figures/plot_plant_12v_tau.py),
+# so everything the loop is going to do it has done by 3 s. The bound matters
+# because the peak is a MAXIMUM: search a longer window and the +/-1 rpm
+# mechanical ripple alone hands back a larger "overshoot", which would make the
+# number a function of --dwell rather than of the gains.
+OVERSHOOT_WINDOW_S = 3.0
 
 
 class Aborted(Exception):
@@ -459,6 +466,35 @@ def step_metrics(rows: list[Veloc], from_rpm: float, to_rpm: float) -> dict:
 
     Time is board `ms`, relative to the first row after the step command, so
     host scheduling and USB latency are outside every figure below.
+
+    THE SLEW ANCHOR — why overshoot and settling are not measured from the
+    command. `vel_slew` ramps the SETPOINT, and it ships at 4 rpm/s, so a
+    0 -> 10 rpm "step" spends its first 2.5 s with the loop tracking a moving
+    target. Nothing in that window is a step response: there is no step for the
+    loop to overshoot, and a rise time measured across it is a division of the
+    step size by the slew rate with the controller barely involved. The first
+    version of this function anchored everything at the command instant and so
+    reported the slew limiter's properties under the loop's name — a 0 -> 10 rpm
+    step returned "rise 2.0 s" no matter what Kp was, which is the tell.
+
+    So the segment is split at the instant the RAMPING flag clears, which is
+    when the setpoint stops moving and the loop is first regulating to a fixed
+    number:
+
+      during the ramp   `track_lag_rpm` — how far behind the moving setpoint
+                        the loop runs. This is the real measure of loop
+                        bandwidth when a ramp is in force, and it is the same
+                        estimator the Sep 25 tau figure used on the entry ramp.
+      after the ramp    `overshoot_pct`, `settle_s` — anchored at ramp end,
+                        because that is the only part that is a regulation
+                        problem.
+
+    `rise_s` is still reported from the command instant, because that is the
+    conventional definition and it is a true statement about the response. It
+    is reported NEXT TO `rise_slew_floor_s`, the rise time the ramp alone would
+    produce against an infinitely fast loop: when the two are close, `rise_s`
+    measured the ramp, and `ramp_limited` says so outright rather than leaving
+    it to be noticed. Run with `--slew 0` to measure the loop's own rise.
     """
     out: dict = {
         "from_rpm": round(from_rpm, 3),
@@ -504,6 +540,41 @@ def step_metrics(rows: list[Veloc], from_rpm: float, to_rpm: float) -> dict:
     out["i_at_rest_permille"] = round(sum(r.i for r in tail) / len(tail), 1)
     out["ff_at_rest_permille"] = round(sum(r.ff for r in tail) / len(tail), 1)
     out["out_at_rest_permille"] = round(sum(r.out for r in tail) / len(tail), 1)
+    # The noise the overshoot figure has to be judged against. On this rig it is
+    # ~1 rpm of mechanical ripple at 12 events per output revolution, which is
+    # not the loop's doing and must not be read as the loop's overshoot.
+    if len(tail) > 1:
+        m = sum(r.meas_rpm for r in tail) / len(tail)
+        out["tail_sd_rpm"] = round(
+            (sum((r.meas_rpm - m) ** 2 for r in tail) / len(tail)) ** 0.5, 3)
+    else:
+        out["tail_sd_rpm"] = None
+
+    # -- the slew anchor -----------------------------------------------------
+    # Where the commanded setpoint stopped moving. The firmware says so
+    # directly via VFLAG_RAMPING, which is better than comparing sp to target
+    # here: the flag is set by the same code that does the ramping, so it
+    # cannot disagree with it the way a host-side epsilon can.
+    ramp_rows = [i for i, r in enumerate(rows) if r.ramping]
+    if ramp_rows:
+        i0, i1 = ramp_rows[0], min(ramp_rows[-1] + 1, len(rows) - 1)
+        out["ramp_s"] = round(t[i1] - t[i0], 4)
+        dt = t[i1] - t[i0]
+        out["slew_rpm_s"] = (round((rows[i1].sp_rpm - rows[i0].sp_rpm) / dt, 3)
+                             if dt > 1e-9 else None)
+        # Skip the first fifth of the ramp: the lag needs roughly a plant time
+        # constant to reach the constant value the estimator assumes, and
+        # averaging the approach into it biases the answer low.
+        lag_rows = rows[i0 + max(1, (i1 - i0) // 5):i1 + 1]
+        out["track_lag_rpm"] = (
+            round(sum(sign * (r.sp_rpm - r.meas_rpm) for r in lag_rows)
+                  / len(lag_rows), 4) if len(lag_rows) >= 5 else None)
+    else:
+        i1 = 0
+        out["ramp_s"] = 0.0
+        out["slew_rpm_s"] = None
+        out["track_lag_rpm"] = None
+    out["anchor_s"] = round(t[i1], 4)
 
     if abs(change) < 1e-6:
         # A zero-magnitude step — `--rpm 0` from rest, which is the parser and
@@ -523,9 +594,44 @@ def step_metrics(rows: list[Veloc], from_rpm: float, to_rpm: float) -> dict:
     out["t90_s"] = None if t90 is None else round(t90, 4)
     out["rise_s"] = None if (t10 is None or t90 is None) else round(t90 - t10, 4)
 
-    peak = max(y, key=lambda v: sign * v)
+    # What the ramp alone costs: the commanded setpoint's own 10->90% time. A
+    # loop with infinite bandwidth cannot beat this, so a `rise_s` near it is a
+    # measurement of `vel_slew` wearing the loop's name.
+    floor = 0.8 * out["ramp_s"]
+    out["rise_slew_floor_s"] = round(floor, 4)
+    out["ramp_limited"] = bool(floor > 1e-6 and out["rise_s"] is not None
+                               and out["rise_s"] < 1.3 * floor)
+
+    # -- regulation, measured from the anchor --------------------------------
+    after = rows[i1:]
+    ta = [(r.ms - rows[i1].ms) / 1000.0 for r in after]
+    ya = [r.meas_rpm for r in after]
+
+    wt = [(tv, v) for tv, v in zip(ta, ya) if tv <= OVERSHOOT_WINDOW_S] or \
+         list(zip(ta[:1], ya[:1]))
+    peak = max((v for _, v in wt), key=lambda v: sign * v)
     out["peak_rpm"] = round(peak, 3)
-    out["overshoot_pct"] = round(max(0.0, sign * (peak - to_rpm)) / abs(change) * 100.0, 2)
+    out["overshoot_rpm"] = round(max(0.0, sign * (peak - to_rpm)), 3)
+    out["overshoot_pct"] = round(out["overshoot_rpm"] / abs(change) * 100.0, 2)
+    # A maximum over a SHORTER window is a smaller maximum. If --dwell did not
+    # leave OVERSHOOT_WINDOW_S of data after the ramp, this run's overshoot is
+    # not comparable with one that did, and saying which window was actually
+    # searched is the only way a reader can tell.
+    out["overshoot_window_s"] = round(wt[-1][0], 3)
+    # Truncated means the DATA ran out early enough to matter, not that the
+    # last sample landed at 2.98 s instead of 3.00. A 50 Hz stream never has a
+    # sample exactly on the boundary, so the test allows one control period —
+    # otherwise every run in existence is flagged and the flag means nothing.
+    period = (ta[-1] - ta[0]) / max(1, len(ta) - 1)
+    out["overshoot_window_truncated"] = bool(
+        ta[-1] < OVERSHOOT_WINDOW_S - 2.0 * period)
+    # A single maximum drawn from a rippling signal overshoots by construction.
+    # Below ~2 sd of the settled ripple there is nothing to attribute to the
+    # controller, and saying so is the difference between "14% overshoot, lower
+    # Kp" and "no overshoot resolvable on this rig".
+    sd = out.get("tail_sd_rpm")
+    out["overshoot_above_ripple"] = (
+        None if sd is None else bool(out["overshoot_rpm"] > 2.0 * sd))
 
     # Settling: the last moment it was outside the band, not the first moment
     # it was inside one. A response that dips back out is not settled, and the
@@ -533,16 +639,27 @@ def step_metrics(rows: list[Veloc], from_rpm: float, to_rpm: float) -> dict:
     ref = abs(to_rpm) if abs(to_rpm) > 1e-6 else abs(change)
     band = 0.02 * ref
     out["settle_band_rpm"] = round(band, 4)
-    last_out = None
-    for ti, yi in zip(t, y):
-        if abs(yi - to_rpm) > band:
-            last_out = ti
-    if last_out is None:
-        out["settle_s"] = 0.0          # inside the band from the first sample
-    elif last_out >= t[-1] - 1e-9:
-        out["settle_s"] = None         # never settled within the dwell
-    else:
-        out["settle_s"] = round(last_out, 4)
+
+    def settled_at(times, vals):
+        last_out = None
+        for ti, yi in zip(times, vals):
+            if abs(yi - to_rpm) > band:
+                last_out = ti
+        if last_out is None:
+            return 0.0                  # inside the band from the first sample
+        if last_out >= times[-1] - 1e-9:
+            return None                 # never settled within the dwell
+        return round(last_out, 4)
+
+    out["settle_s"] = settled_at(ta, ya)            # from the anchor: the loop
+    out["settle_from_command_s"] = settled_at(t, y)  # end to end: the operator's
+
+    # The band is a fixed 2% of the target, but the encoder resolves
+    # 60000/(counts_per_rev * window) rpm — at window 20 that is 0.36 rpm,
+    # wider than the +/-0.2 rpm band a 10 rpm target asks for. Where that is
+    # true `settle_s` cannot be computed honestly and this says why.
+    out["settle_band_below_quantum"] = bool(
+        band < 60000.0 / (COUNTS_PER_REV * 20.0) / 2.0)
     return out
 
 
@@ -660,8 +777,15 @@ def profile_step(node: Node, run: Run, a: argparse.Namespace) -> dict:
     node.command("telem vel off")
     node.command("telem off")
 
-    order = ["segment", "from_rpm", "to_rpm", "samples", "rise_s", "t10_s", "t90_s",
-             "overshoot_pct", "peak_rpm", "settle_s", "settle_band_rpm",
+    order = ["segment", "from_rpm", "to_rpm", "samples",
+             # the ramp, and whether it ate the measurement
+             "ramp_s", "slew_rpm_s", "track_lag_rpm", "anchor_s",
+             "rise_s", "rise_slew_floor_s", "ramp_limited", "t10_s", "t90_s",
+             # regulation, anchored at ramp end
+             "overshoot_pct", "overshoot_rpm", "overshoot_above_ripple",
+             "overshoot_window_s", "overshoot_window_truncated",
+             "tail_sd_rpm", "peak_rpm", "settle_s",
+             "settle_from_command_s", "settle_band_rpm", "settle_band_below_quantum",
              "final_rpm", "ss_error_rpm", "i_at_rest_permille",
              "ff_at_rest_permille", "out_at_rest_permille", "sat_fraction",
              "freeze_fraction", "freeze_antiwindup", "freeze_drv_slewing",
@@ -674,11 +798,40 @@ def profile_step(node: Node, run: Run, a: argparse.Namespace) -> dict:
 
     for seg in segments:
         print(f"  {seg['segment']:<7s} {seg['from_rpm']:+6.2f} -> {seg['to_rpm']:+6.2f} rpm"
+              f"  ramp {_fmt(seg.get('ramp_s'), 's')}"
+              f"  lag {_fmt(seg.get('track_lag_rpm'), ' rpm')}"
               f"  rise {_fmt(seg.get('rise_s'), 's')}"
               f"  over {_fmt(seg.get('overshoot_pct'), '%')}"
+              f"{'' if seg.get('overshoot_above_ripple') is not False else '*'}"
               f"  settle {_fmt(seg.get('settle_s'), 's')}"
               f"  sserr {_fmt(seg.get('ss_error_rpm'), ' rpm')}"
               f"  sat {seg['sat_fraction'] * 100:.0f}%")
+        # Say it at the point of use, not only in the CSV. A number that
+        # measured the wrong thing is worse than a missing one, and the
+        # only defence is that the run itself says so while it is on screen.
+        if seg.get("ramp_limited"):
+            print(f"  warning: rise {seg['rise_s']:.2f} s is within 30% of the "
+                  f"{seg['rise_slew_floor_s']:.2f} s the {seg['slew_rpm_s']:.1f} rpm/s "
+                  f"setpoint ramp costs on its own — this segment measured "
+                  f"vel_slew, not the loop.\n"
+                  f"           Read track_lag_rpm for loop bandwidth under the "
+                  f"ramp, or re-run with --slew 0 for a true step.",
+                  file=sys.stderr)
+        if seg.get("overshoot_window_truncated"):
+            print(f"  warning: only {seg['overshoot_window_s']:.2f} s of the "
+                  f"{OVERSHOOT_WINDOW_S:.0f} s overshoot window fell inside this "
+                  f"segment — the peak was searched over less time than usual and "
+                  f"reads low. Give --dwell at least "
+                  f"{seg['ramp_s'] + OVERSHOOT_WINDOW_S:.1f} s.", file=sys.stderr)
+        if seg.get("overshoot_above_ripple") is False and seg.get("overshoot_rpm"):
+            print(f"  note: the {seg['overshoot_rpm']:.2f} rpm peak (marked *) is under "
+                  f"2x the {seg['tail_sd_rpm']:.2f} rpm settled ripple — it is a ripple "
+                  f"peak, not resolvable controller overshoot.", file=sys.stderr)
+        if seg.get("settle_band_below_quantum"):
+            print(f"  warning: the +/-{seg['settle_band_rpm']:.2f} rpm settle band is "
+                  f"narrower than one encoder count at this window — settle_s "
+                  f"cannot be computed honestly and is not meaningful.",
+                  file=sys.stderr)
 
     return {"segments": segments, "gains": gains}
 

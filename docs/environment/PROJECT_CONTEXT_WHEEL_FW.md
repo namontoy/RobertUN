@@ -1,9 +1,9 @@
 # RobertUN — Wheel Controller Firmware Context
-**Last updated:** September 25, 2026 (**BENCH TOOLING BUILT, AND THE 12 V FREE-WHEEL PLANT RE-TAKEN WITH IT.** Firmware gained `telem` (machine-readable stream, 1–100 Hz) and `drv timeout` (command watchdog, coasts on expiry); `tools/bench/` drives runs and logs them to files. Four clean sweeps, **wheel now CLAMPED to the table** rather than hand-held: **CW `rpm = 0.8327 d − 1.524`, CCW `0.8618 d − 1.164`, R² ≥ 0.9999**. **Task 17's CCW is CLOSED — +3.49% asymmetry against Aug 26's +3.5%**, confirmed by a different method, rail and mounting. **The mounting moves the intercept, not the slope** (clamped vs hand-held slope agree to 0.3%); the tool validated like-for-like against the hand-typed table to **−0.18%**. What reads as hysteresis is the motor **warming**. Loaded-rig pass and the deliberate watchdog test still owed)
+**Last updated:** September 25, 2026 (**LOADED-RIG PASS TAKEN, AND THE PLANT'S TIME CONSTANT MEASURED TWICE BY TWO INDEPENDENT ROUTES.** Two clean 30 s/point sweeps in 2% steps on the treadmill belt at 1047 g: pooled **`rpm = 0.7993 d − 2.420`** over 11–29%, **the load costs only 4.3% of the free-wheel slope** and 0.85 rpm of intercept. **Breakaway 9–11% duty is the SAME TERMINAL VOLTAGE** as Sep 15's 12–14% on the 9.35 V rail (1.203 V vs 1.216 V) — breakaway is a voltage threshold, not a duty one. Current separates **Coulomb (free, flat) from viscous (loaded, +4.4 mA/%)**; above ~31% the wheel bounces on the belt and the slope lifts 16.3%, which is the rig and not the plant. **⚠️ THE τ ≈ 0.65–0.70 s REPORTED EARLIER THIS SESSION IS WRONG** — the plant is **two-pole**: **τ_fast 0.219 ± 0.007 s** (84%) + **τ_slow 2.75 s** (16%, the belt), verified against an independent ramp-tracking lag of **0.207 ± 0.007 s** — **5.7% apart**. A one-pole fit returns a window-dependent artifact that climbs to 0.724 s at a 10 s horizon. **The model stays linear**; the 25% gain droop is carried as a PID design constraint. Rig inertia is **2.87× light** vs the rover, so τ there will be longer)
+
+**Previously:** September 25, 2026 (**BENCH TOOLING BUILT, AND THE 12 V FREE-WHEEL PLANT RE-TAKEN WITH IT.** Firmware gained `telem` (machine-readable stream, 1–100 Hz) and `drv timeout` (command watchdog, coasts on expiry); `tools/bench/` drives runs and logs them to files. Four clean sweeps, **wheel now CLAMPED to the table** rather than hand-held: **CW `rpm = 0.8327 d − 1.524`, CCW `0.8618 d − 1.164`, R² ≥ 0.9999**. **Task 17's CCW is CLOSED — +3.49% asymmetry against Aug 26's +3.5%**, confirmed by a different method, rail and mounting. **The mounting moves the intercept, not the slope** (clamped vs hand-held slope agree to 0.3%); the tool validated like-for-like against the hand-typed table to **−0.18%**. What reads as hysteresis is the motor **warming**. Loaded-rig pass and the deliberate watchdog test still owed)
 
 **Previously:** September 23, 2026 (**12 V FREE-WHEEL PLANT MODEL MEASURED — `rpm ≈ 0.83 × duty% − 0.96`, one straight line from 3% to 100% duty, no hysteresis in the 5–30% operating band**; stiction is separate and large — breakaway 5–6% duty, dropout 2–3%, minimum sustainable speed ≈1.6 rpm; a duty slew-rate limiter was raised as a W5 requirement after every duty step fired the trip; **CCW and the loaded-rig pass still owed**)
-
-**Previously:** September 21, 2026 (**task 20 BENCH-VERIFIED and CLOSED** — `drv current` 1268 mA against 1263 mA predicted at 12 V / 20% duty stalled, +0.4%, and the old midpoint tick re-reproduced the 14–16% low reading in the same traces; a new lead, the decay phase reads a reproducible 0.670 of the drive phase, which would dissolve the 14.5% duty floor if it holds; **W5 still blocked** on the 12 V plant re-take)
 
 **Sibling files:** `PROJECT_CONTEXT_REST.md` — machines, network, ROS 2/Jetson/Isaac, bus-wide CAN architecture, power distribution, and tooling. `PROJECT_CONTEXT_WHEEL_FW_LOG.md` — the full, unedited progress log behind the one-line summaries below. Paste this file alone for routine wheel-firmware session starts; pull in the log file only when you need the exact numbers/reasoning behind a specific entry.
 
@@ -23,6 +23,7 @@
 
 One line per entry. Full detail (exact numbers, register values, reasoning chains) is in `PROJECT_CONTEXT_WHEEL_FW_LOG.md`.
 
+- **Sep 25 (later)** — **LOADED-RIG PASS, AND τ MEASURED TWICE FROM TWO INDEPENDENT ROUTES.** Two integrity-clean sweeps on the treadmill belt (wheel + carriage **1047 g**, 12 V rail, **2% steps, 30 s dwell**, 1125 settled samples/point; the descending run entered on a **host-side 12→29% ramp at 5%/s**, standing in for the firmware slew limiter that still does not exist). **Steady state, 11–29%: pooled `rpm = 0.7993 d − 2.420`** against the free wheel's `0.8356 d − 1.573` — **the load costs 4.3% of slope and 0.85 rpm of intercept**, so the Sep 25 mounting rule holds from the other side. Repeatability floor **±0.174 rpm**. **Breakaway and dropout both land in 9–11% duty**, and that is the *same terminal voltage* as Sep 15's 12–14% on the 9.35 V rail (**1.203 V vs 1.216 V, 1.0% apart**) — **breakaway is a voltage threshold, and breakaway duty is not portable across rails**; the Stribeck cliff moved below 11% with it. Current finally separates the two friction terms: **free wheel flat at 232.5 ± 18.5 mA (slope −0.85 mA/%, Coulomb), loaded rising 266→313 mA at +4.4 mA/% (viscous)**. **Above ~31% the wheel bounces on the belt** — slope lifts from 0.7924 to **0.9219 rpm/% (+16.3%)**, which is the rig and not the plant, and is why 30% is the characterisation ceiling. The band's curvature is **real, not thermal**: asc/desc residuals correlate **+0.718** where drift would anti-correlate. **The model stays linear anyway** — a quadratic buys 0.063 rpm of rms against a 0.174 rpm floor — and the **25% gain droop** (0.899 → 0.700 rpm/%) is carried as a PID design constraint instead. **⚠️ THE BIG CORRECTION: the τ ≈ 0.65–0.70 s reported earlier today is wrong.** The plant is **two-pole** — **τ_fast 0.219 ± 0.007 s (84%)** plus **τ_slow 2.75 ± 0.05 s (16%, belt and contact settling, which is why the 30 s dwell was needed)**. A one-pole fit returns a **window-dependent artifact**: 0.290 s at 1 s, 0.496 s at 3 s, **0.724 s at 10 s** — never settling, and the last is essentially the number first quoted. **Verified from two independent measurements: an ensemble of 42 stacked 2% steps gives 0.219 s, and the ramp-tracking lag on the entry ramp gives 0.207 ± 0.007 s — 5.7% apart**, from different excitation, different data and a different estimator. Two supporting errors were also found and fixed (the ramp rate was 4.814 %/s, not 3.75, and the end-of-ramp speed had been read off `mrpm` instead of `count`). ⚠️ **The rig loads the wheel but does not carry the rover's inertia** — 1047 g is normal force, and the rover is ~3 kg/wheel, so the rig is **2.87× light**: friction transfers, τ does not, and τ on the rover will be longer. Two figures and their scripts added under `docs/environment/figures/`.
 - **Sep 25** — **BENCH HOST TOOLING, end of the hand-transcription era.** Firmware gained **`telem`** (`T,seq,ms,duty,count,milli_rpm,mA,flags` at 1–100 Hz, integer fields only, emitted from the main loop) and **`drv timeout`** (a command watchdog that was simply absent — it **coasts** on expiry, and is checked *before* the fault path's early return). `tools/bench/` (`node.py` + `bench.py`) drives profiles, logs raw-before-parsed, and rewrites `status.json` once a second so a run can be left alone and checked on by reading one small file. Proven at the wire with the motor stopped: **31 lines in 3.0 s, zero seq gaps, board-stamped intervals 99–100 ms against a nominal 100.** One real bug found and fixed: the prompt carries no newline, so a telemetry line landing behind it merged in the buffer and the prompt was never seen again. **The tool then found a second bug in itself** — the pre-flight fault gate would have refused every run, because nFAULT reads low the whole time nSLEEP is low, so a reset board always reports a latched fault; it now wakes the driver and clears the latch before looking. **First motor run: no 12 V rail.** Board accepted 20% duty and was genuinely switching (`flags=3`), but zero counts and 11 mA across 150 samples — diagnosed from the recorded run in one look, no re-run. After the rail was repaired, **a third bug surfaced only on real hardware**: the console echoes each typed character as its own one-byte write while a telemetry line is one atomic write, so a `T,` record lands *inside* a command echo — the parser now extracts records anywhere in a line and reassembles the echo around them, and an echo mismatch is counted rather than fatal. **Then four clean sweeps re-took the plant** (0 seq gaps, 0 echo mismatches, 0 `tx_dropped` on all four), with the **wheel clamped to the table** instead of hand-held: CW asc `0.8327 d − 1.524`, CW desc `0.8187 d − 0.752`, CCW `0.8618 d − 1.164`, CW full range `0.8186 d − 0.833`, every R² ≥ 0.9999. **The validation gate passed at −0.18%** against the Sep 23 hand-typed table over the same 20–100% points, and **CCW closed task 17's last free-wheel item at +3.49%**, matching Aug 26's +3.5% from a different method. Two findings worth keeping: **mounting moves the intercept and leaves the slope alone**, and the asc/desc gap is **the motor warming, not hysteresis** — it tracks elapsed time, not direction. Loaded rig and the deliberate `kill -9` watchdog test still owed.
 - **Sep 20 (later)** — **W4 CLOSED. Task 20 implemented and built clean.** `k = 3` now applied in the mA↔VREF conversion pair (as a config key, `cfg vref_div`, so a different part is a console command and not a rebuild); the sampler moved from the window MIDPOINT to its settled tail, `trigger = end − (aperture + guard)`, which cost the minimum synchronised duty 4.3% → **14.5%** and bought back the ~13% the midpoint read low; `drv current` now spreads its samples over 4 ticks for the same 64 periods. **The two measured constants were finally applied** — VDDA 3300 → **3325**, R_IPROPI 1474 → **1465** — held back since Sep 12 so nothing moved underneath the plateau sweep, closing the last open W4 item. Printed trip range is now **~101–1580 mA** (was 1558 on the nominal constants); full scale 5.044 A, one LSB 1.231 mA. Two latent bugs caught on the way: the mA→mV multiply wrapped uint32 at `drv trip 3000` and would have reported ~811 mA as honoured, and `iscan`'s window markers were derived from the old midpoint convention. **`CONFIG_VERSION` 1 → 2, so the stored calibration record is discarded on this boot.** Bench re-take of the calibration point still owed.
 - **Sep 21** — **TASK 20 BENCH-VERIFIED, W4's last owed item cleared.** At 12.0 V, 20% duty, shaft stalled: **`drv current` = 1268 mA against `D × Vm / R_motor` = 1263 mA, +0.4%**, with `sync: 64 samples over 4 ticks in 4100..4348` confirming the spread, the settle floor and the end-relative placement in one line. The same two traces re-reproduced the bug that was fixed — the old midpoint tick 4050 read **14.3% and 16.1% below** the settled tail of its own run. The `cfg` check came first and passed: the forced wipe booted the board **already calibrated** (`config v2, 9 keys, slot 0/1024`, vdda_mv 3325, r_ipropi 1465, vref_div 3, no overrides), and `drv trip 1580` read back 1579 mA with `range 101..1580 mA` — the predicted ceiling to the digit. Duty-0 checks confirmed the `ticks == 0 → CCR 4500` case and the gate's refusal. **New lead:** the decay-phase tick reads a reproducible **0.670** of the drive tail across runs, where physics allows only 4.4% of droop — if that factor is real it makes current readable below the 14.5% synchronised floor, which is the standing W5 constraint. Console fixed afterwards, not during: `1 code = 1 ADC LSB` → `1 DAC code = 1/3 ADC LSB (VREF/3)`.
@@ -1227,6 +1228,23 @@ both command and load. Keep the free-shaft numbers below for comparison rather
 than overwriting them — the difference between the two is itself the useful
 figure, and it is what tells you how much margin the gain set has.
 
+✅ **DONE Sep 25, 2026 — see task 17's loaded-rig block for the full result.**
+At **1047 g** (wheel + aluminium carriage) on the belt, 12 V rail:
+`rpm = 0.7993 d − 2.420` over 11–29%, current 266→313 mA at +4.4 mA/%, and a
+two-pole step response, **τ_fast 0.219 s + τ_slow 2.75 s**. The load turned out
+to cost only **4.3% of the free-wheel slope**. The load-step case is still
+untested.
+
+⚠️ **THE RIG APPLIES A NORMAL FORCE, NOT AN INERTIA — and that limits which of
+its numbers transfer.** The 1047 g presses the wheel onto the belt; it is not
+mass being accelerated. The three effects predicted above are therefore not
+equally reproduced: **the widened deadband and the reduced slope are honest**
+(they come from friction, which is what a normal force produces), but **the
+lengthened mechanical time constant is NOT** — the rover carries ~3 kg per
+wheel against the rig's effective load, making the rig **2.87× light**. τ
+measured here is a **lower bound**, and must be re-taken on the vehicle before
+gains are finalised.
+
 ### Plant model — measured Aug 26, 2026 (free shaft, no load, slow decay)
 
 ⚠️ **Every figure in this section was measured at a 9.35 V motor terminal
@@ -1785,11 +1803,24 @@ connect — the conditions, recorded rather than typed), `console.log`,
   `status.json`) rather than fatal, because the echo is a convenience and the
   telemetry is the measurement. This only ever showed up against real hardware.
 - **Defaults track the rover's real band, not the full range.** `--duty`
-  defaults to `5,8,11,14,17,20,23,26,29,32,35,39` — the 5–39% operating range.
-  Full-range sweeps are for calibration and are asked for explicitly.
-  `--trip` defaults to **1580 mA** and is *set* at run start rather than assumed,
-  so the trip is a recorded run condition instead of whatever the board booted
-  with.
+  defaults to `5,7,9,…,29` — **5–29% in 2% steps** — and `--max-duty` refuses
+  anything above **30%** (revised Sep 25 from 39%/40%: the rover runs slow, and
+  above ~31% the wheel bounces on the rig belt, which makes those points a
+  measurement of the rig rather than of the plant). Full-range sweeps are
+  calibration and must be asked for explicitly. `--trip` defaults to **1580 mA**
+  and is *set* at run start rather than assumed, so the trip is a recorded run
+  condition instead of whatever the board booted with.
+- **`--ramp <%/s>` + `--ramp-from <%>` give host-side entry and exit ramps**,
+  the stand-in for the firmware slew limiter that does not exist yet. `--ramp-from`
+  is **stepped to directly and held 1 s** — a ramp through a stationary wheel
+  means nothing until it has broken away. Ramped entry kept peak current to
+  **572 mA against the 1580 mA trip** where un-ramped duty steps had been
+  tripping it. The ramp is a **staircase**, because `drv duty` takes integer
+  percent.
+- **`--note` records the physical setup into `meta.json`.** The rig, the load,
+  the mounting and the rail are things the board cannot know, so if they are not
+  typed they are not recorded — and a plant number without its mounting is not
+  comparable to anything.
 - **`count` is the measurement; `milli_rpm` is a convenience column.**
   `enc window` is a boxcar over N × 1 ms ticks, so at window 100 the rpm figure
   lags ~50 ms and is smoothed over 100 ms. Fitting *that* to an exponential
@@ -1800,7 +1831,7 @@ connect — the conditions, recorded rather than typed), `console.log`,
   handler, so a normal exit, an exception, Ctrl-C and `kill` all end at
   `drv duty 0` → `coast` → `disable`. (2) **`drv timeout 2000` armed on the
   board and kicked while dwelling** — the part `finally` cannot cover, because
-  `kill -9` and a yanked cable run no Python at all. (3) A **40% duty ceiling**
+  `kill -9` and a yanked cable run no Python at all. (3) A **30% duty ceiling**
   by default, matching the rover's real band. (4) Pre-flight refusal on a real
   fault or a non-zero duty. (5) Post-flight: any `seq` gap or `tx_dropped`
   marks the run **suspect**, because a stream with holes must not be quietly
@@ -1964,10 +1995,10 @@ placement instead of by guessing.
       speed** — more voltage headroom to drive current against back-EMF, which
       shifts the whole torque-speed curve out. Worth being explicit about so
       nobody expects a bigger stall number.
-    - ✅ **Re-measure the plant at 12 V — FREE-WHEEL PASS COMPLETE Sep 25, 2026**
-      (CW, CCW, full range and the operating band all taken; **the loaded-rig
-      pass is the only part still owed**, and it is tracked under the rig entry
-      rather than here). The rail
+    - ✅ **Re-measure the plant at 12 V — COMPLETE Sep 25, 2026, FREE WHEEL
+      AND LOADED RIG BOTH.** CW, CCW, full range and the operating band on the
+      free wheel; then the loaded-rig pass at 1047 g, plus the plant's two-pole
+      time constant. The rail
       moved on Sep 19, so `rpm = 0.672 × duty% − 1.8`, the ~2.6% deadband,
       breakaway, dropout and the 4.9 rpm minimum sustainable speed are all
       figures for a rail that no longer exists. R, L and Ke carry over; the
@@ -2143,8 +2174,190 @@ placement instead of by guessing.
       1% duty needs a per-mille console command first. Desk change, not a bench
       improvisation.
 
-      ⬜ **Still owed:** the **loaded-rig pass** (`drv trip 1580` set first).
-      CCW was taken Sep 25 and is closed — see the clamped re-take above.
+      ✅ **LOADED-RIG PASS DONE Sep 25, 2026 — the free-wheel era is over.**
+      Two `sweep` runs on the **treadmill-belt rig**, wheel + aluminium carriage
+      **1047 g** on the belt, 12 V rail, `enc window 100`, telemetry 50 Hz,
+      `drv trip 1580`, watchdog 2000 ms, **2% duty steps, 30 s dwell**,
+      `settle 0.25` → **1125 settled samples per point**. Both runs
+      integrity-clean: **0 seq gaps, 0 `tx_dropped`, 0 echo mismatches**.
+      The descending run entered on a **host-side 12→29% ramp at 5%/s** — the
+      stand-in for the firmware slew limiter, and the thing that made the second
+      τ measurement possible.
+
+      | pass | range | fit | R² | rms |
+      |---|---|---|---|---|
+      | loaded ascending | 11–29% | `rpm = 0.7924 d − 2.137` | 0.99751 | 0.227 |
+      | loaded descending | 11–29% | `rpm = 0.8062 d − 2.704` | 0.99933 | 0.120 |
+      | **loaded pooled** | 11–29% | **`rpm = 0.7993 d − 2.420`** | 0.99735 | 0.236 |
+      | free wheel, same band | 11–29% | `rpm = 0.8356 d − 1.573` | 0.99987 | 0.058 |
+
+      > **CONSOLIDATED 12 V LOADED PLANT MODEL (Sep 25, 2026):**
+      > **`rpm = 0.7993 × duty% − 2.420`**, inverse
+      > **`duty% = 1.251 × rpm + 3.028`**, valid **11–29% duty** (1047 g on the
+      > belt, 12 V rail, slow decay, CW). **The load costs 4.3% of the
+      > free-wheel slope and 0.85 rpm of intercept** — far less than expected,
+      > and the mounting rule again: *the fixture moves the intercept, the motor
+      > and the rail own the slope.*
+      > **Repeatability floor ±0.174 rpm** between the two passes. Nothing
+      > smaller than that is a measurement on this rig.
+
+      ![12 V loaded-rig plant characterisation](figures/plant_12v_loaded_rig.png)
+
+      *Regenerate with `python3 figures/plot_plant_12v_loaded.py`. Unlike the
+      free-wheel script, this one **transcribes nothing** — `figures/rigdata.py`
+      loads the committed run directories and every number is derived at plot
+      time, so the figure cannot drift from the data. Top: the 11–29% band with
+      both directions against the free-wheel reference, residuals inset,
+      breakaway marked, the >30% bounce region shaded. Bottom, left to right:
+      current versus duty (Coulomb vs viscous), the asc/desc residual
+      correlation, and local gain against its noise band.*
+
+      ⚠️ **BREAKAWAY IS A VOLTAGE THRESHOLD, NOT A DUTY THRESHOLD.** Breakaway
+      and dropout both land in **9–11% duty** here (9% held `count` dead on both
+      passes; 11% ran at 6.27 / 6.00 rpm). Sep 15 measured **12–14%** on this
+      same rig on the **9.35 V** rail. Bracket midpoints:
+      0.13 × 9.35 = **1.216 V** against 0.10 × 12.03 = **1.203 V** — **1.0%
+      apart**. The brackets overlap, so this is *consistent with* a fixed
+      terminal-voltage threshold rather than a proof of one — but the
+      consequence already bites: **a breakaway duty is only valid for the rail
+      it was measured on.** The Sep 15 figure was never stale; it was the same
+      physics at a different rail.
+
+      ⚠️ **2% steps cannot separate breakaway from dropout.** Both sit inside
+      the same 9–11% bracket. Resolving them needs a **1%-step run**, which the
+      console cannot command — `drv duty` parses percent (the per-mille console
+      item noted just above this block). Minimum sustainable speed is therefore
+      only bounded at **≤6.0 rpm**.
+
+      **No Stribeck cliff at 11% any more.** Sep 15 saw the speeds bend hard
+      below 12% and cliff at 11% → 4.86 rpm. Today 11% sits **on** the straight
+      line (residuals −0.10 / −0.37 rpm). The cliff moved below 11% with the
+      rail — the same voltage story.
+
+      **Current separates Coulomb friction from viscous friction:**
+      - **Free wheel: 232.5 ± 18.5 mA, slope −0.85 mA/%** — flat, consistent
+        with zero. Constant torque. *Coulomb.*
+      - **Loaded, 17→29%: 266.4 → 312.6 mA, slope +4.4 mA/%.** A real positive
+        trend that the belt contact added. *Viscous.*
+      - The trend starts at **17%, not 15%**: the 15% point (312.4 mA against
+        ~266 for its neighbours) sits **on the 14.5% sync gate** and is its
+        marginal edge, exactly as the free-wheel pass found.
+      - ⚠️ **Below the gate the numbers are not current, and this run shows it
+        loudly.** Stalled at 5/7/9% the readings *rise* 320→453 mA — a stalled
+        motor at 9% reading higher than a running one at 29%. Physics permits
+        nothing of the sort; the console is right to refuse them.
+
+      ⚠️ **ABOVE ~31% THE WHEEL BOUNCES ON THE BELT — that is the rig, not the
+      plant.** The ascending run went to 39% (the descending one was capped at
+      30% deliberately). Slope over **31–39% is 0.9219 rpm/%** against
+      **0.7924** over 11–29% — **16.3% steeper**, with 39% overshooting the
+      low-band extrapolation by +0.50 rpm. The belt surface is not homogeneous;
+      the wheel starts to skip, contact drops, friction drops and it speeds up.
+      **30% is the characterisation ceiling** and `bench.py --max-duty` now
+      defaults to it.
+
+      **The band's curvature is REAL, not thermal drift.** The pooled residuals
+      bend, and the discriminator is that **ascending and descending residuals
+      correlate at +0.718**. Thermal drift follows elapsed time, so reversing
+      the duty order flips its sign and would make the two sets
+      **anti**-correlate. They agree, so the shape belongs to the duty axis.
+      (Same discriminator that identified the free-wheel asc/desc gap as
+      warming, run the other way round.)
+
+      > **THE MODEL STAYS LINEAR — and the gain droop is a PID constraint, not
+      > a model term.** A quadratic gives local gain **0.899 → 0.700 rpm/%**
+      > across 11→29% — a **25% droop** — but buys only rms 0.236 → 0.174 rpm
+      > against a **0.174 rpm repeatability floor**. It is fitting the noise
+      > budget. **W5 designs the loop at the low-gain (high-duty) end of the
+      > band** and keeps one straight line. Point-to-point local gain was
+      > discarded on the same grounds: ±0.174 rpm over a 2% step is
+      > **±0.123 rpm/%** of apparent gain, most of the visible swing.
+
+      ⚠️ **THE RIG LOADS THE WHEEL BUT DOES NOT CARRY THE ROVER'S INERTIA.**
+      The 1047 g is a **normal force** pressing the wheel onto the belt, not
+      mass being accelerated. So the rig gives **honest friction and the wrong
+      inertia**: the rover is ~18 kg over six wheels, ~3 kg per wheel, making
+      the rig **2.87× light**. Every steady-state and friction number above
+      transfers; **τ does not, and τ on the rover will be longer.** Size the
+      gains for that, and re-measure τ on the vehicle.
+
+      ---
+
+      ✅ **PLANT TIME CONSTANT — MEASURED, AND VERIFIED FROM TWO INDEPENDENT
+      MEASUREMENTS (Sep 25, 2026).**
+
+      ⚠️ **The τ ≈ 0.65–0.70 s reported earlier on Sep 25 is WRONG and is
+      retracted.** It came from fitting **a single exponential to a two-pole
+      system**, which returns a number that depends on the fit window rather
+      than on the plant.
+
+      | route | excitation | data | τ |
+      |---|---|---|---|
+      | **ensemble step response** | 42 × 2% duty steps, stacked | both runs | **0.219 ± 0.007 s** (weight 84%) |
+      | **ramp-tracking lag** | the 12→29% entry ramp, 4.814 %/s | descending run, 185 samples | **0.207 ± 0.007 s** |
+
+      > **THE TWO AGREE TO 5.7%** — different excitation (step vs ramp),
+      > different data (every dwell transition vs one continuous ramp),
+      > different estimator (a curve fit vs a steady-state lag). That is a
+      > verification rather than a repeat: the same mistake cannot produce both,
+      > and the one-pole artifact below demonstrably could not.
+      >
+      > **TWO-POLE PLANT MODEL:** **τ_fast = 0.219 ± 0.007 s (84% weight)** +
+      > **τ_slow = 2.75 ± 0.05 s (16%)**. The slow pole is **belt and contact
+      > settling, not the motor** — which is why the **30 s dwell was necessary**
+      > and why a shorter one would have quietly biased every steady-state
+      > point. It also retroactively explains the earlier 3.121 s "relaxation"
+      > fit, which had caught this pole alone. Two-pole vs one-pole fit quality:
+      > **11.5 vs 58.4 mrev rms — 5.1× better.**
+
+      ![12 V loaded-rig time constant](figures/plant_12v_loaded_tau.png)
+
+      *Regenerate with `python3 figures/plot_plant_12v_tau.py`. Top: the stacked
+      ensemble step response with one-pole and two-pole fits and residuals
+      inset. Bottom, left to right: the window-dependence trap, the independent
+      ramp-tracking route, and all five τ values on one log axis with the
+      artifacts drawn hollow.*
+
+      ⚠️ **THE DIAGNOSTIC THAT EXPOSED IT — refit over shrinking windows.** A
+      genuine first-order system returns the same τ at every fit horizon:
+
+      | fit horizon | one-pole τ |
+      |---|---|
+      | 1 s | 0.290 s |
+      | 3 s | 0.496 s |
+      | 10 s | **0.724 s** |
+
+      It climbs monotonically and never settles, and the 10 s value is
+      essentially the number first quoted. **That figure was never a time
+      constant; it was an artifact of the fit window.** The two-route
+      disagreement that started the investigation (0.225 s against 0.496 s, a
+      clean 2×) was this same fact seen from the side.
+
+      **Two supporting errors, fixed on the way:** the ramp rate had been
+      computed as 3.75 %/s by wrongly including the 1 s breakaway hold (true
+      rate **4.814 %/s**, read off the `duty` column), and the end-of-ramp speed
+      had been read off **`mrpm` instead of `count`** — a documented rule, and it
+      was broken anyway. On this rig `mrpm` does not even lag cleanly: it swings
+      **±1.4 rpm** around the count-derived speed, because the belt has a
+      ~2.5 Hz ripple.
+
+      **Why the steps had to be stacked.** One 2% step moves the wheel ~1.6 rpm
+      against 0.5–0.7 rpm of belt ripple — under 3:1 SNR, which is why
+      single-step fits scattered uselessly. Stacking all 42 beats it down by
+      √42. Two details made it work: **the ensemble is built in DISTANCE, not
+      velocity** (integration is a low-pass, so no differentiation noise enters
+      the fit — velocity is derived for display only), and **each step is
+      normalised by its own final velocity change**, so the 25% gain droop does
+      not smear the average.
+
+      **Headroom, for the record:** peak current through the entry ramp was
+      **572 mA against the 1580 mA trip — 2.8×**. That is why the ramped entry
+      never tripped where the un-ramped duty steps of Sep 23 did.
+
+      ⬜ **Still owed on the rig:** a **1%-step stiction run** across 8–13%,
+      ascending then reversed, to separate breakaway from dropout — blocked on
+      the per-mille console verb below. And **τ re-measured on the vehicle**,
+      where the inertia is real.
     - ⬜ Restate the recorded plant figures with their rail attached, so a
       future reader cannot mistake a 9.35 V number for a 12 V one.
 
@@ -2337,14 +2550,36 @@ placement instead of by guessing.
     - TIM2 is 32-bit and free-running, so **counter rollover is off the table**
       for the whole of tuning.
 
-    **BLOCKED ON ONE MEASUREMENT — the 12 V plant re-take (task 17).** The rail
-    moved 9.35 V → 12.0 V on Sep 19, which retires `rpm = 0.672 × duty% − 1.8`,
-    the ~2.6% deadband, breakaway, dropout and the 4.9 rpm minimum sustainable
-    speed. R, L and Ke carry over; **duty→speed and duty→current do not, and
-    gains tuned at one rail do not transfer.** This is one bench session on a
-    rig that already exists, not a week of work — but nothing downstream of it
-    should be tuned first. Meter the **motor terminals** while the rig is set
-    up, not just VM: 12.0 V at the driver is not 12 V at the motor.
+    ✅ **UNBLOCKED Sep 25, 2026 — the 12 V plant re-take (task 17) is done,
+    free wheel and loaded rig.** W5 now has a model to design against:
+
+    > **`rpm = 0.7993 × duty% − 2.420`** (11–29%, 1047 g on the belt, 12 V),
+    > inverse **`duty% = 1.251 × rpm + 3.028`**; **two-pole step response,
+    > τ_fast 0.219 ± 0.007 s (84%) + τ_slow 2.75 s (16%)**; breakaway and
+    > dropout both in **9–11% duty**; **repeatability floor ±0.174 rpm**.
+
+    Four things W5 must design around rather than rediscover:
+    - **Gain droops 25% across the band** (0.899 → 0.700 rpm/% from 11 to 29%).
+      The model is deliberately kept linear because the curvature sits inside
+      the repeatability floor — so **place the gains at the low-gain, high-duty
+      end** and accept a slightly sluggish bottom rather than a marginal top.
+    - **τ_fast is the pole to place against; τ_slow is the belt, not the
+      motor** — do not integrate against a 2.75 s pole that will not exist on
+      the vehicle.
+    - ⚠️ **The rig's τ is a LOWER BOUND.** Its 1047 g is a normal force, not
+      inertia; the rover carries ~3 kg per wheel, so the rig is **2.87× light**
+      and τ on the vehicle will be longer. **Re-measure τ on the rover before
+      the gains are frozen.**
+    - **Breakaway is a voltage threshold**, so the 9–11% figure belongs to the
+      12 V rail alone. If HW4's branch rail lands anywhere else, breakaway moves
+      with it — convert, do not carry the duty across.
+
+    The rail moved 9.35 V → 12.0 V on Sep 19, which retired
+    `rpm = 0.672 × duty% − 1.8`, the ~2.6% deadband and the old 4.9 rpm minimum
+    sustainable speed. R, L and Ke carried over; **duty→speed and duty→current
+    did not, and gains tuned at one rail do not transfer.** Still owed at
+    tuning time: meter the **motor terminals**, not just VM — 12.0 V at the
+    driver is not 12 V at the motor.
 
     **Can start now, without the bench:**
     - ⬜ **PID gains as `config` keys BEFORE tuning starts** (task 18 flags this
@@ -2391,6 +2626,21 @@ placement instead of by guessing.
         must not be so slow that the wheel sits energised below breakaway for a
         long time** — that is stall current with no back-EMF, exactly the
         condition the trip exists for.
+      - ✅ **A host-side prototype exists and is proven on the rig (Sep 25).**
+        `bench.py --ramp <%/s> --ramp-from <%>` walked 12→29% at **5%/s** with a
+        **peak of 572 mA against the 1580 mA trip — 2.8× headroom**, where
+        un-ramped duty steps had been tripping. It also confirms the floor rule
+        above in code: `--ramp-from` is **stepped to directly and held 1 s**,
+        because a ramp through a stationary wheel means nothing until it has
+        broken away. **Treat it as the reference behaviour to port**, with two
+        differences the firmware must fix: it is a host-side staircase at
+        **1% granularity** (`drv duty` parses percent), and it runs at the
+        console's pace rather than on the **1 kHz tick**. The firmware version
+        should be **per-mille on the tick**.
+      - ⚠️ **The rig's τ_fast (0.219 s) is a lower bound on how fast the ramp
+        may usefully be** — ramping much faster than the plant can follow just
+        re-creates the step. On the rover, where inertia is ~2.87× higher, the
+        usable rate is lower still.
     - ⬜ Telemetry path. OpenOCD RTT is the standing candidate; decide before
       it is needed, because tuning without a trace is guesswork.
 
@@ -2399,7 +2649,9 @@ placement instead of by guessing.
     - ⚠️ **No synchronised current reading below 14.5% duty** at the 20 kHz
       carrier — the honest floor, replacing a 4.3% one that was admitting pure
       ringing. **W5 operates near the stiction floor, which is below it**
-      (breakaway was 12–14% duty on the loaded rig at 9.35 V). A **current inner
+      — and the 12 V re-take made the gap *wider*, not narrower: **breakaway is
+      now 9–11% duty** on the loaded rig (it was 12–14% at 9.35 V, which is the
+      same terminal voltage at a lower rail). A **current inner
       loop** — re-enabled by the 13.5 V branch-rail decision — is therefore blind
       in exactly the region the rover creeps in. Options are the free-running
       `Isup` fallback, a slower PWM carrier in that band, or the **decay-phase
@@ -2470,6 +2722,56 @@ section; this is for things that will bite again somewhere else.
   12 V rail, on a clamped wheel. Agreement across three changed variables is
   evidence the effect is in the motor; a second run of the same procedure would
   only have confirmed the procedure.
+- **If a fitted time constant depends on the fit window, the system is not
+  first-order and the number is an artifact.** A one-pole fit to this loaded
+  plant returned 0.290 s over 1 s, 0.496 s over 3 s and 0.724 s over 10 s,
+  climbing monotonically and never settling — and 0.724 s was reported twice as
+  "the plant's τ" before the window was varied. A genuine single pole gives the
+  same answer at every horizon. **Refitting over shrinking windows costs one
+  loop and is the cheapest test there is; run it before publishing any τ.** The
+  fix here was a two-pole fit (0.219 s at 84%, 2.75 s at 16%), which improved
+  the residual 5.1× and made an independent measurement agree.
+- **A second route to the same quantity must differ in excitation, data AND
+  estimator, or it is a repeat rather than a check.** τ was pinned by stacking
+  42 step responses (0.219 ± 0.007 s) and, separately, by the steady-state lag
+  of speed behind a 4.814 %/s ramp (0.207 ± 0.007 s) — **5.7% apart**. A step
+  and a ramp fail differently, so agreement means something; two more step fits
+  would only have confirmed the fitting code, and in fact the one-pole error
+  reproduced perfectly across runs.
+- **A threshold that moves when the rail moves is a voltage threshold —
+  normalise before calling an old measurement stale.** Breakaway on the loaded
+  rig read 12–14% duty at 9.35 V and 9–11% at 12.03 V. As duty those disagree by
+  30%; as terminal voltage they are 1.216 V and 1.203 V, **1.0% apart**. **A
+  breakaway, dropout or deadband duty is only valid for the rail it was measured
+  on** — record the rail beside it, and convert before comparing.
+- **Reversing the sweep direction separates a real shape from thermal drift, by
+  the SIGN of the residual correlation.** Drift follows elapsed time, so
+  reversing duty order flips it and the two passes' residuals
+  **anti**-correlate; a genuine function of duty makes them **correlate**. Here
+  +0.718 settled that the loaded band's curvature is real (and the same test run
+  the other way identified the free-wheel asc/desc gap as warming). One extra
+  pass answers a question that no amount of staring at a single sweep will.
+- **Establish the repeatability floor first, then refuse to model anything
+  smaller than it.** Two passes over the same band differed by ±0.174 rpm. A
+  quadratic term improved the fit rms from 0.236 to 0.174 rpm — real-looking,
+  and entirely inside the floor — so **the model stayed linear** and the 25%
+  gain droop it described was carried as a design constraint instead. The same
+  floor killed a point-to-point gain curve: ±0.174 rpm over a 2% step is
+  ±0.123 rpm/% of apparent gain, i.e. most of the visible structure.
+- **When one excitation has poor SNR, stack many of them — and stack the
+  INTEGRATED quantity.** A single 2% duty step moved the wheel 1.6 rpm against
+  0.5–0.7 rpm of rig ripple, under 3:1, and single-step fits scattered
+  uselessly; 42 of them stacked beat the ripple down by √42. Build the ensemble
+  in **distance, not velocity** — integration is a low-pass, so no
+  differentiation noise ever enters the fit — and **normalise each event by its
+  own final amplitude** so a varying gain across the range does not smear the
+  average.
+- **A rig that presses a load against a wheel gives honest friction and the
+  wrong inertia.** The 1047 g on the treadmill belt is a *normal force*, not
+  mass being accelerated, so every friction, current and steady-state number
+  transfers to the rover and **the mechanical time constant does not** — the rig
+  is 2.87× light against ~3 kg per wheel. **Ask of any load fixture which of the
+  two it reproduces**, and carry the τ it gives as a lower bound.
 - **Hold a calibration correction until the experiment that does not need it is
   finished.** VDDA 3325 and R_IPROPI 1465 were measured Sep 12 and deliberately
   not applied until Sep 20, because the plateau sweep's result was a *ratio*

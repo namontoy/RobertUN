@@ -63,3 +63,7 @@ git_ignored/
 
 # Project-context export archive
 project-context.zip
+
+# Python bytecode from the figure and bench scripts
+__pycache__/
+*.pyc

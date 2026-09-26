@@ -1,14 +1,16 @@
-# Bench runs are not committed. Most are exploratory, and a long `hold`
-# produces a CSV with tens of thousands of rows.
+# Bench runs are never committed - none of it, not even with `add -f`.
+# A run directory is raw instrument output: the .csv rows (tens of thousands
+# per long hold), console.log byte-for-byte, meta.json and status.json. It is
+# INPUT to the figure scripts in docs/environment/figures/, not a record
+# anyone reads. A result that matters goes into a figure and into
+# PROJECT_CONTEXT_WHEEL_FW.md; the data behind it stays on the bench machine.
+# Regenerating a figure therefore needs the run directory locally, which is
+# the trade: repo size over one-command reproduction.
 runs/
 
-# And the CSVs specifically are never committed, not even with `add -f`.
-# They are raw instrument output and they are INPUT to the figure scripts in
-# docs/environment/figures/ -- not a record anyone reads. A result that matters
-# goes into a figure and into PROJECT_CONTEXT_WHEEL_FW.md; the rows behind it
-# stay on the bench machine. Regenerating a figure therefore needs the run
-# directory locally, which is the trade: repo size over one-command reproduction.
+# Belt and braces, in case a run lands outside runs/.
 *.csv
+*.log
 
 # Python bytecode
 __pycache__/

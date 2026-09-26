@@ -68,9 +68,13 @@ project-context.zip
 __pycache__/
 *.pyc
 
-# Bench run data. A run's CSVs are raw instrument output - tens of thousands of
-# rows, megabytes each - and they are INPUT to the figure scripts, not a record
-# anyone reads. They stay on the bench machine; what the repo keeps is the
-# figure and the numbers quoted in the docs. Never `git add -f` one: if a result
-# matters, it belongs in a figure and in PROJECT_CONTEXT, not as a blob.
+# Bench run data. Everything a run produces is raw instrument output - the
+# .csv rows, the console transcript, the meta/status dumps - and it is INPUT to
+# the figure scripts, not a record anyone reads. It stays on the bench machine;
+# what the repo keeps is the figure and the numbers quoted in the docs. Never
+# `git add -f` one: if a result matters, it belongs in a figure and in
+# PROJECT_CONTEXT, not as a blob. (No blanket *.json here - CMakePresets.json
+# and .vscode/ are real repo files; the run .json is covered by runs/ in
+# firmware/RobertUN_ModuleNode/tools/bench/.gitignore.)
 *.csv
+*.log

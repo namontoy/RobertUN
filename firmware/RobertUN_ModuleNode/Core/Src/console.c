@@ -27,6 +27,7 @@
 #include "mks_servo.h"
 #include "encoder.h"
 #include "drive.h"
+#include "velocity.h"
 #include "isense.h"
 #include "config.h"
 #include "dipsw.h"
@@ -1342,6 +1343,189 @@ static void cmd_drv(int argc, char **argv)
   }
 }
 
+/** @brief Render a milli-rpm integer without dragging the caller through the
+  *        sign handling. -1234 must print "-1.234", not "-1.-234". */
+static void print_mrpm(const char *label, int32_t mrpm, const char *tail)
+{
+  int32_t whole = mrpm / 1000;
+  int32_t frac  = mrpm % 1000;
+
+  if (frac < 0) { frac = -frac; }
+
+  debug_uart_printf("%s%s%ld.%03ld%s", label,
+                    ((mrpm < 0) && (whole == 0)) ? "-" : "",
+                    (long)whole, (long)frac, tail);
+}
+
+static const char *vel_state_name(velocity_state_t s)
+{
+  switch (s)
+  {
+    case VELOCITY_OFF:     return "off";
+    case VELOCITY_RUNNING: return "running";
+    case VELOCITY_HOLDING: return "holding (coasting)";
+    case VELOCITY_TIMEOUT: return "TIMEOUT - coasted";
+    default:               return "?";
+  }
+}
+
+static void cmd_vel(int argc, char **argv)
+{
+  if (argc < 2)
+  {
+    int16_t ff, p, i, d;
+
+    velocity_terms(&ff, &p, &i, &d);
+
+    debug_uart_printf("velocity loop %s, state %s\r\n",
+                      velocity_enabled() ? "ARMED" : "off",
+                      vel_state_name(velocity_state()));
+
+    print_mrpm("  setpoint ", velocity_setpoint(), " rpm");
+    print_mrpm(" -> ramped ", velocity_ramped_setpoint(), " rpm\r\n");
+    print_mrpm("  measured ", velocity_measured(), " rpm");
+    print_mrpm(", error ",    velocity_error(),    " rpm\r\n");
+
+    debug_uart_printf("  output %d o/oo%s   ff %d  p %d  i %d  d %d\r\n",
+                      (int)velocity_output(),
+                      velocity_saturated() ? " (SATURATED)" : "",
+                      (int)ff, (int)p, (int)i, (int)d);
+
+    debug_uart_printf("  step %lu us (encoder window), bridge %s%s\r\n",
+                      (unsigned long)velocity_period_us(),
+                      drive_is_enabled() ? "enabled" : "DISABLED",
+                      drive_fault_latched() ? ", FAULT LATCHED" : "");
+
+    /* The one thing a reader must not have to infer. Arming this loop means
+       drive_set_duty() is called at the measurement rate forever, so drv's own
+       watchdog stops being able to fire; this one is what is left. */
+    if (velocity_timeout() == 0u)
+    {
+      debug_uart_puts("  setpoint watchdog DISARMED - nothing will stop this"
+                      " loop if the host dies\r\n");
+    }
+    else
+    {
+      debug_uart_printf("  setpoint watchdog %lu ms, %lu remaining%s\r\n",
+                        (unsigned long)velocity_timeout(),
+                        (unsigned long)velocity_timeout_remaining(),
+                        velocity_timeout_expired() ? "  <-- HAS EXPIRED" : "");
+    }
+
+    debug_uart_puts("  sub: on | off | target <rpm|Nm> | stop | gains |"
+                    " timeout <ms> | reset\r\n");
+    return;
+  }
+
+  if (strcmp(argv[1], "on") == 0)
+  {
+    if (!drive_is_enabled())
+    {
+      debug_uart_puts("bridge is disabled - 'drv enable' first, or the loop"
+                      " will wind up\r\n");
+      return;
+    }
+
+    velocity_enable();
+    debug_uart_printf("velocity loop ARMED at setpoint 0, watchdog %lu ms\r\n",
+                      (unsigned long)velocity_timeout());
+    debug_uart_puts("  'drv duty' now fights the loop - use 'vel target'."
+                    "  'vel off' hands the bridge back\r\n");
+  }
+  else if (strcmp(argv[1], "off") == 0)
+  {
+    velocity_disable();
+    debug_uart_puts("velocity loop off, bridge coasted - 'drv duty' is yours"
+                    " again\r\n");
+  }
+  else if (strcmp(argv[1], "target") == 0)
+  {
+    char *end = NULL;
+    long  v;
+
+    if (argc < 3)
+    {
+      print_mrpm("target ", velocity_setpoint(), " rpm\r\n");
+      return;
+    }
+
+    if (!velocity_enabled())
+    {
+      debug_uart_puts("loop is off - 'vel on' first (the setpoint would be"
+                      " ignored)\r\n");
+      return;
+    }
+
+    v = strtol(argv[2], &end, 10);
+
+    /* Bare number is rpm; an 'm' suffix is milli-rpm, which is the resolution
+       the loop actually works in and the only way to ask for a fraction from a
+       console that has no float parser. `vel target 1500m` is 1.5 rpm. */
+    if ((end != NULL) && ((*end == 'm') || (*end == 'M')))
+    {
+      velocity_set_setpoint((int32_t)v);
+    }
+    else
+    {
+      velocity_set_setpoint((int32_t)v * 1000);
+    }
+
+    print_mrpm("target ", velocity_setpoint(), " rpm");
+    debug_uart_printf(", ramping at %ld m rpm/s\r\n", (long)velocity_slew());
+  }
+  else if (strcmp(argv[1], "stop") == 0)
+  {
+    /* Walks the ramp down and then coasts. This is NOT an emergency stop:
+       'drv coast' is, and it stays immediate. */
+    velocity_set_setpoint(0);
+    debug_uart_puts("setpoint 0 - ramping down, then coast."
+                    "  'drv coast' if you want it now\r\n");
+  }
+  else if (strcmp(argv[1], "reset") == 0)
+  {
+    velocity_reset();
+    debug_uart_puts("integrator and derivative cleared\r\n");
+  }
+  else if (strcmp(argv[1], "timeout") == 0)
+  {
+    if (argc >= 3)
+    {
+      velocity_set_timeout((uint32_t)strtoul(argv[2], NULL, 10));
+    }
+
+    if (velocity_timeout() == 0u)
+    {
+      debug_uart_puts("setpoint watchdog DISARMED - the loop will hold its"
+                      " last setpoint forever\r\n");
+    }
+    else
+    {
+      debug_uart_printf("setpoint watchdog %lu ms, %lu remaining\r\n",
+                        (unsigned long)velocity_timeout(),
+                        (unsigned long)velocity_timeout_remaining());
+      debug_uart_puts("  every 'vel target' kicks it; expiry forces setpoint 0"
+                      " and coasts\r\n");
+    }
+  }
+  else if (strcmp(argv[1], "gains") == 0)
+  {
+    debug_uart_printf("kp %ld  ki %ld  kd %ld   (all x1000)\r\n",
+                      (long)velocity_kp(), (long)velocity_ki(),
+                      (long)velocity_kd());
+    debug_uart_printf("ff  %ld x1000 o/oo per rpm + %ld o/oo\r\n",
+                      (long)velocity_ff_slope(), (long)velocity_ff_offset());
+    debug_uart_printf("ilim %u o/oo   max %u o/oo (drv limit %u)   slew %ld m rpm/s\r\n",
+                      (unsigned)velocity_i_limit(), (unsigned)velocity_max(),
+                      (unsigned)drive_limit(), (long)velocity_slew());
+    debug_uart_puts("  change them with 'cfg vel_kp <n>' etc - applied live,"
+                    " 'cfg save' to keep\r\n");
+  }
+  else
+  {
+    debug_uart_printf("unknown subcommand '%s' - try 'vel'\r\n", argv[1]);
+  }
+}
+
 static void cmd_reset(int argc, char **argv)
 {
   (void)argc;
@@ -1572,6 +1756,69 @@ static void cmd_cfg(int argc, char **argv)
                       (unsigned)drive_ramp_floor());
   }
 
+  /* Every velocity key applies LIVE, including while the loop is running.
+     That is the whole point: tuning a gain by rebooting between trials is not
+     tuning. The integrator is deliberately NOT reset on a gain change - with
+     the clamp in place the bump is bounded, and clearing it would hide exactly
+     the steady-state behaviour a Ki change is being judged on. Use
+     'vel reset' when a clean start is what you want. */
+  else if (k == CFG_VEL_KP)
+  {
+    velocity_set_kp(want);
+    debug_uart_printf("  applied now: kp %ld x1000\r\n", (long)velocity_kp());
+  }
+  else if (k == CFG_VEL_KI)
+  {
+    velocity_set_ki(want);
+    debug_uart_printf("  applied now: ki %ld x1000\r\n", (long)velocity_ki());
+  }
+  else if (k == CFG_VEL_KD)
+  {
+    velocity_set_kd(want);
+    debug_uart_printf("  applied now: kd %ld x1000\r\n", (long)velocity_kd());
+  }
+  else if (k == CFG_VEL_FF_SLOPE)
+  {
+    velocity_set_ff(want, velocity_ff_offset());
+    debug_uart_printf("  applied now: ff slope %ld x1000 o/oo per rpm\r\n",
+                      (long)velocity_ff_slope());
+  }
+  else if (k == CFG_VEL_FF_OFFSET)
+  {
+    velocity_set_ff(velocity_ff_slope(), want);
+    debug_uart_printf("  applied now: ff offset %ld o/oo\r\n",
+                      (long)velocity_ff_offset());
+  }
+  else if (k == CFG_VEL_I_LIMIT)
+  {
+    velocity_set_i_limit((uint16_t)want);
+    debug_uart_printf("  applied now: integrator clamp %u o/oo\r\n",
+                      (unsigned)velocity_i_limit());
+  }
+  else if (k == CFG_VEL_MAX)
+  {
+    velocity_set_max((uint16_t)want);
+    debug_uart_printf("  applied now: vel max %u o/oo (drv limit %u -"
+                      " the tighter wins)\r\n",
+                      (unsigned)velocity_max(), (unsigned)drive_limit());
+  }
+  else if (k == CFG_VEL_SLEW)
+  {
+    velocity_set_slew(want);
+    debug_uart_printf("  applied now: setpoint ramp %ld m rpm/s\r\n",
+                      (long)velocity_slew());
+  }
+  else if (k == CFG_VEL_TIMEOUT)
+  {
+    /* This re-arms the countdown, and that is correct: a deadline you have
+       just changed has not been missed yet. It does not clear the sticky
+       expired flag - only 'vel on' does. */
+    velocity_set_timeout((uint32_t)want);
+    debug_uart_printf("  applied now: setpoint watchdog %lu ms%s\r\n",
+                      (unsigned long)velocity_timeout(),
+                      (velocity_timeout() == 0u) ? " - DISARMED" : "");
+  }
+
   /* Three keys change the meaning of every current number the board reports,
      so say so at the point of change rather than leaving it to be rediscovered
      when a log stops matching a meter. The trip is re-applied because it was
@@ -1795,6 +2042,7 @@ static const command_t commands[] =
   { "mks",       "<sub> [args]", "MKS SERVO42C on UART4 - 'mks' for subcommands", cmd_mks   },
   { "enc",       "[sub]",        "drive encoder - 'enc' for position and speed", cmd_enc   },
   { "drv",       "[sub]",        "drive H-bridge - 'drv' for state",          cmd_drv       },
+  { "vel",       "[sub]",        "closed-loop wheel speed - 'vel' for state", cmd_vel   },
   { "telem",     "[sub]",        "machine-readable stream for the bench host", cmd_telem   },
   { "cfg",       "[key] [val]",  "stored tunables - 'cfg' to list",           cmd_cfg       },
   { "id",        "",             "module identity from the DIP switches",     cmd_id        },

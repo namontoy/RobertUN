@@ -28,6 +28,7 @@
 #include "mks_servo.h"
 #include "encoder.h"
 #include "drive.h"
+#include "velocity.h"
 #include "isense.h"
 #include "config.h"
 #include "dipsw.h"
@@ -147,6 +148,11 @@ int main(void)
   drive_init();
   encoder_init();
   isense_init();
+
+  /* AFTER drive_init() and encoder_init(): it reads drive_limit() to know its
+     own output ceiling and encoder_velocity_seq() to seed its freshness test.
+     It comes up DISARMED - velocity_enable() is a deliberate act. */
+  velocity_init();
 
   debug_uart_status_t uart_status = debug_uart_init();
 
@@ -850,6 +856,15 @@ void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim){
          is what makes a transient visible at all: the console runs whenever it
          runs, and a fault that clears before the next `drv` leaves no trace. */
       drive_on_tick();
+
+      /* LAST, and after drive_on_tick() specifically. The loop's output goes
+         through drive_set_duty(), so it must run against a bridge whose slew
+         limiter and watchdog have already advanced this tick - otherwise the
+         loop reads drive_slewing() one tick stale and freezes its integrator
+         at the wrong moments. It returns immediately unless the encoder's
+         velocity window has closed, so it costs almost nothing 19 ticks in
+         20. */
+      velocity_on_tick();
   }
 }
 /* USER CODE END 4 */

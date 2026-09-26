@@ -23,6 +23,7 @@ static uint32_t          prev_count;      /*!< ISR-private, no lock needed     *
 static volatile float    rpm;
 static volatile int32_t  window_counts;
 static volatile uint16_t window_ticks;
+static uint32_t vel_seq       = 0u;   /* bumped each time the window closes */
 static uint16_t          window_len = ENCODER_VELOCITY_WINDOW_DEFAULT;
 
 /** @brief Control-tick rate, from TIM6: 90 MHz / 90 / 1000. Used only to turn
@@ -90,6 +91,7 @@ void encoder_on_tick(void)
 
     window_counts = 0;
     window_ticks  = 0u;
+    vel_seq++;
   }
 }
 
@@ -166,6 +168,11 @@ void encoder_set_velocity_window(uint16_t new_ticks)
 uint16_t encoder_velocity_window(void)
 {
   return window_len;
+}
+
+uint32_t encoder_velocity_seq(void)
+{
+  return vel_seq;
 }
 
 void encoder_probe(uint32_t ms, encoder_probe_t *out)

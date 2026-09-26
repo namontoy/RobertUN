@@ -114,6 +114,15 @@ typedef enum
   CFG_VREF_DIVIDER,       /*!< DRV8874 internal VREF divider k - measured 3 */
   CFG_RAMP_PMPS,          /*!< duty slew rate, per-mille per second; 0 = off */
   CFG_RAMP_FLOOR,         /*!< per-mille to jump to when leaving rest; 0 = none */
+  CFG_VEL_KP,             /*!< velocity loop Kp, milli-(o/oo per rpm) */
+  CFG_VEL_KI,             /*!< velocity loop Ki, milli-(o/oo per rpm-second) */
+  CFG_VEL_KD,             /*!< velocity loop Kd, milli-(o/oo-second per rpm) */
+  CFG_VEL_FF_SLOPE,       /*!< feedforward slope, milli-(o/oo per rpm) */
+  CFG_VEL_FF_OFFSET,      /*!< feedforward friction offset, o/oo */
+  CFG_VEL_I_LIMIT,        /*!< integrator clamp, o/oo */
+  CFG_VEL_MAX,            /*!< velocity loop output cap, o/oo */
+  CFG_VEL_SLEW,           /*!< setpoint ramp, milli-rpm per second; 0 = step */
+  CFG_VEL_TIMEOUT,        /*!< setpoint watchdog, ms; 0 = disarmed */
   CFG_KEY_COUNT
 } config_key_t;
 

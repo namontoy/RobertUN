@@ -14,10 +14,26 @@
 
 extern TIM_HandleTypeDef htim4;
 
-static int16_t       duty;                      /*!< signed per-mille, clamped */
+static int16_t       duty;                      /*!< APPLIED per-mille, clamped */
 static uint16_t      limit = DRIVE_DUTY_MAX;    /*!< magnitude cap             */
 static drive_decay_t decay = DRIVE_DECAY_SLOW;
 static bool          enabled;
+
+/* Slew limiter. `target` is written by the command path and read by the tick;
+   `applied_mpm` the other way round. Single 32-bit-or-smaller objects, so the
+   same no-tearing argument as the fault latch below applies and no critical
+   section is needed - but see the ordering notes in drive_set_limit() and
+   drive_coast(), where WHICH ONE IS WRITTEN FIRST is what makes that safe.
+
+   applied_mpm is in MILLI-per-mille, not per-mille, because the rate that
+   matters is sub-unit per tick: 5%/s is 50 per-mille/s is 0.05 per-mille in a
+   1 ms tick. An integer accumulator in per-mille cannot represent that and the
+   ramp would either stall at zero or run 20x too fast. Full scale is 1 000 000,
+   which is nowhere near an int32. */
+static volatile int16_t  target;        /*!< last COMMANDED duty, clamped     */
+static volatile int32_t  applied_mpm;   /*!< what the bridge runs, x1000      */
+static volatile uint16_t ramp_pmps;     /*!< per-mille per second; 0 = off    */
+static volatile uint16_t ramp_floor;    /*!< per-mille; 0 = no floor          */
 
 /* Written by drive_on_tick() in the TIM6 ISR, read by the console. Each is a
    single 32-bit-or-smaller object, so a read cannot tear on Cortex-M4 and no
@@ -146,6 +162,15 @@ void drive_init(void)
   limit = (uint16_t)config_get(CFG_DUTY_LIMIT);
   if (limit > DRIVE_DUTY_MAX) { limit = (uint16_t)DRIVE_DUTY_MAX; }
 
+  /* The slew limiter comes from FLASH for the same reason the cap does: a board
+     told to ramp should still be ramping after a power cycle. Both default to 0
+     - off - so a board that has never been told anything behaves exactly as it
+     did before the limiter existed. */
+  target      = 0;
+  applied_mpm = 0;
+  ramp_pmps   = (uint16_t)config_get(CFG_RAMP_PMPS);
+  ramp_floor  = (uint16_t)config_get(CFG_RAMP_FLOOR);
+
   apply(0u, 0u);
   HAL_GPIO_WritePin(DRV_nSLEEP_GPIO_Port, DRV_nSLEEP_Pin, GPIO_PIN_RESET);
 
@@ -212,20 +237,31 @@ bool drive_is_enabled(void)
   return enabled;
 }
 
-void drive_set_duty(int16_t permille)
+/** @brief Clamp to full scale and then to the configured cap, in that order. */
+static int16_t clamp_duty(int32_t permille)
 {
-  /* A duty command is proof the caller is alive, so it refreshes the deadline.
-     That makes the watchdog transparent to any active command stream — only a
-     genuinely silent host expires. Placed before the clamps so that even a
-     command clamped to zero counts as liveness. */
-  drive_kick();
-
   if (permille >  DRIVE_DUTY_MAX) { permille =  DRIVE_DUTY_MAX; }
   if (permille < -DRIVE_DUTY_MAX) { permille = -DRIVE_DUTY_MAX; }
 
-  if (permille > (int16_t)limit)  { permille =  (int16_t)limit; }
-  if (permille < -(int16_t)limit) { permille = -(int16_t)limit; }
+  if (permille >  (int32_t)limit) { permille =  (int32_t)limit; }
+  if (permille < -(int32_t)limit) { permille = -(int32_t)limit; }
 
+  return (int16_t)permille;
+}
+
+/**
+  * @brief  Put @p permille on the bridge. Already clamped; no watchdog kick.
+  *
+  * Split out of drive_set_duty() when the slew limiter landed, because the two
+  * halves of that function now have different callers and different rules. The
+  * COMMAND half kicks the watchdog, because a command is evidence of a live
+  * host. This half does not, because the tick calling it a thousand times a
+  * second is evidence of nothing at all - and a limiter that kept the watchdog
+  * permanently fed would quietly disable the one safety property that exists
+  * for the unattended case.
+  */
+static void emit(int16_t permille)
+{
   duty = permille;
 
   if (permille == 0)
@@ -266,13 +302,167 @@ void drive_set_duty(int16_t permille)
   }
 }
 
+void drive_set_duty(int16_t permille)
+{
+  /* A duty command is proof the caller is alive, so it refreshes the deadline.
+     That makes the watchdog transparent to any active command stream — only a
+     genuinely silent host expires. Placed before the clamps so that even a
+     command clamped to zero counts as liveness. */
+  drive_kick();
+
+  permille = clamp_duty((int32_t)permille);
+  target   = permille;
+
+  if (ramp_pmps == 0u)
+  {
+    /* No limiter: the pre-2026-09-26 path, unchanged. */
+    applied_mpm = (int32_t)permille * 1000;
+    emit(permille);
+    return;
+  }
+
+  /* Leaving rest gets a jump to the floor rather than a crawl through the
+     sub-breakaway band - see drive_set_ramp_floor(). Conditioned on the BRIDGE
+     being at zero, not on the target, so a reversal that ramps through zero
+     never re-triggers it: that wheel is still turning and has back-EMF. */
+  if ((applied_mpm == 0) && (permille != 0) && (ramp_floor != 0u))
+  {
+    int16_t jump = clamp_duty((permille > 0) ? (int32_t)ramp_floor
+                                             : -(int32_t)ramp_floor);
+
+    /* Never overshoot a command smaller than the floor. */
+    if (((permille > 0) && (jump > permille)) ||
+        ((permille < 0) && (jump < permille)))
+    {
+      jump = permille;
+    }
+
+    applied_mpm = (int32_t)jump * 1000;
+    emit(jump);
+    return;
+  }
+
+  /* Otherwise the tick owns the bridge from here, and deliberately nothing
+     else happens in this function - it does not touch the timer at all.
+
+     That is what keeps this lock-free. While a ramp is IN FLIGHT the ISR is the
+     only writer of the CCR pair; the command path writes it only at discrete
+     moments (the floor jump above, coast, brake, limit, decay), and each of
+     those sets applied_mpm before it emits, so the worst an interleaved tick
+     can do is emit the same value twice. That is the same two-instruction
+     window this file already accepts for the watchdog's coast, and the cost of
+     losing it is one CCR pair corrected within the next period. */
+}
+
 int16_t drive_duty(void)
 {
   return duty;
 }
 
+int16_t drive_duty_target(void)
+{
+  return target;
+}
+
+bool drive_slewing(void)
+{
+  return applied_mpm != ((int32_t)target * 1000);
+}
+
+void drive_set_ramp(uint16_t permille_per_s)
+{
+  ramp_pmps = permille_per_s;
+
+  if (permille_per_s == 0u)
+  {
+    /* Disarming mid-ramp adopts where the bridge IS, rather than jumping it to
+       where it was heading. Jumping would make a configuration command produce
+       exactly the current step this module exists to prevent - and it would do
+       it at the moment the operator had just decided they no longer wanted
+       ramping, which is the worst possible time to be surprised. The next
+       `drv duty` steps normally from here. */
+    target = duty;
+  }
+}
+
+uint16_t drive_ramp(void)
+{
+  return ramp_pmps;
+}
+
+void drive_set_ramp_floor(uint16_t permille)
+{
+  ramp_floor = permille;
+}
+
+uint16_t drive_ramp_floor(void)
+{
+  return ramp_floor;
+}
+
+/**
+  * @brief  Walk the bridge one tick toward the target. Called from the ISR.
+  *
+  * THE ARITHMETIC IS AN IDENTITY, NOT A COINCIDENCE. The step per tick, in
+  * milli-per-mille, equals the rate in per-mille per second:
+  *
+  *     rate [o/oo per s] x 1000 [milli per o/oo] / 1000 [ticks per s] = rate
+  *
+  * so there is no division here, no rounding per tick and no accumulator residue -
+  * a 50 o/oo/s ramp arrives at exactly its target, not near it.
+  */
+static void ramp_step(void)
+{
+  int32_t want;
+  int32_t step;
+  int16_t pm;
+
+  if (ramp_pmps == 0u)
+  {
+    return;
+  }
+
+  want = (int32_t)target * 1000;
+
+  if (applied_mpm == want)
+  {
+    return;
+  }
+
+  step = (int32_t)ramp_pmps;
+
+  if (want > applied_mpm)
+  {
+    applied_mpm += step;
+    if (applied_mpm > want) { applied_mpm = want; }
+  }
+  else
+  {
+    applied_mpm -= step;
+    if (applied_mpm < want) { applied_mpm = want; }
+  }
+
+  /* C integer division truncates toward zero, which is what a signed ramp
+     wants: the emitted magnitude never leads the accumulator in either
+     direction. */
+  pm = (int16_t)(applied_mpm / 1000);
+
+  /* Only touch the timer when the per-mille value actually moved. At 5%/s that
+     is once every 20 ms rather than a thousand CCR writes a second. */
+  if (pm != duty)
+  {
+    emit(pm);
+  }
+}
+
 void drive_brake(void)
 {
+  /* Zero the ramp BEFORE the bridge, so a tick landing in the middle of this
+     sees applied == target and does nothing. Brake is immediate by design -
+     see the slew-limiter section in drive.h. */
+  target      = 0;
+  applied_mpm = 0;
+
   duty = 0;
   apply(DRIVE_CCR_FULL, DRIVE_CCR_FULL);
 
@@ -283,6 +473,13 @@ void drive_brake(void)
 
 void drive_coast(void)
 {
+  /* Same ordering as drive_brake(), and it matters more here: this is the
+     watchdog's action and the first step of drive_disable(), so it runs from
+     the ISR as well as from the console. Coast is never ramped - a dead host is
+     not the moment to ease off over six seconds. */
+  target      = 0;
+  applied_mpm = 0;
+
   duty = 0;
   apply(0u, 0u);
   place_trigger(0u, 0u);
@@ -311,6 +508,11 @@ void drive_on_tick(void)
       wd_expired = true;
     }
   }
+
+  /* Before the fault check for the same reason the watchdog is: that check
+     returns early on the common case, and a ramp that only advances while
+     something is wrong is not a ramp. */
+  ramp_step();
 
   if (!drive_faulted())
   {
@@ -393,7 +595,12 @@ bool drive_timeout_expired(void)
 void drive_set_decay(drive_decay_t new_decay)
 {
   decay = new_decay;
-  drive_set_duty(duty);   /* re-apply so the change is visible immediately */
+
+  /* Re-apply so the change is visible immediately. emit(), not drive_set_duty():
+     the decay mode is not a command, so it must neither kick the watchdog nor
+     disturb a ramp in flight - it re-draws whatever the bridge is running now
+     using the new truth table. */
+  emit(duty);
 }
 
 drive_decay_t drive_decay(void)
@@ -406,9 +613,27 @@ void drive_set_limit(uint16_t permille)
   if (permille > DRIVE_DUTY_MAX) { permille = (uint16_t)DRIVE_DUTY_MAX; }
 
   limit = permille;
-  drive_set_duty(duty);   /* a tightened limit takes effect now, not on the
-                             next command — otherwise it would not protect
-                             against whatever is already running */
+
+  /* A tightened limit takes effect now, not on the next command — otherwise it
+     would not protect against whatever is already running. Note this goes
+     through emit() rather than drive_set_duty(): a cap is protection, not a
+     command, so it neither kicks the watchdog nor gets RAMPED down over the
+     next few hundred ms.
+
+     Order matters. The target is clamped first, so that a tick landing between
+     these two writes can only walk the bridge toward an already-capped value;
+     clamping applied_mpm first would leave a window in which the ramp steps
+     straight back over the new cap. */
+  {
+    int32_t cap = (int32_t)limit * 1000;
+
+    target = clamp_duty((int32_t)target);
+
+    if (applied_mpm >  cap) { applied_mpm =  cap; }
+    if (applied_mpm < -cap) { applied_mpm = -cap; }
+
+    emit((int16_t)(applied_mpm / 1000));
+  }
 }
 
 uint16_t drive_limit(void)

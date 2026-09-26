@@ -145,12 +145,37 @@
   *
   * WHAT THIS MODULE DELIBERATELY DOES NOT DO
   * -----------------------------------------
-  * It does not slew-limit, and it does not react to nFAULT. A step from 0 to
-  * full duty draws stall current (5.0 A at the 9.5 V rail) because back-EMF is
-  * zero at t=0 — that is a fact about the motor, and the decision about what to
-  * do with it belongs to the control layer in W5, not here. drive_faulted() is
-  * provided so that layer can act; this module never disables itself behind the
-  * caller's back.
+  * It does not react to nFAULT. drive_faulted() is provided so the control
+  * layer can act; this module never disables itself behind the caller's back.
+  *
+  * It DOES now slew-limit, which reverses a position this header held until
+  * 2026-09-26, and the reversal is worth recording rather than quietly editing
+  * away. The argument for keeping the ramp out of here was that a step from 0 to
+  * full duty draws stall current — 5.0 A at the 9.5 V rail — because back-EMF is
+  * zero at t=0, which is a fact about the MOTOR, so the response to it is policy
+  * and policy belongs above. That is still true, and the rate still comes from
+  * above; what changed is where the mechanism can physically live:
+  *
+  *   1. drive_set_duty() calls drive_kick(), deliberately, because a duty
+  *      command is proof the caller is alive. A ramp module sitting above this
+  *      one has to reach the bridge through that function, so it would refresh
+  *      the command watchdog 1000 times a second forever and a dead host would
+  *      never again be detected. The watchdog is the one safety property that
+  *      exists specifically for the unattended case; a ramp that defeats it is a
+  *      bad trade however clean the layering looks.
+  *
+  *   2. A limiter that any caller can go around is advisory. In here the
+  *      invariant is unconditional: nothing can step the bridge, because there
+  *      is no path to the CCRs that does not pass through the limiter.
+  *
+  * So this follows the command watchdog's split exactly — MECHANISM, NOT POLICY.
+  * The rate defaults to 0, meaning step instantly, so nothing that worked before
+  * behaves differently until something arms it. See the slew-limiter section
+  * below.
+  *
+  * Ramping the velocity SETPOINT, once a loop exists, is a different thing and
+  * does still belong to the control layer: limiting the setpoint is what keeps a
+  * PID from winding up against its own ramp, and this module has no setpoint.
   *
   ******************************************************************************
   */
@@ -206,10 +231,14 @@ bool drive_is_enabled(void);
   * @note   Does not touch nSLEEP. A non-zero duty with the driver disabled
   *         sets the pins and moves nothing, which is intentional — it lets the
   *         waveform be scoped with the bridge safely off.
-  */
+  * @note   With the slew limiter armed this sets a TARGET and returns without
+  *         touching the timer; the bridge arrives over the next few hundred ms.
+  *         Read it back with drive_duty(), not by assuming. */
 void drive_set_duty(int16_t permille);
 
-/** @brief Last commanded duty, after clamping. */
+/** @brief Duty the bridge is ACTUALLY running, after clamping and after any
+  *        slew limiting. Equal to drive_duty_target() unless a ramp is in
+  *        flight. This is the one telemetry prints. */
 int16_t drive_duty(void);
 
 /** @brief Both inputs high — actively brake. Duty reads back as 0. */
@@ -330,6 +359,89 @@ uint32_t drive_timeout_remaining(void);
   * clears it.
   */
 bool drive_timeout_expired(void);
+
+/* --- Duty slew limiter --------------------------------------------------- *
+ *
+ * MECHANISM, NOT POLICY, like the watchdog above: a rate the caller arms, and
+ * nothing more. Disabled by default.
+ *
+ * WHY IT EXISTS. An un-ramped duty step was tripping the 1580 mA regulation
+ * limit on the loaded rig. The same 12 -> 29% move walked up at 5%/s peaked at
+ * 572 mA - 2.8x headroom - measured 2026-09-25. Back-EMF opposes the applied
+ * voltage, and at the instant of a step there is none, so the winding sees the
+ * whole terminal voltage across 1.87 ohms. Giving the wheel time to spin up is
+ * the entire trick.
+ *
+ * COMMANDED IS NOT APPLIED. With a rate armed, drive_set_duty() sets a TARGET
+ * and returns; drive_on_tick() walks the bridge toward it. drive_duty() keeps
+ * reporting what the bridge is actually running - that is what telemetry prints
+ * and what the plant fits, so the ramp shows up in the data as a ramp, which is
+ * how it gets measured. drive_duty_target() is the commanded value.
+ *
+ * THE RATE IS BOUNDED AT BOTH ENDS. Too fast and it is a step again: the plant's
+ * fast pole is 0.219 s (measured two independent ways, 2026-09-25), and on the
+ * rover, whose inertia is ~2.87x the rig's, it is longer still - the rig's tau
+ * is a LOWER bound. Too slow and the wheel sits energised below breakaway, which
+ * is stall current with no back-EMF - see drive_set_ramp_floor().
+ *
+ * WHAT IS NOT RAMPED, AND WHY. coast and brake are immediate. Coast is the safe
+ * stop and the watchdog's action; a dead host is not the moment to ease off over
+ * six seconds. Brake is an explicit act. The standing "ramp duty down before
+ * braking" policy is therefore written ABOVE this module, as
+ * drive_set_duty(0) -> wait for !drive_slewing() -> drive_brake(), which is what
+ * drive_slewing() is for. Tightening drive_set_limit() is immediate too: it is
+ * protection, not a command.
+ * -------------------------------------------------------------------------- */
+
+/**
+  * @brief  Arm the slew limiter.
+  * @param  permille_per_s  0..10000. 0 disables it - duty steps immediately,
+  *                         which is the behaviour this module had before the
+  *                         limiter existed.
+  *
+  * 50 (5%/s) is the rate proven on the loaded rig. Arming takes effect on the
+  * next tick and does not disturb a ramp already in flight.
+  *
+  * DISARMING MID-RAMP HOLDS THE BRIDGE WHERE IT IS - the target is adopted from
+  * the applied duty rather than the other way round. A configuration command
+  * must not produce the very current step this exists to prevent.
+  */
+void drive_set_ramp(uint16_t permille_per_s);
+
+/** @brief Configured slew rate, per-mille per second; 0 when disabled. */
+uint16_t drive_ramp(void);
+
+/**
+  * @brief  Duty the ramp jumps straight to when leaving rest.
+  * @param  permille  0..300; 0 disables the floor.
+  *
+  * A ramp that starts at zero crosses the whole sub-breakaway band slowly. At
+  * 5%/s and a breakaway of 9-11% duty that is two seconds stalled with no
+  * back-EMF, drawing 275-467 mA measured - exactly the condition the trip is
+  * there to catch. So the ramp starts ABOVE breakaway and walks up from there,
+  * which is what bench.py's --ramp-from did by hand.
+  *
+  * It applies only when departing rest, never at a zero crossing: a reversal
+  * walks +200 -> -200 through zero with the wheel still turning, and a turning
+  * wheel has back-EMF and does not need the floor. The jump is clipped to the
+  * target, so a command smaller than the floor is not overshot.
+  *
+  * The right value is a property of the LOAD - about 120 on the loaded rig,
+  * 60-70 on a free wheel - which is why it is set here and stored in config
+  * rather than compiled in.
+  */
+void drive_set_ramp_floor(uint16_t permille);
+
+/** @brief Configured ramp floor, per-mille; 0 when disabled. */
+uint16_t drive_ramp_floor(void);
+
+/** @brief Duty most recently COMMANDED, after clamping. Differs from
+  *        drive_duty() only while a ramp is in flight. */
+int16_t drive_duty_target(void);
+
+/** @brief True while the applied duty has not yet reached the target. The hook
+  *        for "ramp down, then brake" — see the section header. */
+bool drive_slewing(void);
 
 /* --- PWM phase, for synchronised current sampling ------------------------ *
  *

@@ -758,9 +758,9 @@ static void cmd_drv(int argc, char **argv)
 {
   if (argc < 2)
   {
-    debug_uart_printf("nSLEEP %s  duty %+d%%  decay %s  limit %u%%  nFAULT %s\r\n",
+    debug_uart_printf("nSLEEP %s  duty %+d o/oo  decay %s  limit %u%%  nFAULT %s\r\n",
                       drive_is_enabled() ? "high (enabled)" : "low (disabled)",
-                      drive_duty() / 10,
+                      drive_duty(),
                       (drive_decay() == DRIVE_DECAY_SLOW) ? "slow (drive-brake)"
                                                           : "fast (sign-magnitude)",
                       (unsigned)(drive_limit() / 10u),
@@ -797,12 +797,29 @@ static void cmd_drv(int argc, char **argv)
                       " coasted by the watchdog\r\n");
     }
 
+    if (drive_ramp() != 0u)
+    {
+      debug_uart_printf("  ramp %u o/oo/s (%u.%u%%/s), floor %u o/oo"
+                        "  target %+d o/oo%s\r\n",
+                        (unsigned)drive_ramp(),
+                        (unsigned)(drive_ramp() / 10u),
+                        (unsigned)(drive_ramp() % 10u),
+                        (unsigned)drive_ramp_floor(),
+                        drive_duty_target(),
+                        drive_slewing() ? "  - SLEWING" : "");
+    }
+    else
+    {
+      debug_uart_puts("  ramp off - duty steps instantly\r\n");
+    }
+
     debug_uart_puts(
-      "  sub: enable | disable | duty <+/-pct> | brake | coast\r\n"
+      "  sub: enable | disable | duty <+/-pct[p]> | brake | coast\r\n"
       "       decay slow|fast | limit <pct> | current [n] | zero\r\n"
       "       iscan [n] [from] [to] [step]"
       "  (diagnostic: IPROPI vs PWM phase)\r\n"
-      "       trip [<mA> | buf on|off] | clearfault | timeout [ms]\r\n");
+      "       trip [<mA> | buf on|off] | clearfault | timeout [ms]\r\n"
+      "       ramp [<o/oo per s> | floor <o/oo>]\r\n");
     return;
   }
 
@@ -828,18 +845,51 @@ static void cmd_drv(int argc, char **argv)
   {
     if (argc < 3)
     {
-      debug_uart_puts("usage: drv duty <+/-pct>\r\n");
+      debug_uart_puts("usage: drv duty <+/-pct>   or  <+/-permille>p\r\n");
       return;
     }
 
-    long pct = strtol(argv[2], NULL, 10);
-    drive_set_duty((int16_t)(pct * 10));
+    /* Percent by default, because every procedure and every bench script says
+       percent. A trailing 'p' means the argument is already per-mille, which is
+       the resolution drive.c actually works in - and the resolution the 1%-step
+       stiction bracket needs, since `drv duty 10` and `drv duty 11` are the only
+       two commands the percent form can put either side of breakaway. */
+    char *end  = NULL;
+    long  n    = strtol(argv[2], &end, 10);
+    bool  raw  = (end != NULL) && ((*end == 'p') || (*end == 'P'));
+    long  pm   = raw ? n : (n * 10);
 
-    debug_uart_printf("duty %+d%%%s\r\n",
-                      drive_duty() / 10,
-                      drive_is_enabled() ? ""
-                                         : "  (driver still disabled - pins only,"
-                                           " which is what you want for a scope check)");
+    if (pm >  DRIVE_DUTY_MAX) { pm =  DRIVE_DUTY_MAX; }
+    if (pm < -DRIVE_DUTY_MAX) { pm = -DRIVE_DUTY_MAX; }
+
+    drive_set_duty((int16_t)pm);
+
+    if (drive_slewing())
+    {
+      debug_uart_printf("target %+d o/oo, ramping from %+d at %u o/oo/s%s\r\n",
+                        drive_duty_target(),
+                        drive_duty(),
+                        (unsigned)drive_ramp(),
+                        drive_is_enabled() ? ""
+                                           : "  (driver still disabled)");
+
+      if (drive_duty_target() == 0)
+      {
+        /* Worth saying every time. An operator who wants the wheel to stop and
+           watches it keep turning for several seconds will reach for something
+           more drastic than the thing that was already going to work. */
+        debug_uart_puts("  ramping down - 'drv coast' stops it immediately"
+                        " if you need it now\r\n");
+      }
+    }
+    else
+    {
+      debug_uart_printf("duty %+d o/oo%s\r\n",
+                        drive_duty(),
+                        drive_is_enabled() ? ""
+                                           : "  (driver still disabled - pins only,"
+                                             " which is what you want for a scope check)");
+    }
   }
   else if (strcmp(argv[1], "brake") == 0)
   {
@@ -1180,6 +1230,77 @@ static void cmd_drv(int argc, char **argv)
                       " 'cfg save' to survive a reset)\r\n");
     }
   }
+  else if (strcmp(argv[1], "ramp") == 0)
+  {
+    if ((argc >= 4) && (strcmp(argv[2], "floor") == 0))
+    {
+      long pm = strtol(argv[3], NULL, 10);
+
+      if ((pm < 0) || (pm > (long)config_max(CFG_RAMP_FLOOR)))
+      {
+        debug_uart_printf("floor must be 0..%ld o/oo\r\n",
+                          (long)config_max(CFG_RAMP_FLOOR));
+        return;
+      }
+
+      drive_set_ramp_floor((uint16_t)pm);
+    }
+    else if (argc >= 3)
+    {
+      long pmps = strtol(argv[2], NULL, 10);
+
+      if ((pmps < 0) || (pmps > (long)config_max(CFG_RAMP_PMPS)))
+      {
+        debug_uart_printf("rate must be 0..%ld o/oo per second\r\n",
+                          (long)config_max(CFG_RAMP_PMPS));
+        return;
+      }
+
+      drive_set_ramp((uint16_t)pmps);
+    }
+
+    if (drive_ramp() == 0u)
+    {
+      debug_uart_puts("ramp off - duty steps instantly\r\n");
+      debug_uart_puts("  an un-ramped step from rest draws stall current:"
+                      " back-EMF is zero at t=0,\r\n"
+                      "  so the winding sees the whole terminal voltage."
+                      " On the loaded rig that\r\n"
+                      "  tripped 1580 mA; the same move at 50 o/oo/s peaked"
+                      " at 572 mA\r\n");
+    }
+    else
+    {
+      debug_uart_printf("ramp %u o/oo/s (%u.%u%% per second), floor %u o/oo\r\n",
+                        (unsigned)drive_ramp(),
+                        (unsigned)(drive_ramp() / 10u),
+                        (unsigned)(drive_ramp() % 10u),
+                        (unsigned)drive_ramp_floor());
+      debug_uart_printf("  target %+d o/oo, bridge %+d o/oo%s\r\n",
+                        drive_duty_target(),
+                        drive_duty(),
+                        drive_slewing() ? "  - SLEWING" : "");
+
+      if (drive_ramp_floor() == 0u)
+      {
+        debug_uart_puts("  no floor: a ramp from rest crawls through the"
+                        " sub-breakaway band stalled,\r\n"
+                        "  with no back-EMF. 'drv ramp floor <o/oo>' above"
+                        " breakaway - ~120 loaded,\r\n"
+                        "  ~60 free wheel\r\n");
+      }
+
+      debug_uart_puts("  coast and brake are NOT ramped - both are immediate,"
+                      " by design\r\n");
+    }
+
+    if ((drive_ramp()       != (uint16_t)config_get(CFG_RAMP_PMPS)) ||
+        (drive_ramp_floor() != (uint16_t)config_get(CFG_RAMP_FLOOR)))
+    {
+      debug_uart_puts("  (not persistent - 'cfg ramp_pmps <n>' /"
+                      " 'cfg ramp_floor <n>' then 'cfg save')\r\n");
+    }
+  }
   else if (strcmp(argv[1], "timeout") == 0)
   {
     if (argc >= 3)
@@ -1422,7 +1543,7 @@ static void cmd_cfg(int argc, char **argv)
 
   cfg_print_key(k);
 
-  /* Two of these keys have a live counterpart under 'drv'. Setting one here
+  /* Four of these keys have a live counterpart under 'drv'. Setting one here
      and not applying it would leave 'cfg' and 'drv' disagreeing about the same
      number until the next reset, which is the sort of discrepancy that gets
      debugged as a hardware fault. So they take effect immediately as well. */
@@ -1437,6 +1558,18 @@ static void cmd_cfg(int argc, char **argv)
     drive_set_limit((uint16_t)want);
     debug_uart_printf("  applied now: limit %u%%\r\n",
                       (unsigned)(drive_limit() / 10u));
+  }
+  else if (k == CFG_RAMP_PMPS)
+  {
+    drive_set_ramp((uint16_t)want);
+    debug_uart_printf("  applied now: ramp %u o/oo/s\r\n",
+                      (unsigned)drive_ramp());
+  }
+  else if (k == CFG_RAMP_FLOOR)
+  {
+    drive_set_ramp_floor((uint16_t)want);
+    debug_uart_printf("  applied now: ramp floor %u o/oo\r\n",
+                      (unsigned)drive_ramp_floor());
   }
 
   /* Three keys change the meaning of every current number the board reports,

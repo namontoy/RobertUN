@@ -112,6 +112,8 @@ typedef enum
   CFG_ISENSE_AVG,         /*!< conversions averaged by a bare `drv current` */
   CFG_ISENSE_SAT_RAW,     /*!< raw count at or above which the ADC is clipping */
   CFG_VREF_DIVIDER,       /*!< DRV8874 internal VREF divider k - measured 3 */
+  CFG_RAMP_PMPS,          /*!< duty slew rate, per-mille per second; 0 = off */
+  CFG_RAMP_FLOOR,         /*!< per-mille to jump to when leaving rest; 0 = none */
   CFG_KEY_COUNT
 } config_key_t;
 

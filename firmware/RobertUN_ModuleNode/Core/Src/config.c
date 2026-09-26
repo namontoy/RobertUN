@@ -77,6 +77,25 @@ static const key_info_t keys[CFG_KEY_COUNT] =
   [CFG_VREF_DIVIDER] =
     { "vref_div",     "",        1,     4, 3,
       "DRV8874 internal VREF divider - measured 3, Sep 20 2026" },
+
+  /* The slew limiter, off by default - the same precedent as the command
+     watchdog, where nothing that worked before behaves differently until the
+     mechanism is deliberately armed. The ceiling of 10000 o/oo per second walks
+     full scale in 100 ms, which is a step in all but name; the useful end of the
+     range is far below it, because tau_fast is 0.219 s and ramping faster than
+     the plant can follow only re-creates the step it was meant to remove. */
+  [CFG_RAMP_PMPS] =
+    { "ramp_pmps",    "o/oo/s",  0, 10000, 0,
+      "duty slew rate - 0 steps instantly; 50 is 5%/s, proven on the rig" },
+
+  /* Breakaway is 9-11% duty loaded and 5-6% free, but DROPOUT is 2-3%, so a ramp
+     that starts at zero spends seconds energised below breakaway - stalled, no
+     back-EMF, which is precisely what the trip exists to catch. The floor is the
+     duty the ramp starts FROM, mirroring bench.py's --ramp-from. It is a property
+     of the load, not of the board, which is why it is a key and not a #define. */
+  [CFG_RAMP_FLOOR] =
+    { "ramp_floor",   "o/oo",    0,   300, 0,
+      "duty to jump to when leaving rest, before ramping; 0 = no floor" },
 };
 
 /* ---------------------------------------------------------------------------

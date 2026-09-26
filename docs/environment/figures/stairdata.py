@@ -46,8 +46,11 @@ RUNS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 
 # The long run the velocity-loop model rests on, and the warm re-test that
 # exists only to separate a warm-up transient from a real speed dependence.
-STAIR_LONG = "2026-09-26T09-55-08_stair"   # 21 points x 60 s, 10.0 -> 20.0 rpm
+STAIR_LONG = "2026-09-26T09-55-08_stair"   # 21 points x 60 s, +10.0 -> +20.0 rpm
 STAIR_WARM = "2026-09-26T10-17-57_stair"   # 2 points x 90 s, re-taken warm
+# The same staircase in reverse, 67 minutes after the forward one ended. Same
+# profile, same gains, same rig; --dir ccw is the only argument that differs.
+STAIR_REV  = "2026-09-26T11-02-46_stair"   # 21 points x 60 s, -10.0 -> -20.0 rpm
 
 # Shipped feedforward, as flashed: cfg vel_ff_a / vel_ff_b (milli-o/oo per rpm,
 # and o/oo). Read back out of the run's own preflight cfg dump by Stair.ff().
@@ -106,6 +109,24 @@ class Stair:
         self.h_ma    = hcol("ma_mean")
         self.h_n     = hcol("n").astype(int)
 
+        # THE SIGN. A reverse run carries negative setpoints, outputs and
+        # feedforward all the way through, and every comparison between the two
+        # directions is a comparison of MAGNITUDES. Rather than sprinkle abs()
+        # over the call sites - where one forgotten one silently compares -277
+        # against +284 and reports a 200% asymmetry - the sign is resolved once,
+        # here, and the m_* arrays below are what a direction comparison reads.
+        self.sign = 1.0 if float(np.mean(self.h_sp)) >= 0 else -1.0
+        self.m_sp   = np.abs(self.h_sp)
+        self.m_rpm  = np.abs(self.h_rpm)
+        self.m_out  = np.abs(self.h_out)
+        self.m_ff   = np.abs(self.h_ff)
+        # NOT abs(). The integrator's sign is meaningful against the output it
+        # is correcting: i * sign(setpoint) is what the integrator ADDS TO THE
+        # MAGNITUDE of the commanded output, positive when it is pushing harder
+        # than the feedforward asked for and negative when it is holding back.
+        # abs() here would erase exactly the quantity the comparison is about.
+        self.m_i    = self.h_i * self.sign
+
         with open(os.path.join(d, "meta.json")) as f:
             self.meta = json.load(f)
         with open(os.path.join(d, "events.csv")) as f:
@@ -118,7 +139,10 @@ class Stair:
         # nobody notices - 1.4 s of a 60 s hold.
         self.sp_at = [(float(e["host_s"]), float(e["detail"]))
                       for e in self.events if e["kind"] == "setpoint"]
-        self.settle_s = 10.0      # stair.py's SETTLE_S, excluded from every point
+        # --hold-settle, excluded from every point. Read from the run's own
+        # arguments rather than remembered: it is a profile default now, and a
+        # run taken with a different one must not be sliced with this one.
+        self.settle_s = float(self.meta["args"].get("hold_settle", 10.0))
 
     # ------------------------------------------------------------- integrity --
     @property
@@ -167,14 +191,26 @@ class Stair:
         the only independent check either model gets.
         """
         k = self.h_sat < 0.01
-        a, b = np.polyfit(self.h_rpm[k], self.h_out[k], 1)
-        rms = float(np.sqrt(((self.h_out[k] - (a * self.h_rpm[k] + b)) ** 2).mean()))
+        a, b = np.polyfit(self.m_rpm[k], self.m_out[k], 1)
+        rms = float(np.sqrt(((self.m_out[k] - (a * self.m_rpm[k] + b)) ** 2).mean()))
         return float(a), float(b), rms, int(k.sum())
 
-    def ripple(self, i, max_lag_ms=1600):
+    def ripple(self, i, max_lag_ms=1600, interp=False):
         """Dominant ripple period of hold i, in ms, by autocorrelation.
 
         Returns (period_ms, events_per_rev, ac_lags_ms, ac) or None.
+
+        `interp` PARABOLIC SUB-BIN REFINEMENT, AND WHY IT IS OPT-IN. Without
+        it the period can only be an integer number of 20 ms control periods.
+        Over the 10-20 rpm staircase the ripple period runs 500 -> 250 ms, so
+        one bin is worth 0.48 events per revolution at the slow end and 0.96 at
+        the fast end - 0.72 on average, and every one of those is several times
+        the 0.19 spread this measurement reports. Two runs that select the same
+        bin at every setpoint then come out IDENTICAL TO EVERY DIGIT, which
+        reads as perfect agreement and is nothing of the kind: it only says
+        they agree to within half a bin. Comparing two runs needs the
+        refinement; the single-run figure that predates it does not, and is
+        left on the raw grid so its published numbers do not move.
 
         THE TRAP THIS AVOIDS. Taking the global maximum of the autocorrelation
         picks a SECOND HARMONIC whenever the fundamental's peak is the shorter
@@ -207,18 +243,30 @@ class Stair:
                 break
         if pk is None:
             return None
-        period_ms = (pk + 1) * dt_ms
-        rev_ms = 60_000.0 / self.h_sp[i]
+        lag = pk + 1.0
+        if interp and 0 < pk < len(ac) - 1:
+            # Fit a parabola through the peak and its two neighbours and take
+            # its vertex. Standard peak refinement; the denominator is the
+            # curvature and is negative at a maximum, so a zero or positive
+            # value means this is not a clean peak and the raw bin stands.
+            y0, y1, y2 = ac[pk - 1], ac[pk], ac[pk + 1]
+            curv = y0 - 2.0 * y1 + y2
+            if curv < 0:
+                delta = 0.5 * (y0 - y2) / curv
+                if abs(delta) <= 0.5:          # the vertex must stay in its own bin
+                    lag += delta
+        period_ms = lag * dt_ms
+        rev_ms = 60_000.0 / abs(self.h_sp[i])   # a revolution has no sign
         return (period_ms, rev_ms / period_ms,
                 (np.arange(1, n_lag + 1)) * dt_ms, ac)
 
-    def ripple_table(self):
+    def ripple_table(self, interp=False):
         """(sp, sd, period_ms, events_per_rev) for every hold that yields one."""
         out = []
         for i in range(len(self.h_sp)):
-            r = self.ripple(i)
+            r = self.ripple(i, interp=interp)
             if r is not None:
-                out.append((self.h_sp[i], self.h_sd[i], r[0], r[1]))
+                out.append((self.m_sp[i], self.h_sd[i], r[0], r[1]))
         return np.array(out)
 
     def drift(self, i):

@@ -109,6 +109,57 @@ three are what actually unblock PID gain selection.
 | `--max-duty` | `30` | refuses anything above it. **Raise it only for deliberate calibration** — the rover's working band tops out well below this, and above ~31% the wheel begins to bounce on the rig belt, which makes those points a property of the rig rather than of the plant. |
 | `--trip` | `1580` | mA; **set at run start**, so the trip is a recorded run condition rather than whatever the board happened to boot with |
 
+## The ramp is in the firmware now
+
+`drive.c` gained a duty slew limiter on 2026-09-26. It is **off by default** and
+runs per-mille on the 1 kHz tick, so it is finer and steadier than the host-side
+staircase this tool has been using:
+
+```
+drv ramp <o/oo per s>      50 is 5%/s - the rate proven on the loaded rig
+drv ramp floor <o/oo>      jump straight to this when leaving rest; ~120 loaded
+drv ramp                   report rate, floor, target, applied, slewing?
+drv duty <+/-n>p           per-mille, e.g. `drv duty 295p` (percent still works)
+```
+
+With a rate armed, `drv duty` sets a **target** and returns; the bridge arrives
+over the next few hundred ms. The telemetry `duty` column reports what the bridge
+is **actually running**, not the target — so a ramp appears in the data as a
+ramp, which is how it gets measured. `drv` prints both.
+
+**`drv coast` and `drv brake` are never ramped.** Both are immediate, and coast
+stays the watchdog's action. So `drv duty 0` with a ramp armed takes seconds to
+wind down; `drv coast` is still the stop that happens now.
+
+### `--ramp` is deliberately kept
+
+`bench.py --ramp <%/s> --ramp-from <%>` is **not** deprecated by the firmware
+limiter. It is the reference the firmware version was checked against, and the
+un-ramped case is the contrast that proves the feature works.
+
+**The A/B is now on record (2026-09-26, loaded rig, 0 → 29% duty):**
+
+| | | peak current |
+|---|---|---|
+| host staircase | `--ramp 5 --ramp-from 12`, 1% granularity, console pace | 572 mA (Sep 25) |
+| firmware | `drv ramp 50` + `drv ramp floor 120`, 0.1% granularity, 1 kHz | **581 mA** |
+| un-ramped | `drv ramp 0` | **1582 mA — at the 1579 mA trip** |
+
+Measured slew rate **50.00 o/oo/s** against 50 commanded; 120 → 290 in **3400 ms**
+against 3400 predicted. **Peak inrush falls at least 2.7×.**
+
+Read the un-ramped number correctly: **1582 mA is the clamp's value, not the
+demand's.** The driver was in ITRIP regulation for ~40 ms, and at 10 ms telemetry
+the first sample is already clamped — the true peak is unknown and higher.
+
+⚠️ **The un-ramped start sets no fault flag.** Neither bit 4 (nFAULT) nor bit 8
+(ADC saturated) was ever set through the regulated event. "No fault latched" is
+not evidence a manoeuvre stayed inside its current budget.
+
+Note that with the ramp armed a 2% sweep step at 5%/s takes 0.4 s, which eats
+into the 2 s `--settle` window. Fine at these rates; check it before raising
+`--dwell` expectations or lowering the rate.
+
 ### Echo mismatches are counted, not fatal
 
 The console echoes **each typed character as its own one-byte write**, while a
@@ -218,11 +269,11 @@ T,<seq>,<ms>,<duty>,<count>,<mrpm>,<ma>,<flags>
 |---|---|
 | `seq` | uint32, +1 per line; restarts at 0 on `telem on` |
 | `ms` | `HAL_GetTick()` at emission — board time, stamped before any USB latency |
-| `duty` | signed per-mille, as commanded |
+| `duty` | signed per-mille, **as applied to the bridge** — with `drv ramp` armed this is the ramping value, not the target |
 | `count` | int32 encoder position at the output shaft, 8403.2 counts/rev |
 | `mrpm` | rpm × 1000 (filtered — see above) |
 | `ma` | Imotor if flag bit 0, else Isup |
-| `flags` | 1 sync · 2 enabled · 4 fault latched · 8 ADC saturated · 16 watchdog expired |
+| `flags` | 1 sync · 2 enabled · 4 fault latched · 8 ADC saturated · 16 watchdog **has** expired since arming (sticky; a kick refreshes the countdown but does not clear it) |
 
 Integer fields only: `%f` pulls in newlib's float formatter, which is far too
 slow to run at 100 Hz.

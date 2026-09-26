@@ -1,5 +1,5 @@
 # RobertUN — Wheel Controller Firmware: Full Progress Log
-**Last updated:** September 25, 2026 (loaded-rig pass taken on the treadmill belt at 1047 g — pooled `rpm = 0.7993 d − 2.420` over 11–29%, load costs only 4.3% of slope, breakaway 9–11% duty which is the **same terminal voltage** as Sep 15's 12–14% at 9.35 V; and **τ was wrong** — the plant is two-pole, τ_fast **0.219 ± 0.007 s** verified against an independent ramp-lag measurement at 0.207 s, with the earlier 0.65–0.70 s exposed as a one-pole fit-window artifact)
+**Last updated:** September 26, 2026 (task 21's duty slew limiter implemented inside `drive.c` and **verified on the loaded rig** — per-mille on the 1 kHz tick, off by default; measured 50.00 o/oo/s against 50 commanded, peak 581 mA where the un-ramped step clamps at the 1579 mA trip, and the command watchdog still fires on the exact millisecond with the motor live. Previously: September 25, 2026 — loaded-rig pass taken on the treadmill belt at 1047 g — pooled `rpm = 0.7993 d − 2.420` over 11–29%, load costs only 4.3% of slope, breakaway 9–11% duty which is the **same terminal voltage** as Sep 15's 12–14% at 9.35 V; and **τ was wrong** — the plant is two-pole, τ_fast **0.219 ± 0.007 s** verified against an independent ramp-lag measurement at 0.207 s, with the earlier 0.65–0.70 s exposed as a one-pole fit-window artifact)
 
 **Referenced from:** `PROJECT_CONTEXT_WHEEL_FW.md`, which carries a one-line-per-entry version of this log. This file is the verbatim, unedited detail behind each entry — pull it in when you need the exact numbers, register values, or reasoning chain, not for routine session start.
 
@@ -13,6 +13,187 @@
 > the split: that file gets read every session, this one only on demand.
 
 ## Progress log (most recent first) — full detail
+
+- **Sep 26 — TASK 21: THE DUTY SLEW LIMITER IS IMPLEMENTED, INSIDE `drive.c`,
+  which reverses the placement this project had written down. Code is complete
+  and building clean; nothing is verified on hardware yet.**
+  - **Why the placement moved.** Task 21 said the limiter "belongs in the
+    control layer, not `drive.c`". Reading the code before writing any showed
+    that cannot work: `drive_set_duty()` calls `drive_kick()` on every call,
+    deliberately — the file's own comment is that "a duty command is proof the
+    caller is alive". Any ramp module sitting above `drive.c` must reach the
+    bridge through that function, so it would refresh the command watchdog
+    **1000 times a second, forever**, and a dead host would never again be
+    detected. The safety feature added on Sep 25 would have been silently
+    disabled by the safety feature added on Sep 26. Secondary reason: a limiter
+    that callers can route around by calling `drive_set_duty()` directly is
+    advisory, not a limit.
+  - **It is therefore the command watchdog's own split, reused.** Mechanism in
+    `drive.c` (a rate, and a bridge that walks at it); policy above (whether to
+    ramp, how fast, what to do about a fault). `drive.c` still does not act on
+    nFAULT, and **setpoint** ramping — the kind that stops a velocity PID
+    winding up against its own ramp — is still the control layer's job and is
+    explicitly not in this change.
+  - **The arithmetic, and why the accumulator is in milli-per-mille.** The rate
+    that matters is sub-unit per tick: 5%/s = 50 per-mille/s = **0.05 per-mille
+    per 1 ms tick**, which an integer per-mille accumulator cannot represent —
+    it would either stall at zero or, rounded up, run 20× fast. So `applied_mpm`
+    is `int32_t` in thousandths of a per-mille. The scaling then collapses to an
+    exact identity: `rate [o/oo per s] × 1000 [milli per o/oo] ÷ 1000 [ticks/s]
+    = rate`. **The per-tick step in milli-per-mille numerically equals the
+    configured rate in per-mille per second.** No division in the ISR, no
+    accumulator residue, and the ramp lands exactly on its target. Full scale is
+    1 000 000 mpm; at the 10 000 pmps ceiling that is 100 ms end to end.
+  - **Structure.** The body of the old `drive_set_duty()` — decay branch,
+    `apply()`, `place_trigger()`, `duty = permille` — became a private `emit()`
+    that deliberately does **not** kick the watchdog. `drive_set_duty()` now
+    kicks, clamps, stores `target`, and with a rate armed **writes nothing to
+    the timer**: the tick owns the bridge from there. `ramp_step()` runs from
+    `drive_on_tick()` *after* the watchdog and *before* the `if
+    (!drive_faulted()) return;` early return, for the reason already written
+    above the watchdog block — a ramp that only advances while something is
+    wrong is not a ramp. The CCR is rewritten only when the truncated per-mille
+    value actually changes, so at 5%/s that is **50 writes/s, not 1000**.
+  - **The floor, and why it is in the command path rather than the tick.**
+    Breakaway is 9–11% duty loaded; a ramp from zero at 5%/s would spend **2 s
+    energised below breakaway**, stalled, no back-EMF, drawing the 275–467 mA
+    that the trip exists for. `bench.py` solved this with `--ramp-from 12`.
+    `ramp_floor` does the same, evaluated once, conditioned on
+    `applied_mpm == 0`. Conditioning on *being at rest* rather than on the tick
+    is what stops a **direction reversal** re-triggering the jump at the zero
+    crossing — a wheel that is still turning has back-EMF and needs no floor.
+    `bench.py`'s 1 s hold at the floor was for *measurement*, not protection, so
+    it was deliberately not ported.
+  - **What is not ramped, and why.** `drive_coast()` and `drive_brake()` are
+    immediate — coast is the safe stop, the watchdog's action and
+    `drive_disable()`'s first step, and a dead host is not the moment to ease
+    off over six seconds; brake is an explicit act. The standing "ramp duty down
+    before braking" policy is therefore written **above**, as
+    `drive_set_duty(0)` → wait `!drive_slewing()` → `drive_brake()`, which is
+    what the new accessor exists for. A tightened `drive_set_limit()` is
+    immediate too — it is protection, not a command — and clamps `target`
+    before `applied_mpm`, an order that is load-bearing and commented as such.
+    `drive_set_decay()` now re-emits the applied value instead of calling
+    `drive_set_duty()`, which would have reset the ramp.
+  - **Concurrency, stated accurately.** The ISR is the only writer of the CCR
+    pair *while a ramp is in flight*. The command path still writes at discrete
+    moments (floor jump, coast, brake, limit, decay, and the rate-0 path), and
+    each of those sets `applied_mpm` **before** emitting, so the worst an
+    interleaved tick can do is emit the same value twice. That is the same
+    two-instruction window the file already reasons about and accepts for the
+    watchdog's coast. No critical section was added.
+  - **`drive_set_ramp(0)` holds the bridge where it is.** The first version
+    jumped it to the target on disarm. That is wrong: a *configuration* command
+    must not produce a current step, least of all at the moment the operator has
+    just decided they no longer want ramping. It now adopts the applied value as
+    the new target.
+  - **Console.** `drv duty <n>p` commands per-mille (`strtol` with an end
+    pointer; ×10 only when the suffix is absent), backward compatible, and it
+    **unblocks the 1%-step stiction bracket across 8–13%** that was listed as
+    blocked on exactly this. `drv ramp [<o/oo per s> | floor <o/oo>]` sets and
+    reports; bare `drv` prints rate, floor, target, applied and whether it is
+    slewing.
+  - **Config.** `ramp_pmps` (0..10000, default 0) and `ramp_floor` (0..300,
+    default 0). Both **0 = off**, on the watchdog's precedent that nothing
+    changes behaviour until armed. `config_set()` is already the volatile
+    set-for-this-session path, so a rate scan costs no flash wear.
+  - **Two things learned from reading `cfg` before flashing.** ⚠️ **Adding a
+    config key discards the board's stored record** — `config.c` rejects any
+    record whose `count != CFG_KEY_COUNT`, so the first boot after this change
+    falls back to compiled defaults and would lose `vdda_mv`, `r_ipropi`,
+    `vref_div`, `rail_mv`, `trip_ma`, `duty_limit`. `CONFIG_VERSION` is **not**
+    what guards this, which corrects the note in task 21 that paired the two.
+    On *this* board it cost nothing — `cfg` reported `slot 0/1024 used` with no
+    overrides, i.e. `cfg save` has never been run here — but that is luck, not a
+    reason to skip the check.
+  - **Verified offline only.** The ramp arithmetic was transcribed to Python and
+    checked before the board was touched: the floor jump, no floor re-trigger at
+    a reversal's zero crossing, a tightened cap being instant and sticky, exact
+    arrival on target, and the 50-writes/s figure. 8/8 pass. Builds at
+    **96 972 B flash (24.66%), 5 456 B RAM (4.16%)**, no warnings.
+  - ✅ **THE BENCH PASS IS DONE, and the feature is closed.** Taken in two
+    stages: everything that could be proven with the driver *disabled* was
+    proven at the desk first, and only then was anything energised.
+    - **Desk, driver disabled — six checks, all exact.** Rate: 289 telemetry
+      samples for 289 duty increments, last-zero to first-290 = **5800 ms**
+      against 5.80 s predicted, landing and stopping with no overshoot. Floor:
+      the sample before the command reads 0 and the next one, 20 ms later, reads
+      **120** with no intermediate values; the 120→290 climb took **3400 ms**
+      against 3.4 s predicted. Down-ramp 290→0 took **5800 ms**, symmetric, and
+      passed straight *through* 120 without the floor firing. Reversal walked
+      `… 2, 1, 0, 0, −1, −2 …` — **no floor jump at the zero crossing**, which
+      is what conditioning the floor on `applied_mpm == 0` was for — 8000 ms for
+      400 o/oo, and the floor re-armed correctly after a `drv coast`.
+    - ⚠️ **A gap of my own found and fixed before energising:** the
+      `cfg <key> <value>` handler applied values live for only two keys, so
+      `cfg ramp_pmps 50` would have stored the rate and left the limiter at 0
+      until reboot — exactly the "cfg and drv disagreeing about the same number"
+      failure the surrounding comment warns about, and worse because `drv ramp`
+      actively *tells* the operator to type that command. Extended to all four;
+      verified on hardware, all four now print `applied now:` and the "not
+      persistent" hint correctly disappears.
+    - **Rig, motor live.** Logged to file at 100 Hz by script rather than pasted
+      from a terminal — **1462 lines, zero seq gaps, no fault latch, no ADC
+      saturation.** Slew rate fitted over 340 samples: **50.00 o/oo/s** against
+      50 commanded. Climb 120→290: **3400 ms against 3400 predicted.** Floor
+      jump in a single sample with the **encoder moving 10 ms later** — the same
+      breakaway latency the hard step achieves, so the ramp costs nothing at
+      start. Sync set at duty **145**, as on every run since Sep 20. **Peak
+      synchronised current 581 mA**, within 1.6% of the host prototype's 572 and
+      **2.7× under the 1579 mA trip.**
+    - ✅ **The A/B against `drv ramp 0` — the evidence the feature works.** Same
+      0→29% command, un-ramped: **1582 mA on the very first telemetry sample**
+      against a trip programmed at 1579, then 1300 / 1008 / 911 / 913 mA over
+      the next 40 ms before back-EMF built and it fell away. Reading the number
+      correctly matters: **1582 is the clamp's value, not the demand's** — the
+      driver was in ITRIP regulation and at 10 ms sampling the true peak is
+      unknown and higher. So the honest claim is that **the ramp cuts peak
+      inrush at least 2.7×**, from at-the-limit to 37% of it.
+    - ⚠️ **And the un-ramped case latched NO fault** — `flags` never set bit 4
+      or bit 8 through the whole regulated event. Stepping duty from rest does
+      not fail *visibly*; it silently leans on the hardware current limit on
+      every start. That is a stronger argument for the limiter than a visible
+      trip would have been, because nothing in the telemetry would ever have
+      surfaced it. Written up in *Key learnings*.
+    - ✅ **The watchdog non-regression test passed twice.** At the desk first,
+      deliberately reordered ahead of the scope step and run with the driver
+      disabled — just stop typing — so the decisive question was settled before
+      anything was energised: command at ms 922420, duty 99 at 924400, **0 at
+      924420 = exactly 2000 ms**, snapping to zero in a single sample. Then
+      repeated **with the motor live**: the ramp had been writing the CCR for
+      3.4 s and holding for 6.6 s, and the 10 s deadline still landed on the
+      **exact millisecond**, duty **290→0 in one sample** — a coast, not a
+      ramp-down. Coast to standstill took 540 ms. **`emit()` is not kicking the
+      watchdog, so the placement argument holds.**
+    - ⚠️ **An unexplained mechanical event, seen once and not reproduced.** On
+      an earlier attempt the wheel *slowed while duty was still rising* —
+      10.0 → 6.4 rpm over ~100 ms at duty 157→167, confirmed in the raw `count`
+      deltas, not a filter artifact, with current tripling to 580 mA. On the
+      clean run the largest such drop was 3.57 rpm, inside the boxcar ripple.
+      Most likely belt take-up or a tight spot. Recorded because a repeat would
+      mean something real.
+    - ⚠️ **Both runs settled 4.5% below the Sep 25 fit** — 19.82 rpm (ramped)
+      and 19.97 (un-ramped) by count slope at 29% duty, against 20.76 from
+      `rpm = 0.7993 d − 2.420`. Two runs agreeing with each other and
+      disagreeing with the fit points at the fit. The plateau also showed the
+      **2.75 s belt pole** plainly, rising 19.28 → ~20.7 rpm over the first two
+      seconds before settling, which is why the settled figure is taken over the
+      last 5 s and not the whole plateau. Flagged in NEXT TASKS as a re-take.
+    - **Two caveats kept rather than buried.** At 50 Hz the desk telemetry
+      aliased 1:1 with the emission rate, so it proves the average rate but
+      cannot resolve sub-20 ms jitter; and the scope check of PWM high time was
+      **not** done — the 50.00 o/oo/s fit and the exact 3400 ms climb measure
+      the same thing from the telemetry side, so it was judged redundant rather
+      than skipped silently.
+    - **A hazard noticed, deliberately not fixed.** After the reversal test the
+      bridge was parked at duty −200 o/oo with nSLEEP low; `drv enable` from
+      there would energise the motor at 20% reverse instantly with no ramp,
+      because the floor only fires from `applied_mpm == 0`. Pre-existing, not
+      ramp-caused, but the ramp makes it easier to land there unnoticed.
+      `drive_enable()` arguably should force duty 0 first — out of scope, left
+      open.
+    - ⬜ **`cfg save` has NOT been run.** The board still boots with the ramp
+      **off**; 50 / 120 are live-set only.
 
 - **Sep 25 (later) — LOADED-RIG PASS TAKEN, AND τ MEASURED TWICE BY TWO
   INDEPENDENT ROUTES. The plant is two-pole, and the τ ≈ 0.65–0.70 s reported

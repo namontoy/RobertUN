@@ -2934,3 +2934,34 @@ Same battery and VM (12.02 V) as the A/B/A, shipped gains, `enc window 20`,
   overshoot resolvable above the mechanical ripple, in either direction, from
   rest or from a turning wheel. Steps run: up to 10 rpm in size, up to 15 rpm
   setpoint; larger steps (e.g. 0 → 20) were not run.
+
+## 2026-09-26 (evening) — ripple test fixed in `bench.py`; CORRECTION to the step verdict above
+
+`overshoot_above_ripple` now requires the peak to beat the settled tail's own
+worst excursion in the overshoot direction (`tail_excursion_rpm`, new column)
+plus one encoder count (0.357 rpm at window 20), instead of 2 × tail sd.
+Extreme against extreme: the tail (last quarter of a 10 s dwell, ~5 dips at
+10 rpm) and the 3 s overshoot window (~6 dips) sample a similar number of ripple
+events. Re-reduced from the saved `velocity.csv` of the three step runs:
+
+| Segment | overshoot | tail excursion | old flag | new flag |
+|---|---|---|---|---|
+| 0 → +10 | 1.424 | 1.424 | ripple | ripple |
+| +10 → +15 | 1.422 | 1.422 | ripple | ripple |
+| +15 → +10 | 3.217 | 2.860 | above | **ripple** (within 1 count) |
+| −10 → −15 | 1.779 | 1.779 | ripple | ripple |
+| −15 → −10 | 2.503 | 1.789 | above | **above** (by 2 counts, 0.71 rpm) |
+
+**Correction:** the entry above says both down-steps were ripple. The reverse
+one is not resolved as ripple: it dips 0.71 rpm (2 counts) past the settled
+tail's worst dip, and the trace sits 0.4–0.7 rpm below setpoint for ~0.3 s
+after the dip. That comparison was made against the 3–10 s hold, which holds a
+deeper dip than the last quarter the metric uses. So: a small reverse
+down-step undershoot (≤ ~0.7 rpm beyond ripple, gone in ~0.35 s) — bounded,
+still inside the acceptance criterion, not tuned against yet. Forward
+down-step is ripple.
+
+Re-reduction segments on host time; overshoot figures reproduce exactly, one
+rise time differs (0.22 vs 0.26 s, reverse down) from the profile's own cut.
+`figures/plot_velocity_step_anchor.py` panel C still draws ±2 sd bands for the
+morning runs; not regenerated.

@@ -36,8 +36,8 @@ PID (active)**; W6 and W7 follow (roadmap in `PROJECT_CONTEXT_REST.md`).
   **14.5% duty**; below it the decay phase reads 0.690 × I (±4%, ≥6% duty).
   → `_REF_DRIVE`, LOG 09-26 night
 - **config:** append-only log in flash sector 7, `cfg` command, int32 keys in
-  milli-units. `cfg save` has **never been run** on the bench board. Adding a
-  key discards the stored record. → `_REF_TASKS` task 18, `_REF_LEARNINGS`
+  milli-units. Saved on the bench board 09-26 (slot 2): trip_ma 1580,
+  duty_limit 300, ramp 50/120; survived a reset. Adding a key discards it. → `_REF_TASKS` task 18, `_REF_LEARNINGS`
 - **drive.c safety:** `drv timeout` command watchdog (coasts on expiry); duty
   slew limiter `drv ramp` / `drv ramp floor`, off by default (0); coast and
   brake are not ramped; `drv duty <n>p` sets per-mille. → `_REF_TASKS` task 21
@@ -117,10 +117,10 @@ from a step.
 6. Task 18: exercise the corrupt-record fallback and the sector-full wrap at
    save 1025; `cfg rail_mv` once the motor terminals are metered.
 7. Task 20: one `drv iscan` with `from = 0` to exercise the tick-0 cosmetic fix.
-8. `cfg save` on the bench board when the ramp settings (50 / 120) should persist.
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 
+- **09-26** — First `cfg save` on the bench board: trip_ma 1580, duty_limit 300, ramp 50/120; survived a reset. Gains stay compiled defaults.
 - **09-26** — DMM supply reference, free shaft: drive-phase sample reads low while turning (0.74 at 20%, 0.83 at 15%, ±20%); no factor change.
 - **09-26** — Decay-phase sample implemented (flag 0x20, cfg isense_dk/dmin); exact vs iscan at stall; turning it reads ~40% below drive phase.
 - **09-26** — Decay-phase IPROPI validated: 0.690 × I (±1.5%), ±4% at 6–12% duty, 5% invalid; sample ≥150 ticks before the drive edge.
@@ -130,7 +130,6 @@ from a step.
 - **09-26** — W5 PID written (`velocity.c`), `V,` per-step telemetry and `bench.py run step`. `safe_stop()` now sends `vel off` first.
 - **09-26** — Duty slew limiter in `drive.c` (off by default), verified on the rig: peak inrush 2.7× lower than an un-ramped step.
 - **09-25** — Loaded-rig plant `rpm = 0.7993 d − 2.420`; two-pole τ 0.219 s + 2.75 s, checked by two independent methods.
-- **09-25** — Bench tooling `tools/bench/` and `telem`; `drv timeout` watchdog; 12 V free-wheel plant re-taken, CCW +3.49%.
 
 ## Key rules (full list with evidence in `_REF_LEARNINGS`)
 

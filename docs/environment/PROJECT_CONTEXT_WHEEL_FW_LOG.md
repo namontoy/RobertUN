@@ -3195,3 +3195,15 @@ Size of the error (0.74 vs 0.83) is inside the DMM's ±20% swing: no speed
 dependence can be claimed, and no firmware factor is changed on these numbers.
 Next: a steady supply-side reference (shunt + RC filter on the scope or a DMM on
 mV, or a bench supply with a current readout), then decide on a turning factor.
+
+## 2026-09-26 (late night) — first `cfg save` on the bench board; bench settings persisted
+
+- Board read before: all 22 keys at compiled defaults (a reset had dropped the
+  RAM-only bench values). W5 gains are the compiled defaults, so they need no
+  save; freezing them waits for the rover τ session.
+- Set and saved: `trip_ma` 1580 (default 1000 — the `--slew 0` steps peaked at
+  984 mA, 16 mA under the default trip), `duty_limit` 300, `ramp_pmps` 50,
+  `ramp_floor` 120. `cfg save` → slot 2 of 1024.
+- Verified: board reset by hand, `cfg` read back — same four values, slot 2/1024.
+  First exercise of save + boot restore on hardware. Corrupt-record fallback and
+  the sector-full wrap (task 18) are still unexercised.

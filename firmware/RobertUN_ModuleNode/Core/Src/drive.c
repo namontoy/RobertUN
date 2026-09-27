@@ -14,10 +14,10 @@
 
 extern TIM_HandleTypeDef htim4;
 
-static int16_t       duty;                      /*!< APPLIED per-mille, clamped */
-static uint16_t      limit = DRIVE_DUTY_MAX;    /*!< magnitude cap             */
-static drive_decay_t decay = DRIVE_DECAY_SLOW;
-static bool          enabled;
+static volatile int16_t       duty;                      /*!< APPLIED per-mille, clamped */
+static volatile uint16_t      limit = DRIVE_DUTY_MAX;    /*!< magnitude cap             */
+static volatile drive_decay_t decay = DRIVE_DECAY_SLOW;
+static volatile bool          enabled;
 
 /* Slew limiter. `target` is written by the command path and read by the tick;
    `applied_mpm` the other way round. Single 32-bit-or-smaller objects, so the
@@ -55,16 +55,16 @@ static volatile bool     wd_expired;     /*!< sticky; cleared by arming only  */
    every CCR write so it can never describe a different duty than the one the
    timer is running - which is the failure mode that would put an ADC sample
    in the blanked phase and look like a real reading. See drive.h. */
-static uint16_t phase_ticks;
-static uint16_t phase_start;
-static uint16_t phase_trigger;
+static volatile uint16_t phase_ticks;
+static volatile uint16_t phase_start;
+static volatile uint16_t phase_trigger;
 
 /* Which phase the trigger samples, and the settled region inside it that a
    spread burst may use. Written by place_trigger() alongside the three above,
    for the same reason. */
-static drive_sense_t sense_kind;
-static uint16_t      sense_first;
-static uint16_t      sense_last;
+static volatile drive_sense_t sense_kind;
+static volatile uint16_t      sense_first;
+static volatile uint16_t      sense_last;
 
 /** @brief Compare value for 100% output. CCR > ARR never matches, so the
   *        channel stays active for the whole period — a true 100%, not

@@ -452,9 +452,6 @@
       loaded rig, dwell 6 s): breakaway CW **12.5–13.0%** (both CW legs), CCW
       **10.5–11.0%**; dropout CW **9.0–9.5% / 8.5–9.0%** (leg 1 / leg 3), CCW
       **8.0–8.5%**; min sustained ~4.3–4.9 rpm. Full table in the LOG, Sep 27.
-      ⚠️ Disagrees with Sep 25 (valid, 12 V): with **30 s** dwell, 11% broke away
-      ascending; with **6 s** dwell, 11–12.5% stayed stalled. Breakaway may
-      depend on hold time. Not resolved.
       Original item, for the record:
       ✅ (done Sep 27, above) **Still owed on the rig:** a **1%-step stiction run** across 8–13%,
       ascending then reversed, to separate breakaway from dropout — ✅

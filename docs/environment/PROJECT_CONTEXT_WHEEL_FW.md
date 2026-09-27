@@ -1,6 +1,6 @@
 # RobertUN — Wheel Controller Firmware Context
 
-**Last updated:** 2026-09-27 — Task 17 tidied (pre-Sep-20 invalid, stale boxes closed); stiction A/B/A done; breakaway vs dwell open.
+**Last updated:** 2026-09-27 — Task 17 done on the rig (stiction A/B/A, pre-Sep-20 marked invalid); motor-terminal metering goes with the rover session.
 **Budget:** 20 KB. Check with `wc -c` before every commit; trim if over.
 
 > **How to use this file.** This is the hot file for the wheel-firmware track:
@@ -50,8 +50,7 @@ PID ✅ on the rig (rover items pending); W6 and W7 follow (roadmap in `PROJECT_
 - **Plant, 12 V, loaded rig (1047 g):** `rpm = 0.7993 × duty% − 2.420`
   (11–29%); two-pole step, τ_fast 0.219 s (84%) + τ_slow 2.75 s (belt);
   0.5%-step A/B/A (09-27, VM 12.02 V): breakaway CW 12.5–13.0%, CCW 10.5–11.0%;
-  dropout CW 8.5–9.5%, CCW 8.0–8.5%; min speed ~4.3 rpm (6 s dwell; Sep 25's
-  30 s dwell broke away at 11%). The
+  dropout CW 8.5–9.5%, CCW 8.0–8.5%; min speed ~4.3 rpm (6 s dwell). The
   closed-loop staircase matches the open-loop inverse to 0.39% in 10–20 rpm.
   The rig is 2.87× light on inertia, so τ on the rover will be longer.
   → `_REF_DRIVE`, `_REF_TASKS` task 17
@@ -117,13 +116,11 @@ rise ≤ 0.3 s (rig). **Met on the rig, 6–20 rpm.** → `_REF_TASKS` task 21
 1. Task 21 open items above, in the order listed.
 2. Independent ammeter on the low-duty end: reverse draws +8.1% current, and the
    low-end U-shape sits near the 145 o/oo sense floor.
-3. Task 17 breakaway vs hold time: Sep 25 (30 s dwell) broke away at 11%,
-   Sep 27 (6 s) stalled to 12.5%. Only other open item: meter motor terminals (rover session).
-4. Task 6: settle polled vs interrupt-driven CAN RX before W6; `cmd_errors`
+3. Task 6: settle polled vs interrupt-driven CAN RX before W6; `cmd_errors`
    reads CAN_ESR non-atomically.
-5. Task 18: exercise the corrupt-record fallback and the sector-full wrap at
+4. Task 18: exercise the corrupt-record fallback and the sector-full wrap at
    save 1025; `cfg rail_mv` once the motor terminals are metered.
-6. Task 20: one `drv iscan` with `from = 0` to exercise the tick-0 cosmetic fix.
+5. Task 20: one `drv iscan` with `from = 0` to exercise the tick-0 cosmetic fix.
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 

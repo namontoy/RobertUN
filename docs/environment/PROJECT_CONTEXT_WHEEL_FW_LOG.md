@@ -3334,3 +3334,10 @@ taken at 12 V. Consequences recorded:
   at 11% with a 30 s dwell; Sep 27 with a 6 s dwell stayed stalled through
   12.5%. Two valid runs disagree on breakaway; hold time is the obvious
   difference. Open: a long hold (≥30 s) at 11–12% from rest.
+
+## 2026-09-27 — Breakaway-vs-dwell item dropped
+
+The "open: long hold at 11–12%" item above is withdrawn. Sep 25 and Sep 27 are
+both validated measurements, each stands with its own conditions (30 s vs 6 s
+dwell); no reconciliation task. Task 17 is done on the rig; motor-terminal
+metering goes with the rover session.

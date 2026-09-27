@@ -3207,3 +3207,22 @@ mV, or a bench supply with a current readout), then decide on a turning factor.
 - Verified: board reset by hand, `cfg` read back — same four values, slot 2/1024.
   First exercise of save + boot restore on hardware. Corrupt-record fallback and
   the sector-full wrap (task 18) are still unexercised.
+
+## 2026-09-26 (late night, desk) — W5 acceptance tolerance stated
+
+Set from the 12 V rig data (forward/reverse staircases, A/B/A, true steps);
+full text in `_REF_TASKS` task 21. All four must hold:
+1. Tracking: 60 s hold mean − command ≤ ±0.05 rpm, both directions. Basis:
+   per-hold standard error ~0.020 rpm (×2.5), worst seen 0.016 (×3); tighter
+   would test the instrument, looser loses meaning against the 0.174 rpm
+   open-loop repeatability floor. Instantaneous error is excluded: the ±1 rpm
+   ripple is mechanical (12/rev).
+2. Headroom: 0% saturated steps in a hold; peak output ≤ 95% of vel_max
+   (seen 284/300 at 20 rpm).
+3. No sustained oscillation: ripple 12.0 ± 0.5 per output rev, peak ≤ ±1.5 rpm
+   (seen 11.91 ± 0.19, 1.42 rpm).
+4. Bounded overshoot: `--slew 0` ±5 rpm step, overshoot_above_ripple False,
+   rise ≤ 0.3 s (seen 0.08–0.26). Rise limit is a rig figure; re-set on the
+   rover (2.87× inertia). 1–3 carry over.
+Usable range on the 12 V rig: ~6–20 rpm each way. 10–20 rpm passes all four;
+the 6–10 rpm staircase (both directions, A/B/A) is the remaining rig item.

@@ -559,6 +559,24 @@
     step.** The tolerance is deliberately left to be set from the 12 V plant
     re-measurement rather than picked now from 9.35 V figures.
 
+    ✅ **TOLERANCE STATED Sep 26, 2026** (from the 12 V rig data; all four must hold):
+    1. **Tracking:** mean speed over a 60 s hold minus command, both directions,
+       **≤ ±0.05 rpm** (2.5 × the ~0.020 rpm per-hold standard error; 3 × the
+       worst seen, 0.016). Measured by encoder over the hold, not instantaneous.
+    2. **Headroom:** **0%** of control steps saturated during a hold, and peak
+       output **≤ 95% of `vel_max`** (seen: 0%, 284/300 at 20 rpm).
+    3. **No sustained oscillation:** within-hold ripple locked to rotation,
+       **12.0 ± 0.5 events per output rev**, peak **≤ ±1.5 rpm** (seen 11.91 ±
+       0.19, 1.42 rpm). A limit cycle holds a period; only a rotating feature
+       holds a count per rev.
+    4. **Bounded overshoot:** true step (`--slew 0`), ±5 rpm:
+       `overshoot_above_ripple` False, **rise ≤ 0.3 s** (seen 0.08–0.26 s).
+       The rise limit is a rig figure — re-set it in the rover τ session; 1–3
+       carry over unchanged.
+    **Usable range, 12 V rig:** ~6–20 rpm each direction (bottom from breakaway
+    at 9–11% duty; top where `vel_max` 300 leaves ~5% headroom). 10–20 rpm
+    passes all four; **owed: the 6–10 rpm staircase, both directions.**
+
     **What carries over from W4, already established:**
     - The plant is **linear to ±1.5%** across the duty range, so **no gain
       scheduling** — the single most useful thing the Aug 26 sweep established.

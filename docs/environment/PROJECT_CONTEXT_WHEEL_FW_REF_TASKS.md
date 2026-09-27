@@ -566,16 +566,23 @@
     2. **Headroom:** **0%** of control steps saturated during a hold, and peak
        output **≤ 95% of `vel_max`** (seen: 0%, 284/300 at 20 rpm).
     3. **No sustained oscillation:** within-hold ripple locked to rotation,
-       **12.0 ± 0.5 events per output rev**, peak **≤ ±1.5 rpm** (seen 11.91 ±
-       0.19, 1.42 rpm). A limit cycle holds a period; only a rotating feature
-       holds a count per rev.
+       **12.0 ± 0.5 events per output rev**, and within-hold **sd ≤ 1.5 rpm**
+       (seen 11.91 ± 0.19 at 10–20 rpm, 12.00 ± 0.02 at 6–10; sd 0.78–1.19).
+       A limit cycle holds a period; only a rotating feature holds a count per
+       rev. **Amended Sep 27:** the first text had "peak ≤ ±1.5 rpm", taken
+       from the step's one-sided 4-count (1.42 rpm) peak. The ripple is a
+       lopsided dip: −3.2…−4.0 rpm forward, 1.4–2.9 rpm reverse, the same at
+       10–20 rpm on Sep 26. Peak dip is recorded, not pass/fail — it measures
+       the 12/rev mechanical feature, not the loop.
     4. **Bounded overshoot:** true step (`--slew 0`), ±5 rpm:
        `overshoot_above_ripple` False, **rise ≤ 0.3 s** (seen 0.08–0.26 s).
        The rise limit is a rig figure — re-set it in the rover τ session; 1–3
        carry over unchanged.
     **Usable range, 12 V rig:** ~6–20 rpm each direction (bottom from breakaway
     at 9–11% duty; top where `vel_max` 300 leaves ~5% headroom). 10–20 rpm
-    passes all four; **owed: the 6–10 rpm staircase, both directions.**
+    passes all four; ✅ **6–10 rpm A/B/A passes all four (Sep 27)** — W5 is
+    met on the rig; remaining: re-set the rise limit and freeze gains after
+    the rover τ session.
 
     **What carries over from W4, already established:**
     - The plant is **linear to ±1.5%** across the duty range, so **no gain

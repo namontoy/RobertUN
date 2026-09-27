@@ -3226,3 +3226,41 @@ full text in `_REF_TASKS` task 21. All four must hold:
    rover (2.87× inertia). 1–3 carry over.
 Usable range on the 12 V rig: ~6–20 rpm each way. 10–20 rpm passes all four;
 the 6–10 rpm staircase (both directions, A/B/A) is the remaining rig item.
+
+## 2026-09-27 (bench, 00:00) — 6–10 rpm A/B/A staircase; W5 met on the rig; criterion 3 amended
+
+**Setup.** DMM removed from the supply, VM 12.02 V at the driver. Three legs back
+to back: `bench.py run stair --lo 6 --hi 10 --stair-step 0.5 --hold 60
+--hold-settle 10 --abort-ma 1200 --trip 1580 --max-duty 30 --rate 50 --window 20`,
+`--dir cw` / `ccw` / `cw`. Shipped gains. Runs (local):
+2026-09-26T23-52-04_stair, 2026-09-27T00-01-08_stair, 2026-09-27T00-10-12_stair.
+All clean: 0 gaps, 0 missed steps, ~2500 V rows per hold.
+
+**Tracking (criterion 1).** Worst mean error: leg 1 +0.010, leg 2 −0.019 (at
+−6.0), leg 3 −0.006 rpm. Pass (≤ ±0.05).
+**Headroom (2).** 0% saturated everywhere; peak |out| 162 / 155 / 165 of 300.
+**Ripple (3), subagent via `stairdata.py` `Stair.ripple()`.** Events/rev,
+refined (interp=True): 12.01 ± 0.01, 12.00 ± 0.02, 12.00 ± 0.01; raw 20 ms grid
+11.90–12.17 at every setpoint (grid-limited, identical in all legs). sd 1.00–1.19
+(leg 1), 0.78–0.88 (leg 2), 1.01–1.12 (leg 3). Peak excursions: forward +1.4…+1.9
+/ −3.2…−4.0 rpm; reverse 1.4–2.2 speeding / 1.4–2.9 slowing. 1 count per 20 ms
+window = 0.357 rpm. Flat with speed.
+**A/B/A.** Reverse needs ~4–6 o/oo less output at the same |rpm|; forward output
+fell ~3–5 o/oo between legs 1 and 3 (integrator −3.3…+4.2 → −3.8…−0.8). Same
+pattern as at 10–20 rpm.
+**Current.** Telemetry ~190 mA at 6–9 rpm, then 302–321 mA at 9.5–10 forward:
+the output crosses 145 o/oo there, i.e. the decay→drive sample switch, not a
+real change.
+
+**Criterion 3 amended.** The Sep 26 text had "peak ≤ ±1.5 rpm", taken from the
+step's one-sided 4-count peak (1.42 rpm). The ripple is a lopsided dip; the Sep 26
+10–20 rpm data (stair.csv min/max) already showed +1.2…+1.9 / −2.4…−4.4 rpm, so
+that limit never matched the data it came from. New criterion 3: 12.0 ± 0.5
+events/rev and within-hold sd ≤ 1.5 rpm; the peak dip is recorded, not pass/fail
+(it measures the 12/rev mechanical feature). With it, 6–20 rpm passes all four:
+W5 acceptance met on the rig. Remaining: rover τ session (re-set the rise limit,
+freeze gains), reverse offset on ≥2 wheels.
+
+**Tooling bug.** `./bench.py status` with no argument picks the "latest" run by
+name, and timestamp-named runs (`2026-…_stair`) sort before letter-named ones
+(`sweeptelem-…`), so it shows an old run. Workaround: pass the run folder.

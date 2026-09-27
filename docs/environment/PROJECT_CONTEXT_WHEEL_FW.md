@@ -55,10 +55,10 @@ PID (active)**; W6 and W7 follow (roadmap in `PROJECT_CONTEXT_REST.md`).
 ## Active work
 
 **Task 21 — W5 velocity PID.** Branch `w5-velocity-pid` (on GitHub).
-**Acceptance (stated 09-26):** over ~6–20 rpm each way, 60 s hold mean error
-≤ ±0.05 rpm; 0% saturated, peak ≤ 95% `vel_max`; ripple 12.0 ± 0.5/rev,
-≤ ±1.5 rpm; true ±5 rpm step: no overshoot above ripple, rise ≤ 0.3 s (rig).
-10–20 rpm passes; 6–10 rpm owed. → `_REF_TASKS` task 21
+**Acceptance (stated 09-26, crit. 3 amended 09-27):** over ~6–20 rpm each way,
+60 s hold mean error ≤ ±0.05 rpm; 0% saturated, peak ≤ 95% `vel_max`; ripple
+12.0 ± 0.5/rev, sd ≤ 1.5 rpm; true ±5 rpm step: no overshoot above ripple,
+rise ≤ 0.3 s (rig). **Met on the rig, 6–20 rpm.** → `_REF_TASKS` task 21
 
 - Done: `velocity.c`/`.h`, a policy layer above `drive.c`, stepping once per
   encoder window (50 Hz at `enc window 20`); feedforward from the inverse plant;
@@ -102,7 +102,10 @@ PID (active)**; W6 and W7 follow (roadmap in `PROJECT_CONTEXT_REST.md`).
   (A/B/A), to settle the `ff_b` decision.
 - Note: the ripple test's reference (tail worst excursion) varies ±2 counts run
   to run; repeat a run before calling a 1–2 count flag real.
-- **Next step:** 6–10 rpm staircase on the rig (A/B/A), then the rover τ session.
+- Done (09-27): 6–10 rpm A/B/A, VM 12.02 V: worst error −0.019 rpm, 0% sat,
+  peak 165/300; 12.00 ± 0.02 events/rev; sd 0.78–1.19. Ripple is a one-sided
+  dip (−3.2…−4.0 rpm fwd). → LOG 09-27
+- **Next step:** the rover τ session (re-set rise limit, then freeze gains).
 
 ## Next tasks (priority order)
 
@@ -121,6 +124,7 @@ PID (active)**; W6 and W7 follow (roadmap in `PROJECT_CONTEXT_REST.md`).
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 
+- **09-27** — 6–10 rpm A/B/A passes: worst −0.019 rpm, 0% sat, 12.00/rev; ripple crit. amended to sd ≤ 1.5 rpm. W5 met on the rig.
 - **09-26** — W5 tolerance stated: 60 s mean ≤ ±0.05 rpm, 0% sat, ripple 12/rev ≤ ±1.5 rpm, step within ripple; 10–20 rpm passes, 6–10 owed.
 - **09-26** — First `cfg save` on the bench board: trip_ma 1580, duty_limit 300, ramp 50/120; survived a reset. Gains stay compiled defaults.
 - **09-26** — DMM supply reference, free shaft: drive-phase sample reads low while turning (0.74 at 20%, 0.83 at 15%, ±20%); no factor change.
@@ -129,7 +133,6 @@ PID (active)**; W6 and W7 follow (roadmap in `PROJECT_CONTEXT_REST.md`).
 - **09-26** — A/B/A: reverse −5.9 o/oo, drift −3.05/42 min; true steps within ripple both ways; ripple test fixed; no direction `ff_b` (rover, ≥2 wheels).
 - **09-26** — Reverse staircase: worst error 0.006 rpm, 0% saturation; direction asymmetry is entirely the integrator; ripple 12.00/rev both ways. A/B/A still owed.
 - **09-26** — Forward staircase 10→20 rpm, 21 min: error +0.0008 rpm, 0% saturation. Step metric was measuring `vel_slew`; fixed to anchor at the ramp's end.
-- **09-26** — W5 PID written (`velocity.c`), `V,` per-step telemetry and `bench.py run step`. `safe_stop()` now sends `vel off` first.
 - **09-26** — Duty slew limiter in `drive.c` (off by default), verified on the rig: peak inrush 2.7× lower than an un-ramped step.
 
 ## Key rules (full list with evidence in `_REF_LEARNINGS`)

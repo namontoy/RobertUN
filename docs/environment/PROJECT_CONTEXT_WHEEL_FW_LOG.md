@@ -3319,3 +3319,18 @@ taken at 12 V. Consequences recorded:
   and the Sep 27 0.5%-step run puts 12 V breakaway at 12.5–13.0% CW anyway.
 - Task 17's last item changes from "restate figures with their rail" to "mark
   pre-Sep-20 figures invalid".
+
+## 2026-09-27 — Task 17 tidied; correction to the stiction entry
+
+- `_REF_TASKS` task 17: pre-Sep-20 content marked ❌ invalid in place (opening
+  block: 9.35 V history, "What changes" table, R_w/V_brush/L, stall currents,
+  deadbands, Sep 19 VM reading; the Aug 26 CCW comparison; the Sep 15
+  voltage-threshold and Stribeck comparisons). Text kept, flagged only.
+- Stale boxes closed: console duty resolution (fixed Sep 26 by `drv duty <n>p`),
+  supply-limit and peak-torque bullets turned into notes, original stiction box
+  ticked. Only open item: meter the motor terminals (rover session).
+- **Correction to today's stiction entry:** "the old 9–11% was really the
+  dropout end" is wrong. Sep 25 (valid, 12 V, loaded rig) broke away ascending
+  at 11% with a 30 s dwell; Sep 27 with a 6 s dwell stayed stalled through
+  12.5%. Two valid runs disagree on breakaway; hold time is the obvious
+  difference. Open: a long hold (≥30 s) at 11–12% from rest.

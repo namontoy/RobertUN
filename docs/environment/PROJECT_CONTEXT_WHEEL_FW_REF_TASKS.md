@@ -22,6 +22,14 @@
 ### Task 17 — Motor rail 9.5 V → 12 V and the 12 V plant
 
 17. **Motor rail 9.5 V → 12 V (decided Sep 12, 2026)**
+
+    ❌ **INVALID — measured before Sep 20, when PMODE was wrong (stated Sep 27).**
+    Everything from here to the Sep 25 re-measure bullet that rests on a
+    pre-Sep-20 measurement — the 9.35 V history, the "What changes" table,
+    R_w / V_brush / L, both stall currents, the deadbands and the Sep 19 DMM
+    VM reading — is history only. Valid 12 V figures start Sep 21. VM re-read
+    12.02 V on Sep 27.
+
     The motor is a **6 V / 12 V** unit run at **9.35 V at the terminals** since
     Aug 26. That figure exists only because the DRV8833 could not exceed 10.8 V.
     The architecture does not change: the **per-motor step-down on each node
@@ -53,7 +61,7 @@
 
     - ⚠️ **The trip cannot be set anywhere near stall — by a factor of four.**
       With `k = 3` and the measured constants the maximum is **~1580 mA**
-      against a cold stall of **~6.3 A**. The boot default is now **1000 mA**,
+      against a cold stall of **~6.3 A** (❌ pre-Sep-20 figure, invalid). The boot default is now **1000 mA**,
       written as the figure it always physically was. This fails safe
       (trip-limited, never over-current) but it means **every stall or high-duty
       figure is a property of the trip, not of the motor** — and there is no
@@ -65,9 +73,9 @@
       and more under current, so the terminal figure is still unmeasured and
       will read lower. The 9.45 V → 9.35 V measurement is the precedent, and the
       terminal number is the one the plant model needs.
-    - ⬜ The 5.5 A bench-supply limit **needs no change**: in slow decay the
+    - Note (closed Sep 27, not a task) — the 5.5 A bench-supply limit **needs no change**: in slow decay the
       supply sees `I_motor × D`, so even a regulated 5 A stall draws ~3.9 A.
-    - ⬜ **Peak torque will be trip-limited, not voltage-limited.** Torque ∝
+    - Note (closed Sep 27, not a task) — **Peak torque will be trip-limited, not voltage-limited.** Torque ∝
       current, so capping current at 5 A caps stall torque at roughly what
       9.5 V already gave. The real gain from 12 V is **speed, and torque at
       speed** — more voltage headroom to drive current against back-EMF, which
@@ -79,7 +87,7 @@
       time constant. The rail
       moved on Sep 19, so `rpm = 0.672 × duty% − 1.8`, the ~2.6% deadband,
       breakaway, dropout and the 4.9 rpm minimum sustainable speed are all
-      figures for a rail that no longer exists. R, L and Ke carry over; the
+      figures for a rail that no longer exists (❌ and pre-Sep-20, invalid). R, L and Ke carry over; the
       duty→speed and duty→current mappings do not. Gains tuned at one rail do
       not transfer.
 
@@ -218,7 +226,9 @@
       passes with room to spare.
 
       ✅ **CCW TAKEN — task 17's outstanding item is closed.** CCW is **+3.49%**
-      faster than CW at the same duty (slope 0.8618 vs 0.8327). **Aug 26
+      faster than CW at the same duty (slope 0.8618 vs 0.8327). (❌ The Aug 26
+      comparison that follows is pre-Sep-20 and invalid; the Sep 25 +3.49% stands
+      on its own.) **Aug 26
       measured +3.5%** on a 9.35 V rail, by hand, on a bare shaft. Same number
       from a different method, a different rail and a different mounting — the
       asymmetry is a property of the motor (brush timing), and it is now
@@ -245,7 +255,9 @@
       from rest. Do not read a deadband off the regression and expect the wheel
       to start there.
 
-      ⬜ **Console duty resolution is 10× coarser than the driver's.**
+      ✅ **FIXED Sep 26 — `drv duty <n>p` takes per-mille; `bench.py sweep` uses it
+      since Sep 27.** Original item:
+      **Console duty resolution is 10× coarser than the driver's.**
       `drive_set_duty()` takes per-mille (±1000, CCR steps of 4.5 ticks) but
       `drv duty` parses percent with `strtol` and multiplies by 10 — so
       `drv duty 0.5` silently becomes 0. Bracketing breakaway/dropout finer than
@@ -290,6 +302,9 @@
       current versus duty (Coulomb vs viscous), the asc/desc residual
       correlation, and local gain against its noise band.*
 
+      ❌ **WITHDRAWN Sep 27:** the Sep 15 side of this comparison is pre-Sep-20
+      and invalid, so the voltage-threshold conclusion has no evidence. The
+      Sep 25 12 V bracket (9% dead, 11% ran, 30 s dwell) stands as a measurement.
       ⚠️ **BREAKAWAY IS A VOLTAGE THRESHOLD, NOT A DUTY THRESHOLD.** Breakaway
       and dropout both land in **9–11% duty** here (9% held `count` dead on both
       passes; 11% ran at 6.27 / 6.00 rpm). Sep 15 measured **12–14%** on this
@@ -307,6 +322,7 @@
       **`drv duty <n>p` now takes per-mille**, so the run is possible; until it
       is taken, minimum sustainable speed remains bounded only at **≤6.0 rpm**.
 
+      (❌ The Sep 15 comparison in this paragraph is pre-Sep-20 and invalid.)
       **No Stribeck cliff at 11% any more.** Sep 15 saw the speeds bend hard
       below 12% and cliff at 11% → 4.86 rpm. Today 11% sits **on** the straight
       line (residuals −0.10 / −0.37 rpm). The cliff moved below 11% with the
@@ -436,18 +452,21 @@
       loaded rig, dwell 6 s): breakaway CW **12.5–13.0%** (both CW legs), CCW
       **10.5–11.0%**; dropout CW **9.0–9.5% / 8.5–9.0%** (leg 1 / leg 3), CCW
       **8.0–8.5%**; min sustained ~4.3–4.9 rpm. Full table in the LOG, Sep 27.
+      ⚠️ Disagrees with Sep 25 (valid, 12 V): with **30 s** dwell, 11% broke away
+      ascending; with **6 s** dwell, 11–12.5% stayed stalled. Breakaway may
+      depend on hold time. Not resolved.
       Original item, for the record:
-      ⬜ **Still owed on the rig:** a **1%-step stiction run** across 8–13%,
+      ✅ (done Sep 27, above) **Still owed on the rig:** a **1%-step stiction run** across 8–13%,
       ascending then reversed, to separate breakaway from dropout — ✅
       **unblocked Sep 26** by `drv duty <n>p`, which commands per-mille directly
       (so the bracket can be walked in 0.5% steps, not 1%). And **τ re-measured
       on the vehicle**, where the inertia is real.
-    - ⬜ **Mark pre-Sep-20 figures invalid** (replaces "restate with their rail",
+    - ✅ (done Sep 27) **Mark pre-Sep-20 figures invalid** (replaces "restate with their rail",
       Sep 27): PMODE was wrong until Sep 20, so every figure before it is
       invalid; every figure from Sep 21 on is at 12 V. The "breakaway is a
       voltage threshold" argument above rests on the Sep 15 figure and is
       withdrawn. Original item:
-    - ⬜ Restate the recorded plant figures with their rail attached, so a
+    - (superseded) Restate the recorded plant figures with their rail attached, so a
       future reader cannot mistake a 9.35 V number for a 12 V one.
 
 ### Task 18 — config module (open: untested paths)

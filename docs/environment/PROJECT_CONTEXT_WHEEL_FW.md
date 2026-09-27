@@ -1,6 +1,6 @@
 # RobertUN — Wheel Controller Firmware Context
 
-**Last updated:** 2026-09-26 — True steps: no overshoot above ripple either way; the reverse down-step flag did not recur in 3 repeats.
+**Last updated:** 2026-09-26 — Decided: no direction-dependent `ff_b` for now; re-check on the rover on ≥2 wheels.
 **Budget:** 20 KB. Check with `wc -c` before every commit; trim if over.
 
 > **How to use this file.** This is the hot file for the wheel-firmware track:
@@ -75,8 +75,10 @@ from a step.
 - Done: A/B/A staircase (fwd/rev/fwd, back to back, VM 12.02 V): both effects
   real. Direction: reverse needs ~5.9 o/oo less output; drift: forward moved
   −3.05 o/oo in 42 min. Max error ≤0.016 rpm, 0% saturation. → LOG 09-26 evening
-- Open: decide whether a direction-dependent `ff_b` is worth adding; the
-  integrator already absorbs the 5.9 o/oo with no tracking penalty.
+- Decided (09-26): no direction-dependent `ff_b` for now; the integrator absorbs
+  the 5.9 o/oo reverse offset with no measurable tracking cost. Must be
+  re-checked on the rover, on at least two wheels. Adding it means a new `cfg`
+  key (`vel_ff_b_rev` or similar), and a new key discards the stored record.
 - Done: true steps (`--slew 0`) 0→10, ±10→±15→±10 rpm: rise 0.08–0.26 s, peak ≤984 mA.
   No overshoot above ripple either way: the one reverse down-step flag did not
   recur in 3 repeats (it was a shallow tail). → LOG 09-26 evening
@@ -87,11 +89,11 @@ from a step.
   several duties), free-running `Isup`, or a slower carrier. Decide before
   tuning any current loop.
 - Open: re-measure τ on the rover before freezing gains; meter the motor
-  terminals, not just VM.
+  terminals, not just VM. Same session: reverse-vs-forward offset on ≥2 wheels
+  (A/B/A), to settle the `ff_b` decision.
 - Note: the ripple test's reference (tail worst excursion) varies ±2 counts run
   to run; repeat a run before calling a 1–2 count flag real.
-- **Next step:** decide on the direction-dependent `ff_b`, then current sensing
-  below 14.5% duty.
+- **Next step:** current sensing below 14.5% duty (choose among the options above).
 
 ## Next tasks (priority order)
 

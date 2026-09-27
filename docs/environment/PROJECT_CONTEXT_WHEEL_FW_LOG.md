@@ -2991,3 +2991,29 @@ All `ok`, 0 gaps, 0 missed steps, 0% saturation, peak 706–968 mA.
 - **Revised verdict:** no overshoot resolvable above the mechanical ripple in
   either direction, from rest or from a turning wheel. The correction entry
   above is itself superseded on this point.
+
+## 2026-09-26 (evening) — decision: no direction-dependent `ff_b` for now (task 21)
+
+The feedforward is `ff = ff_a × rpm + sign(rpm) × ff_b` (`ff_a` 12.51 o/oo/rpm,
+`ff_b` 30 o/oo), symmetric by construction. The A/B/A run showed reverse needs
+~5.9 o/oo (0.59% duty) less output than forward at the same speed; a
+direction-dependent offset would be ~24 o/oo in reverse against 30 forward.
+
+**Decision (agreed with the user): do not add it now.** The integrator carries
+the offset (+5 to +7 o/oo in reverse) with tracking inside ±0.016 rpm and no
+step transient above the ripple. Consistent with task 21's earlier note that
+the brush-timing asymmetry is "absorbed by integral action".
+
+Why not now:
+- The estimate is soft: drift (−3.05 o/oo in 42 min) is half the size of the
+  effect, from a single A/B/A on one motor, on the rig.
+- The rover differs: ~2.87× the inertia, real load, five other motors with
+  their own brush timing — a rig value may not carry over.
+- **It implies another variable in the `cfg` menu** (e.g. `vel_ff_b_rev`), and
+  adding a `cfg` key discards the stored flash record (read `cfg` before
+  flashing such a build). It is also one more number to calibrate per wheel.
+
+**Must be re-checked on the rover, on at least two wheels:** an A/B/A
+forward/reverse comparison per wheel. Add the reverse offset only if the
+asymmetry is consistent across wheels and large, or if direction reversals show
+visible transients.

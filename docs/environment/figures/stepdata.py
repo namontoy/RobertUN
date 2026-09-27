@@ -159,6 +159,7 @@ def report(steps):
           f"\n  floor/lim      0.8 x ramp_s — the rise {SHIPPED_SLEW_RPM_S:.0f} rpm/s costs before"
           "\n                 the loop does anything. 'lim yes' = rise is that floor, not Kp."
           "\n  over/sd/>rip   peak above target, settled ripple sd, and whether the"
-          "\n                 peak clears 2 sd. 'NO' means it is ripple, not overshoot."
+          "\n                 peak clears the settled tail's own worst excursion plus"
+          "\n                 one count. 'NO' means it is ripple, not overshoot."
           "\n  settle/cmd     from the ramp's end (the loop) and from the command"
           "\n                 (the operator's wait). Their difference is vel_slew.")

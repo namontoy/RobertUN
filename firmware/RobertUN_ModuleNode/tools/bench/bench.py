@@ -627,12 +627,21 @@ def step_metrics(rows: list[Veloc], from_rpm: float, to_rpm: float) -> dict:
     out["overshoot_window_truncated"] = bool(
         ta[-1] < OVERSHOOT_WINDOW_S - 2.0 * period)
     # A single maximum drawn from a rippling signal overshoots by construction.
-    # Below ~2 sd of the settled ripple there is nothing to attribute to the
-    # controller, and saying so is the difference between "14% overshoot, lower
-    # Kp" and "no overshoot resolvable on this rig".
-    sd = out.get("tail_sd_rpm")
+    # The peak has to beat the settled tail's OWN worst excursion in the same
+    # direction, plus one encoder count, before it is the controller's. The
+    # first version compared it with 2 sd of the tail, which assumes the ripple
+    # is roughly Gaussian — it is not: the 12-per-rev feature is a train of
+    # sharp dips whose extremes sit well past 2 sd, so every down-step was
+    # flagged for a dip the settled hold also shows (Sep 26, runs 19-31-06 and
+    # 19-32-19: flagged minima one count from the tail's own). Comparing like
+    # with like — an extreme against an extreme — is what separates "14%
+    # overshoot, lower Kp" from "no overshoot resolvable on this rig".
+    tail_exc = max(sign * (r.meas_rpm - to_rpm) for r in tail)
+    out["tail_excursion_rpm"] = round(max(0.0, tail_exc), 3)
+    quantum = 60000.0 / (COUNTS_PER_REV * 20.0)
     out["overshoot_above_ripple"] = (
-        None if sd is None else bool(out["overshoot_rpm"] > 2.0 * sd))
+        None if len(tail) < 2
+        else bool(out["overshoot_rpm"] > out["tail_excursion_rpm"] + quantum))
 
     # Settling: the last moment it was outside the band, not the first moment
     # it was inside one. A response that dips back out is not settled, and the
@@ -785,7 +794,7 @@ def profile_step(node: Node, run: Run, a: argparse.Namespace) -> dict:
              # regulation, anchored at ramp end
              "overshoot_pct", "overshoot_rpm", "overshoot_above_ripple",
              "overshoot_window_s", "overshoot_window_truncated",
-             "tail_sd_rpm", "peak_rpm", "settle_s",
+             "tail_sd_rpm", "tail_excursion_rpm", "peak_rpm", "settle_s",
              "settle_from_command_s", "settle_band_rpm", "settle_band_below_quantum",
              "final_rpm", "ss_error_rpm", "i_at_rest_permille",
              "ff_at_rest_permille", "out_at_rest_permille", "sat_fraction",
@@ -825,9 +834,10 @@ def profile_step(node: Node, run: Run, a: argparse.Namespace) -> dict:
                   f"reads low. Give --dwell at least "
                   f"{seg['ramp_s'] + OVERSHOOT_WINDOW_S:.1f} s.", file=sys.stderr)
         if seg.get("overshoot_above_ripple") is False and seg.get("overshoot_rpm"):
-            print(f"  note: the {seg['overshoot_rpm']:.2f} rpm peak (marked *) is under "
-                  f"2x the {seg['tail_sd_rpm']:.2f} rpm settled ripple — it is a ripple "
-                  f"peak, not resolvable controller overshoot.", file=sys.stderr)
+            print(f"  note: the {seg['overshoot_rpm']:.2f} rpm peak (marked *) is within "
+                  f"one count of the settled hold's own {seg['tail_excursion_rpm']:.2f} rpm "
+                  f"excursion — it is a ripple peak, not resolvable controller "
+                  f"overshoot.", file=sys.stderr)
         if seg.get("settle_band_below_quantum"):
             print(f"  warning: the +/-{seg['settle_band_rpm']:.2f} rpm settle band is "
                   f"narrower than one encoder count at this window — settle_s "

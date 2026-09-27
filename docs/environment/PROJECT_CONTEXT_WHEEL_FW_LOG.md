@@ -3272,3 +3272,11 @@ Nothing else in W5 can be done without the rover. Status: complete on the rig
 τ at real weight with the motor terminals metered, re-set the step rise limit,
 freeze the gains (compiled defaults or `cfg save`), reverse-vs-forward offset
 A/B/A on ≥2 wheels to settle `vel_ff_b_rev`. Task 21 stays open (🟡) for those.
+
+## 2026-09-27 — 12-per-revolution ripple source identified
+
+The ±1 rpm velocity ripple, pinned at exactly 12.00 events per output revolution
+in both directions (0.02%), is the tyre: the wheel's rubber has 12 tread grooves
+for grip on rough ground. Identified by the user on inspection. Resolved; no
+firmware or cfg change. The W5 ripple criterion (12.0 ± 0.5/rev, sd ≤ 1.5 rpm)
+therefore measures the tyre on this rig, not the loop.

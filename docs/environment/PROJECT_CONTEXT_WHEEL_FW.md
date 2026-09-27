@@ -1,6 +1,6 @@
 # RobertUN — Wheel Controller Firmware Context
 
-**Last updated:** 2026-09-27 — W5 complete on the rig (6–20 rpm passes all four criteria); rover τ, gain freeze and ≥2-wheel offset wait for the rover.
+**Last updated:** 2026-09-27 — 12/rev ripple identified as the tyre's 12 tread grooves (resolved); W5 complete on the rig, rover items pending.
 **Budget:** 20 KB. Check with `wc -c` before every commit; trim if over.
 
 > **How to use this file.** This is the hot file for the wheel-firmware track:
@@ -71,7 +71,8 @@ rise ≤ 0.3 s (rig). **Met on the rig, 6–20 rpm.** → `_REF_TASKS` task 21
 - Done: reverse staircase −10→−20 rpm: worst error 0.006 rpm, 0% saturation.
   Asymmetry is all in the integrator (corr 0.9986); reverse inverse
   `out = 11.503|rpm| + 43.65` vs forward `12.559 rpm + 30.54`.
-- Done: the ±1 rpm ripple is mechanical — exactly 12.00 events per output rev.
+- Done: the ±1 rpm ripple is mechanical — exactly 12.00 events per output rev:
+  the tyre's 12 tread grooves (identified 09-27).
 - Done: step metric fixed — anchors at the end of the ramp, compares overshoot
   with ripple. Verdict so far: no overshoot resolvable.
 - Done: A/B/A staircase (fwd/rev/fwd, back to back, VM 12.02 V): both effects
@@ -110,20 +111,19 @@ rise ≤ 0.3 s (rig). **Met on the rig, 6–20 rpm.** → `_REF_TASKS` task 21
 ## Next tasks (priority order)
 
 1. Task 21 open items above, in the order listed.
-2. Identify the 12-per-revolution mechanical feature (gear teeth, coupling or
-   belt contact) — mechanical inspection, not telemetry.
-3. Independent ammeter on the low-duty end: reverse draws +8.1% current, and the
+2. Independent ammeter on the low-duty end: reverse draws +8.1% current, and the
    low-end U-shape sits near the 145 o/oo sense floor.
-4. Task 17: 1%-step stiction run across 8–13% (ascending, then reversed) with
+3. Task 17: 1%-step stiction run across 8–13% (ascending, then reversed) with
    `drv duty <n>p`; restate recorded plant figures with their rail attached.
-5. Task 6: settle polled vs interrupt-driven CAN RX before W6; `cmd_errors`
+4. Task 6: settle polled vs interrupt-driven CAN RX before W6; `cmd_errors`
    reads CAN_ESR non-atomically.
-6. Task 18: exercise the corrupt-record fallback and the sector-full wrap at
+5. Task 18: exercise the corrupt-record fallback and the sector-full wrap at
    save 1025; `cfg rail_mv` once the motor terminals are metered.
-7. Task 20: one `drv iscan` with `from = 0` to exercise the tick-0 cosmetic fix.
+6. Task 20: one `drv iscan` with `from = 0` to exercise the tick-0 cosmetic fix.
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 
+- **09-27** — 12/rev ripple source identified: the tyre's 12 tread grooves. Resolved, no firmware change.
 - **09-27** — 6–10 rpm A/B/A passes: worst −0.019 rpm, 0% sat, 12.00/rev; ripple crit. amended to sd ≤ 1.5 rpm. W5 met on the rig.
 - **09-26** — W5 tolerance stated: 60 s mean ≤ ±0.05 rpm, 0% sat, ripple 12/rev ≤ ±1.5 rpm, step within ripple; 10–20 rpm passes, 6–10 owed.
 - **09-26** — First `cfg save` on the bench board: trip_ma 1580, duty_limit 300, ramp 50/120; survived a reset. Gains stay compiled defaults.
@@ -133,7 +133,6 @@ rise ≤ 0.3 s (rig). **Met on the rig, 6–20 rpm.** → `_REF_TASKS` task 21
 - **09-26** — A/B/A: reverse −5.9 o/oo, drift −3.05/42 min; true steps within ripple both ways; ripple test fixed; no direction `ff_b` (rover, ≥2 wheels).
 - **09-26** — Reverse staircase: worst error 0.006 rpm, 0% saturation; direction asymmetry is entirely the integrator; ripple 12.00/rev both ways. A/B/A still owed.
 - **09-26** — Forward staircase 10→20 rpm, 21 min: error +0.0008 rpm, 0% saturation. Step metric was measuring `vel_slew`; fixed to anchor at the ramp's end.
-- **09-26** — Duty slew limiter in `drive.c` (off by default), verified on the rig: peak inrush 2.7× lower than an un-ramped step.
 
 ## Key rules (full list with evidence in `_REF_LEARNINGS`)
 

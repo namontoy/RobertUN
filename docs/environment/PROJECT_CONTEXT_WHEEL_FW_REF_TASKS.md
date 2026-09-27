@@ -995,7 +995,8 @@
       if it lands between them, drift is. ~63 min, no rewiring, and it settles
       the one caveat on every number in the comparison figure. Run this before
       anyone acts on the reverse `ff_b` the integrator is pointing at.
-    - ⬜ **Identify the ~12-per-revolution mechanical feature.** Now pinned at
+    - ✅ **Identify the ~12-per-revolution mechanical feature.** Resolved 09-27:
+      the tyre's 12 tread grooves (for grip on rough ground). Now pinned at
       **exactly 12.00 per output revolution** in both directions, to 0.02%. That
       is a count, not a frequency, so it is a mechanical inspection — gear teeth,
       a coupling, or the wheel-to-belt contact — and not a telemetry question.

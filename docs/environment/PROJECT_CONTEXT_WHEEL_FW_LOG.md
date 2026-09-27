@@ -3308,3 +3308,14 @@ percent. Runs (local only): `2026-09-27T08-49-10_sweep` (CW),
   never walked the ascending edge finely enough.
 - Stalled current (decay-phase sample): leg 1 rose 397 → 742 mA with duty;
   leg 3 stayed flat 492–553 mA over the same duties. Not explained; noted only.
+
+## 2026-09-27 — Measurement validity stated: nothing before Sep 20 counts
+
+Stated by the user: every measurement before Sep 20 is invalid, because the
+DRV8874 PMODE was wrong until then; every measurement from Sep 21 to now was
+taken at 12 V. Consequences recorded:
+- The lesson "a threshold that moves with the rail is a voltage threshold" is
+  withdrawn. Its only evidence was Sep 15 (9.35 V, invalid) vs Sep 23 (12 V),
+  and the Sep 27 0.5%-step run puts 12 V breakaway at 12.5–13.0% CW anyway.
+- Task 17's last item changes from "restate figures with their rail" to "mark
+  pre-Sep-20 figures invalid".

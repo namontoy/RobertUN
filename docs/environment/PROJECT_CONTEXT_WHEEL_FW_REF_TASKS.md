@@ -442,6 +442,11 @@
       **unblocked Sep 26** by `drv duty <n>p`, which commands per-mille directly
       (so the bracket can be walked in 0.5% steps, not 1%). And **τ re-measured
       on the vehicle**, where the inertia is real.
+    - ⬜ **Mark pre-Sep-20 figures invalid** (replaces "restate with their rail",
+      Sep 27): PMODE was wrong until Sep 20, so every figure before it is
+      invalid; every figure from Sep 21 on is at 12 V. The "breakaway is a
+      voltage threshold" argument above rests on the Sep 15 figure and is
+      withdrawn. Original item:
     - ⬜ Restate the recorded plant figures with their rail attached, so a
       future reader cannot mistake a 9.35 V number for a 12 V one.
 

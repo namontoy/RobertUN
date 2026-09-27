@@ -2965,3 +2965,29 @@ Re-reduction segments on host time; overshoot figures reproduce exactly, one
 rise time differs (0.22 vs 0.26 s, reverse down) from the profile's own cut.
 `figures/plot_velocity_step_anchor.py` panel C still draws ±2 sd bands for the
 morning runs; not regenerated.
+
+## 2026-09-26 (evening) — reverse down-step repeated ×3: the undershoot does not recur
+
+Same conditions and command as `19-32-19_step` (−10 → −15 → −10 rpm,
+`--slew 0`, `--pre 10 --dwell 10`), run back to back with the fixed ripple test.
+All `ok`, 0 gaps, 0 missed steps, 0% saturation, peak 706–968 mA.
+
+| Run | down-step overshoot | tail excursion | above ripple |
+|---|---|---|---|
+| `20-32-46_step` | 2.146 | 2.146 | no |
+| `20-33-20_step` | 2.503 | 2.146 | no (1 count) |
+| `20-33-55_step` | 2.503 | 2.503 | no |
+
+- **0 of 3 repeats flagged.** The deepest down-step dip (2.503 rpm) is the same
+  value as the original run's, and in `20-33-55` the settled tail dips exactly
+  that deep. What made `19-32-19` pass the threshold was a shallow tail (1.789),
+  not a deep step.
+- The settled tail's worst excursion varies 1.79 → 2.50 rpm (2 counts) run to
+  run at the same setpoint, so a single-run verdict at a 1–2 count margin is
+  marginal. Repeat before calling a small flag real.
+- Rise on these 5 rpm steps spans 0.04–0.26 s across the four reverse runs:
+  with ±1 rpm ripple on a 5 rpm step, the 10/90% crossings depend on ripple
+  phase. Not a stable number at this step size.
+- **Revised verdict:** no overshoot resolvable above the mechanical ripple in
+  either direction, from rest or from a turning wheel. The correction entry
+  above is itself superseded on this point.

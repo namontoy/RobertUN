@@ -1,6 +1,6 @@
 # RobertUN — Wheel Controller Firmware Context
 
-**Last updated:** 2026-09-26 — True steps: within ripple except a ~0.7 rpm reverse down-step undershoot; ripple test fixed in `bench.py`.
+**Last updated:** 2026-09-26 — True steps: no overshoot above ripple either way; the reverse down-step flag did not recur in 3 repeats.
 **Budget:** 20 KB. Check with `wc -c` before every commit; trim if over.
 
 > **How to use this file.** This is the hot file for the wheel-firmware track:
@@ -78,8 +78,8 @@ from a step.
 - Open: decide whether a direction-dependent `ff_b` is worth adding; the
   integrator already absorbs the 5.9 o/oo with no tracking penalty.
 - Done: true steps (`--slew 0`) 0→10, ±10→±15→±10 rpm: rise 0.08–0.26 s, peak ≤984 mA.
-  All within ripple except the reverse down-step: ~0.7 rpm undershoot beyond
-  ripple, gone in ~0.35 s. Bounded. → LOG 09-26 evening
+  No overshoot above ripple either way: the one reverse down-step flag did not
+  recur in 3 repeats (it was a shallow tail). → LOG 09-26 evening
 - Done: `overshoot_above_ripple` now tests against the settled tail's own worst
   excursion + 1 count (was 2 × sd, fired on the 12/rev dips).
 - Open: current sensing below 14.5% duty, where the rover creeps. Options:
@@ -88,8 +88,10 @@ from a step.
   tuning any current loop.
 - Open: re-measure τ on the rover before freezing gains; meter the motor
   terminals, not just VM.
-- **Next step:** decide whether the reverse down-step undershoot and the
-  direction `ff_b` are one issue; repeat the reverse step to see if it recurs.
+- Note: the ripple test's reference (tail worst excursion) varies ±2 counts run
+  to run; repeat a run before calling a 1–2 count flag real.
+- **Next step:** decide on the direction-dependent `ff_b`, then current sensing
+  below 14.5% duty.
 
 ## Next tasks (priority order)
 
@@ -109,7 +111,7 @@ from a step.
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 
-- **09-26** — True steps `--slew 0`: rise 0.08–0.26 s, ≤984 mA; only the reverse down-step exceeds ripple (~0.7 rpm). Ripple test fixed.
+- **09-26** — True steps `--slew 0`: ≤984 mA, no overshoot above ripple (reverse flag not reproduced ×3). Ripple test fixed in `bench.py`.
 - **09-26** — A/B/A staircase at VM 12.02 V: direction ~5.9 o/oo and drift −3.05 o/oo/42 min, both real; error ≤0.016 rpm, 0% sat.
 - **09-26** — Reverse staircase: worst error 0.006 rpm, 0% saturation; direction asymmetry is entirely the integrator; ripple 12.00/rev both ways. A/B/A still owed.
 - **09-26** — Forward staircase 10→20 rpm, 21 min: error +0.0008 rpm, 0% saturation. Step metric was measuring `vel_slew`; fixed to anchor at the ramp's end.

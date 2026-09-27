@@ -3017,3 +3017,19 @@ Why not now:
 forward/reverse comparison per wheel. Add the reverse offset only if the
 asymmetry is consistent across wheels and large, or if direction reversals show
 visible transients.
+
+## 2026-09-26 — session summary (evening, task 21)
+
+- First A/B/A leg 1 aborted at +15.5 rpm when the battery died; stopped cleanly,
+  run deleted (user rule: runs on a failing supply are erased). Battery swapped
+  (16.32 V through the regulator, VM 12.02 V metered).
+- A/B/A staircase done: direction −5.9 o/oo and drift −3.05 o/oo in 42 min,
+  both real. Max error ≤0.016 rpm, 0% saturation.
+- True steps (`--slew 0`) 0→10 and ±10→±15→±10: peak ≤984 mA, no overshoot
+  above the 12/rev ripple in either direction (reverse flag not reproduced ×3).
+- `bench.py`: `overshoot_above_ripple` now tests against the tail's own worst
+  excursion + 1 count; new column `tail_excursion_rpm`.
+- Decision: no direction-dependent `ff_b` for now; re-check on the rover on ≥2
+  wheels; adding it costs a new `cfg` key.
+- Next: current sensing below 14.5% duty.
+Details: the dated entries above.

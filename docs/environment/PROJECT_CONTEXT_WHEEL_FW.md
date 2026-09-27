@@ -113,8 +113,7 @@ from a step.
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 
-- **09-26** — True steps `--slew 0`: ≤984 mA, no overshoot above ripple (reverse flag not reproduced ×3). Ripple test fixed in `bench.py`.
-- **09-26** — A/B/A staircase at VM 12.02 V: direction ~5.9 o/oo and drift −3.05 o/oo/42 min, both real; error ≤0.016 rpm, 0% sat.
+- **09-26** — A/B/A: reverse −5.9 o/oo, drift −3.05/42 min; true steps within ripple both ways; ripple test fixed; no direction `ff_b` (rover, ≥2 wheels).
 - **09-26** — Reverse staircase: worst error 0.006 rpm, 0% saturation; direction asymmetry is entirely the integrator; ripple 12.00/rev both ways. A/B/A still owed.
 - **09-26** — Forward staircase 10→20 rpm, 21 min: error +0.0008 rpm, 0% saturation. Step metric was measuring `vel_slew`; fixed to anchor at the ramp's end.
 - **09-26** — W5 PID written (`velocity.c`), `V,` per-step telemetry and `bench.py run step`. `safe_stop()` now sends `vel off` first.

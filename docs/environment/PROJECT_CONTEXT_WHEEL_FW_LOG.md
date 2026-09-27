@@ -2902,3 +2902,35 @@ Mean of (|out| − |ff|) across the 21 steps, o/oo:
   "+8.1%". The morning's battery state was not recorded.
 - Integrator carries the whole difference in every leg; tracking meets the
   staircase criterion in both directions without any ff change.
+
+## 2026-09-26 (evening) — true step response, `--slew 0` (task 21)
+
+Same battery and VM (12.02 V) as the A/B/A, shipped gains, `enc window 20`,
+`--dwell 10`. Three runs, all `outcome=ok`, 0 gaps, 0 missed steps, 0% saturation:
+
+| Run | Step | Rise 10→90% | Peak current | Verdict |
+|---|---|---|---|---|
+| `19-30-35_step` | 0 → +10 rpm from rest | 0.22 s | 904 mA | peak inside ripple |
+| `19-31-06_step` | +10 → +15 → +10 | 0.08 s up / 0.22 s down | 984 mA | up inside ripple; down flagged, is ripple |
+| `19-32-19_step` | −10 → −15 → −10 | 0.12 s up / 0.26 s down | 885 mA | up inside ripple; down flagged, is ripple |
+
+- Peak current ≤ 984 mA against the 1580 mA trip; no step needs the setpoint
+  ramp to stay off ITRIP at these sizes.
+- **Both down-steps were flagged `overshoot_above_ripple=True` (64% / 50% of the
+  5 rpm step), and both are the 12-per-rev mechanical dip, not the loop.** Fwd:
+  speed came 15.7 → 10 rpm in 0.23 s without crossing; the flagged minimum
+  (6.78 rpm at 2.51 s) sits in a dip train at exactly 0.50 s spacing
+  (= 12 events/rev at 10 rpm), and the settled 3–10 s hold dips to 7.14 rpm,
+  one encoder count (0.357 rpm) away. Rev: dip train at 0.27, 0.79, 1.33,
+  1.81, 2.31, 2.81 s; flagged minimum 7.50 vs settled 7.85 rpm, again one count.
+- **Metric flaw:** `overshoot_above_ripple` compares the peak with 2 × tail sd.
+  The ripple is impulsive (periodic dips), so its own extremes exceed 2 sd and
+  the test fires on ripple. It should compare against the settled tail's own
+  extreme excursion (plus one count). Not yet changed.
+- `settle_s` is n/a on most segments: the ±2% band (0.2 rpm at 10 rpm) is
+  narrower than the ±1 rpm mechanical ripple, so no settling instant exists.
+  Settling to ±2% is not a usable criterion on this rig until the ripple is gone.
+- Verdict against the acceptance criterion: no sustained oscillation, no
+  overshoot resolvable above the mechanical ripple, in either direction, from
+  rest or from a turning wheel. Steps run: up to 10 rpm in size, up to 15 rpm
+  setpoint; larger steps (e.g. 0 → 20) were not run.

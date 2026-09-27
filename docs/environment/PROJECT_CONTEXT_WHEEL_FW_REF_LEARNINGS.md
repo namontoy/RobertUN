@@ -227,6 +227,10 @@ section; this is for things that will bite again somewhere else.
   and a ramp fail differently, so agreement means something; two more step fits
   would only have confirmed the fitting code, and in fact the one-pole error
   reproduced perfectly across runs.
+- ❌ **WITHDRAWN Sep 27** — the 9.35 V figure below predates Sep 20, when PMODE
+  was wrong, so it is invalid; the 12 V 0.5%-step run (Sep 27) also puts
+  breakaway at 12.5–13.0% CW, not 9–11%. No evidence remains for this rule.
+  Original text, for the record:
 - **A threshold that moves when the rail moves is a voltage threshold —
   normalise before calling an old measurement stale.** Breakaway on the loaded
   rig read 12–14% duty at 9.35 V and 9–11% at 12.03 V. As duty those disagree by

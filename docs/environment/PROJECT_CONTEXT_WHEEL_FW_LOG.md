@@ -3280,3 +3280,64 @@ in both directions (0.02%), is the tyre: the wheel's rubber has 12 tread grooves
 for grip on rough ground. Identified by the user on inspection. Resolved; no
 firmware or cfg change. The W5 ripple criterion (12.0 ± 0.5/rev, sd ≤ 1.5 rpm)
 therefore measures the tyre on this rig, not the loop.
+
+## 2026-09-27 — Task 17: 0.5%-step stiction run, A/B/A (CW / CCW / CW)
+
+Loaded rig (1047 g), VM 12.02 V, `bench.py run sweep --dwell 6`, duty list
+8 → 13 → 8 % in 0.5% steps (ascending from rest, then descending without a
+stop). Saved cfg ramp 50 / floor 120 active; from rest the floor jump is capped
+at the command, so every point below 12% was applied as commanded.
+`bench.py` sweep changed to send `drv duty <n>p` (per-mille) instead of integer
+percent. Runs (local only): `2026-09-27T08-49-10_sweep` (CW),
+`2026-09-27T08-53-09_sweep` (CCW), `2026-09-27T09-14-08_sweep` (CW repeat;
+~21 min after the CCW leg).
+
+| | CW leg 1 | CCW | CW leg 3 |
+|---|---|---|---|
+| Breakaway (ascending) | 12.5–13.0% | 10.5–11.0% | 12.5–13.0% |
+| Dropout (descending) | 9.0–9.5% (9.0 stopped mid-dwell, 0.17 rpm) | 8.0–8.5% | 8.5–9.0% |
+| Last running point | 9.5% → 4.58 rpm | 8.5% → 4.30 rpm | 9.0% → 4.34 rpm |
+| Running current | 190–225 mA | 195–215 mA | 190–226 mA |
+
+- CW breakaway repeats exactly across the A/B/A, so the 2% CW/CCW breakaway
+  difference is direction, not drift or rest position (to the 0.5% step).
+- Dropout differs ~0.5–1% by direction; CW dropout moved one step between legs
+  (leg 1's 9.0% point was marginal).
+- Stiction band ≈ 3.5–4% CW, ≈ 2.5% CCW. Minimum sustained speed ≈ 4.3–4.9 rpm.
+- The old "breakaway 9–11%" (2% steps) was really the dropout end; 2% steps
+  never walked the ascending edge finely enough.
+- Stalled current (decay-phase sample): leg 1 rose 397 → 742 mA with duty;
+  leg 3 stayed flat 492–553 mA over the same duties. Not explained; noted only.
+
+## 2026-09-27 — Measurement validity stated: nothing before Sep 20 counts
+
+Stated by the user: every measurement before Sep 20 is invalid, because the
+DRV8874 PMODE was wrong until then; every measurement from Sep 21 to now was
+taken at 12 V. Consequences recorded:
+- The lesson "a threshold that moves with the rail is a voltage threshold" is
+  withdrawn. Its only evidence was Sep 15 (9.35 V, invalid) vs Sep 23 (12 V),
+  and the Sep 27 0.5%-step run puts 12 V breakaway at 12.5–13.0% CW anyway.
+- Task 17's last item changes from "restate figures with their rail" to "mark
+  pre-Sep-20 figures invalid".
+
+## 2026-09-27 — Task 17 tidied; correction to the stiction entry
+
+- `_REF_TASKS` task 17: pre-Sep-20 content marked ❌ invalid in place (opening
+  block: 9.35 V history, "What changes" table, R_w/V_brush/L, stall currents,
+  deadbands, Sep 19 VM reading; the Aug 26 CCW comparison; the Sep 15
+  voltage-threshold and Stribeck comparisons). Text kept, flagged only.
+- Stale boxes closed: console duty resolution (fixed Sep 26 by `drv duty <n>p`),
+  supply-limit and peak-torque bullets turned into notes, original stiction box
+  ticked. Only open item: meter the motor terminals (rover session).
+- **Correction to today's stiction entry:** "the old 9–11% was really the
+  dropout end" is wrong. Sep 25 (valid, 12 V, loaded rig) broke away ascending
+  at 11% with a 30 s dwell; Sep 27 with a 6 s dwell stayed stalled through
+  12.5%. Two valid runs disagree on breakaway; hold time is the obvious
+  difference. Open: a long hold (≥30 s) at 11–12% from rest.
+
+## 2026-09-27 — Breakaway-vs-dwell item dropped
+
+The "open: long hold at 11–12%" item above is withdrawn. Sep 25 and Sep 27 are
+both validated measurements, each stands with its own conditions (30 s vs 6 s
+dwell); no reconciliation task. Task 17 is done on the rig; motor-terminal
+metering goes with the rover session.

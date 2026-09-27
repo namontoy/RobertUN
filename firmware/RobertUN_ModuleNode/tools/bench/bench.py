@@ -398,15 +398,14 @@ def profile_sweep(node: Node, run: Run, a: argparse.Namespace) -> dict:
     results = []
     for duty in duties:
         commanded = sign * duty
-        run.state = f"duty {commanded:+.0f}%"
-        # `drv duty` takes integer PERCENT and multiplies by 10 internally, so
-        # the console's resolution is 1% even though drive_set_duty() is
-        # per-mille. Fractional duties are not commandable today.
-        node.command(f"drv duty {int(round(commanded))}")
-        run.event("duty", f"{commanded:+.0f}")
+        run.state = f"duty {commanded:+.1f}%"
+        # `drv duty <n>p` commands per-mille directly, so fractional percent
+        # duties (0.1% resolution) reach drive_set_duty() unrounded.
+        node.command(f"drv duty {int(round(commanded * 10))}p")
+        run.event("duty", f"{commanded:+.1f}")
 
         mark = len(run.samples)
-        dwell(node, run, a.dwell, point=f"{commanded:+.0f}%")
+        dwell(node, run, a.dwell, point=f"{commanded:+.1f}%")
 
         # Fit only the settled tail. The leading fraction is the transient,
         # and including it would bias the slope low on every ascending step.

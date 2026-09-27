@@ -987,7 +987,12 @@
       in exactly the region the rover creeps in. Options are the free-running
       `Isup` fallback, a slower PWM carrier in that band, or the **decay-phase
       lead below**. **Decide before tuning, not during.**
-    - ⬜ **One experiment worth running first: is the DECAY phase readable?**
+    - ✅ **DONE Sep 26 (night) — the decay phase IS readable.** Stalled A/B/A
+      scans 5–12% duty: raw = **0.690 × I** (±1.5%, 17 refs at 20%), within
+      **±4%** from 6% duty; 5% invalid. The 0.670 below was edge-contaminated
+      (t3550 is 50 ticks before the drive edge). Decision: decay-phase reading;
+      `Isup` and the slower carrier are not needed. → LOG 2026-09-26 (night)
+    - ~~⬜ **One experiment worth running first: is the DECAY phase readable?** (superseded above)~~
       In both Sep 21 traces the decay-phase tick 3550 read a fixed **0.670** of
       the drive-phase tail (642/958 and 709/1056 — the same ratio to three
       digits across runs that differed 9% from each other). Physics says a 40 µs

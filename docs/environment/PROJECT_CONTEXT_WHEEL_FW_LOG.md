@@ -3033,3 +3033,75 @@ visible transients.
   wheels; adding it costs a new `cfg` key.
 - Next: current sensing below 14.5% duty.
 Details: the dated entries above.
+
+## 2026-09-26 (night) — decay-phase current reading validated below the 14.5% floor (task 21)
+
+**Result: IPROPI is readable in the slow-decay (brake) phase. Reading =
+0.690 × motor current (±1.5%), valid from 6% duty upward to ±4%. The open
+item "current sensing below 14.5% duty" is decided: decay-phase reading.
+Free-running `Isup` and the slower carrier are not needed.**
+
+Setup: 12.0 V rail, shaft stalled (same hold as Sep 21), slow decay, trip
+1579 mA (VREF 3123 mV, DAC 3847), `drv iscan 64` full period, 125-tick step,
+from a scratch script over `node.py` (transcripts saved first, in
+`tools/bench/runs/iscan-20260926-*`, local-only). `nFAULT ASSERTED` in the
+pre-run status is the known nSLEEP-low behaviour; no fault during any scan.
+
+Correction on the way in: the `isense.h` note that IPROPI "reads exactly 0
+outside the drive phase" is from Sep 15, before the PMODE strap (Sep 19). With
+PMODE in PWM mode, decay is low-side and IPROPI (low-side mirror) sees it;
+already shown Sep 20 (13% scan 107–339 raw in decay, 0%-duty control flat 3–5).
+Comment in `isense.h` annotated.
+
+Step 1 — 20% full-period scan, shape of the decay phase:
+- Transient after the falling edge: 1774, 854, 665, 792 … settled by ~1000
+  ticks (11 µs) — twice the 500-tick settle after the rising edge.
+- Plateau ticks 1000→3500: 746 → 709, smooth, monotonic, −5.0% (L/R 0.9 ms
+  predicts −3.0%). Drive tail (4000–4375) mean 1016.
+- Ratio decay(t3500)/drive tail = 0.698 (0.689 with the 4125–4375 tail).
+
+Step 2 — 15%: decay 592→554 (1000→3500), ratio 0.669 against a single,
+possibly unsettled drive point (4375 = 828; last valid trigger at 15% is
+~4348). Nominal fail of ±3%, but the reference is too weak to mean anything.
+Change of method: calibrate the factor at 20% (solid tail), then test that the
+decay reading stays ∝ duty (at stall, I = D·Vm/R exactly), each low duty
+bracketed by 20% runs; triple void if the two 20% refs differ > 5%.
+
+Step 3 — 20/10/20: 752 / 376 / 743 at t3500 → 10% expected 374, +0.6%. Ratios
+0.697, 0.695.
+- Tick 4000 at 10% (50 ticks before the 4050 drive edge) dipped to 346 vs a 375
+  plateau: the 112-tick ADC aperture straddles the edge. Sep 21's 0.670 was
+  taken at t3550, 50 ticks before the 20% edge — the same contamination. The
+  correct factor is ~0.69, sampled ≥ ~150 ticks before the edge.
+
+Step 4 — 20/5/20: first triple void (20% ref plateau jumped 590→720 mid-scan,
+rotor shifted; refs 587/710). Repeat: 735 / 170 / 762 → 5% expected 187,
+−9.1%. The void triple's 5% read 147.
+
+Series — 20,5,20,6,20,7,20,8,20,9,20,10,20,11,20,12,20 (t3500, err vs
+proportional, ref agreement):
+  5% 120 −38.3% (1.8) · 6% 236 +2.3% (0.5) · 7% 255 −3.6% (2.9) ·
+  8% 263 −15.0% (7.4, VOID) · 9% 354 +0.2% (4.3) · 10% 393 +0.8% (3.1) ·
+  11% 424 +3.4% (12.5, VOID) · 12% 430 −4.3% (13.4, VOID)
+Repeat 20,8,20,11,20,12,20:
+  8% 315 +4.9% (6.0, VOID) · 11% 442 +3.6% (0.8) · 12% 461 −0.8% (1.2)
+
+Conclusions:
+- Valid points 6–12% (6, 7, 9, 10, 10, 11, 12): −3.6% … +3.6% → **±4%**.
+  8% has two void readings (−15.0, +4.9); accepted as covered by 7 and 9.
+- 5% is outside the valid range (−9, −17, −38%). Accepted: the rig breaks away
+  at 10–12%, so 5% is not an operating point.
+- Factor decay/drive at 20%: 17 reference runs, 0.678–0.699, mean **0.690**
+  (±1.5%), while the absolute level wandered 699–802 (±7%, rotor position in
+  the hold). The factor does not depend on where the rotor sits.
+- Void triples came from the hold (20% refs jumping ~13%), not the sensor.
+- Mechanism of the 0.69 not identified (physics predicts ~4% loss over the
+  window, not 31%); it is reproducible, so it is treated as a calibration.
+
+Design rule for a decay-phase sample: end-relative, trigger ≤ drive edge − ~150
+ticks (aperture 112 + guard 40, as for the drive phase) and ≥ falling edge +
+~1000 ticks; I_motor = raw / 0.690. Valid ≥ 6% duty. Not yet implemented in
+`isense.c`/`drive.c`.
+
+Next: re-measure τ on the rover (meter the motor terminals); same session A/B/A
+on ≥ 2 wheels for the `ff_b` decision.

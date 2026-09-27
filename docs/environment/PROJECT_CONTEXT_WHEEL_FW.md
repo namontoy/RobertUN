@@ -1,6 +1,6 @@
 # RobertUN — Wheel Controller Firmware Context
 
-**Last updated:** 2026-09-26 — Decided: no direction-dependent `ff_b` for now; re-check on the rover on ≥2 wheels.
+**Last updated:** 2026-09-26 — Decay-phase current reading validated below 14.5%: raw = 0.690 × I, ±4% from 6% duty.
 **Budget:** 20 KB. Check with `wc -c` before every commit; trim if over.
 
 > **How to use this file.** This is the hot file for the wheel-firmware track:
@@ -32,8 +32,9 @@ PID (active)**; W6 and W7 follow (roadmap in `PROJECT_CONTEXT_REST.md`).
 - **Drive (W4 closed Sep 20):** DRV8874 in PWM mode (PMODE strapped), 20 kHz
   slow decay, rail 12.0 V at VM. Encoder on TIM2, 8403.2 counts/rev. IPROPI
   calibrated: trip compares against VREF/3 (`vref_div 3`), range ~101–1580 mA,
-  VDDA 3325 mV, R_IPROPI 1465 Ω. No synchronised current reading below
-  **14.5% duty**. → `_REF_DRIVE`
+  VDDA 3325 mV, R_IPROPI 1465 Ω. No drive-phase reading below
+  **14.5% duty**; below it the decay phase reads 0.690 × I (±4%, ≥6% duty).
+  → `_REF_DRIVE`, LOG 09-26 night
 - **config:** append-only log in flash sector 7, `cfg` command, int32 keys in
   milli-units. `cfg save` has **never been run** on the bench board. Adding a
   key discards the stored record. → `_REF_TASKS` task 18, `_REF_LEARNINGS`
@@ -84,16 +85,17 @@ from a step.
   recur in 3 repeats (it was a shallow tail). → LOG 09-26 evening
 - Done: `overshoot_above_ripple` now tests against the settled tail's own worst
   excursion + 1 count (was 2 × sd, fired on the 12/rev dips).
-- Open: current sensing below 14.5% duty, where the rover creeps. Options:
-  decay-phase reading (lead: a reproducible 0.670 factor, needs a scan across
-  several duties), free-running `Isup`, or a slower carrier. Decide before
-  tuning any current loop.
+- Decided (09-26): current below 14.5% duty is read in the decay phase.
+  Stalled A/B/A scans 5–12%: raw = 0.690 × I (±1.5%, 17 refs), ±4% from 6%
+  duty; 5% invalid (−9…−38%). Sep 21's 0.670 was edge-contaminated. → LOG 09-26 night
+- Open: implement the decay-phase sample: end-relative, trigger ≤ drive edge
+  − 150 ticks and ≥ falling edge + 1000 ticks; I = raw / 0.690; refuse < 6%.
 - Open: re-measure τ on the rover before freezing gains; meter the motor
   terminals, not just VM. Same session: reverse-vs-forward offset on ≥2 wheels
   (A/B/A), to settle the `ff_b` decision.
 - Note: the ripple test's reference (tail worst excursion) varies ±2 counts run
   to run; repeat a run before calling a 1–2 count flag real.
-- **Next step:** current sensing below 14.5% duty (choose among the options above).
+- **Next step:** implement the decay-phase sample (desk work), then the rover τ session.
 
 ## Next tasks (priority order)
 
@@ -113,6 +115,7 @@ from a step.
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 
+- **09-26** — Decay-phase IPROPI validated: 0.690 × I (±1.5%), ±4% at 6–12% duty, 5% invalid; sample ≥150 ticks before the drive edge.
 - **09-26** — A/B/A: reverse −5.9 o/oo, drift −3.05/42 min; true steps within ripple both ways; ripple test fixed; no direction `ff_b` (rover, ≥2 wheels).
 - **09-26** — Reverse staircase: worst error 0.006 rpm, 0% saturation; direction asymmetry is entirely the integrator; ripple 12.00/rev both ways. A/B/A still owed.
 - **09-26** — Forward staircase 10→20 rpm, 21 min: error +0.0008 rpm, 0% saturation. Step metric was measuring `vel_slew`; fixed to anchor at the ramp's end.

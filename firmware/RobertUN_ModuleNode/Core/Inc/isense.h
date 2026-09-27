@@ -224,6 +224,10 @@
   * AND THE FREE-RUNNING AVERAGE TURNED OUT TO ALIAS - 2026-09-14
   *
   * >> PARTLY RETRACTED 2026-09-15. Read this whole section with that in mind.
+  * >> SUPERSEDED 2026-09-26: every scan below predates the PMODE strap (Sep 19);
+  * >> the driver was in independent half-bridge, so decay was high-side and the
+  * >> low-side mirror read 0. In PWM mode the decay phase reads 0.690 x I_motor
+  * >> (valid >= 6% duty, +/-4%); see the wheel-FW LOG, 2026-09-26 (night).
   * >> The aliasing story was built on three low-count readings and does not
   * >> survive the Sep 12 stall test, where this same free-running sampler
   * >> returned 189 and 190 mA on repeat - 0.5%, which a badly-aliasing sampler

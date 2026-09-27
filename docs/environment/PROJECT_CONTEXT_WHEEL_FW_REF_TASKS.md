@@ -550,9 +550,12 @@
     - ⬜ **Not exercised yet:** the tick-0 `--` cosmetic fix. Every bench `iscan`
       started at 3550; it needs one scan with `from = 0`.
 
-### Task 21 — W5 — velocity PID (ACTIVE)
+### Task 21 — W5 — velocity PID (COMPLETE ON THE RIG Sep 27; rover items pending)
 
-21. ⬜ **W5 — velocity PID on the drive motor (OPENED Sep 20, 2026).**
+21. 🟡 **W5 — velocity PID on the drive motor (OPENED Sep 20, 2026; COMPLETE ON
+    THE RIG Sep 27, 2026).** Deferred until the rover exists: re-measure τ at
+    real weight (meter the motor terminals), re-set the rise limit, freeze the
+    gains, and the reverse-vs-forward offset A/B/A on ≥2 wheels (`ff_b` decision).
     Acceptance criterion, to be met on the loaded wheel rig at real weight:
     **commanded output speed is held within a stated tolerance across the usable
     speed range, with no sustained oscillation and bounded overshoot from a

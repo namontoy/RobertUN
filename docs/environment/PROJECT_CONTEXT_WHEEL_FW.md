@@ -1,6 +1,6 @@
 # RobertUN — Wheel Controller Firmware Context
 
-**Last updated:** 2026-09-26 — DMM supply reference: while turning the drive-phase sample reads low (0.74 at 20%, 0.83 at 15%, ±20%).
+**Last updated:** 2026-09-27 — W5 complete on the rig (6–20 rpm passes all four criteria); rover τ, gain freeze and ≥2-wheel offset wait for the rover.
 **Budget:** 20 KB. Check with `wc -c` before every commit; trim if over.
 
 > **How to use this file.** This is the hot file for the wheel-firmware track:
@@ -17,8 +17,8 @@ Firmware for the six RobertUN wheel modules: one STM32F446RE per wheel, a single
 binary for all six (module ID from a 3-bit DIP switch), talking to orion over
 CAN at 250 kbps. Each module drives a steering servo (MKS SERVO42C over UART)
 and a brushed drive motor with encoder (DRV8874). Hard deadline: December 10
-demo. Roadmap: W2 CAN ✅, W3 steering ✅, W4 drive + encoder ✅, **W5 velocity
-PID (active)**; W6 and W7 follow (roadmap in `PROJECT_CONTEXT_REST.md`).
+demo. Roadmap: W2 CAN ✅, W3 steering ✅, W4 drive + encoder ✅, W5 velocity
+PID ✅ on the rig (rover items pending); W6 and W7 follow (roadmap in `PROJECT_CONTEXT_REST.md`).
 
 ## Current state
 
@@ -54,7 +54,7 @@ PID (active)**; W6 and W7 follow (roadmap in `PROJECT_CONTEXT_REST.md`).
 
 ## Active work
 
-**Task 21 — W5 velocity PID.** Branch `w5-velocity-pid` (on GitHub).
+**Task 21 — W5 velocity PID — complete on the rig 09-27; rover items wait for the rover.** Branch `w5-velocity-pid` (on GitHub).
 **Acceptance (stated 09-26, crit. 3 amended 09-27):** over ~6–20 rpm each way,
 60 s hold mean error ≤ ±0.05 rpm; 0% saturated, peak ≤ 95% `vel_max`; ripple
 12.0 ± 0.5/rev, sd ≤ 1.5 rpm; true ±5 rpm step: no overshoot above ripple,

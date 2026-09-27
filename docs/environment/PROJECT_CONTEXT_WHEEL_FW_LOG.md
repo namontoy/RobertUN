@@ -3264,3 +3264,11 @@ freeze gains), reverse offset on ≥2 wheels.
 **Tooling bug.** `./bench.py status` with no argument picks the "latest" run by
 name, and timestamp-named runs (`2026-…_stair`) sort before letter-named ones
 (`sweeptelem-…`), so it shows an old run. Workaround: pass the run folder.
+
+## 2026-09-27 — W5 declared complete on the rig (user decision)
+
+Nothing else in W5 can be done without the rover. Status: complete on the rig
+(6–20 rpm, both directions, all four acceptance criteria). Deferred to the rover:
+τ at real weight with the motor terminals metered, re-set the step rise limit,
+freeze the gains (compiled defaults or `cfg save`), reverse-vs-forward offset
+A/B/A on ≥2 wheels to settle `vel_ff_b_rev`. Task 21 stays open (🟡) for those.

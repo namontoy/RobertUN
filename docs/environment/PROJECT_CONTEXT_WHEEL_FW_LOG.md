@@ -3105,3 +3105,53 @@ ticks (aperture 112 + guard 40, as for the drive phase) and ≥ falling edge +
 
 Next: re-measure τ on the rover (meter the motor terminals); same session A/B/A
 on ≥ 2 wheels for the `ff_b` decision.
+
+## 2026-09-26 (late night) — decay-phase sample implemented; valid at stall only
+
+**Code (branch `w5-velocity-pid`).** Below 14.5% duty, in slow decay, current is
+now sampled in the brake phase `[0, ccr)` instead of being refused.
+- `drive.h/.c`: `DRIVE_DECAY_SETTLE_TICKS` 1000, `DRIVE_DECAY_SPAN_TICKS` 500,
+  `drive_sense_t` {NONE, DRIVE, DECAY}, `drive_sense_kind/first/last()`.
+  `place_trigger(start, ticks, decay_ok)`: drive phase if ≥ 652 ticks; else if
+  decay allowed and `start ≥ 1152`: last = ccr − 152, first = max(1000, last − 500).
+  Only the slow-decay call passes decay_ok. drive.c stays geometry-only.
+- `config.h/.c`: `isense_dk` 690 o/oo (400–1000), `isense_dmin` 60 o/oo (30–145).
+  New keys discard the stored cfg record (`cfg save` never run on the bench board).
+- `isense.c/.h`: `isense_sync_ready()` accepts DECAY at |duty| ≥ isense_dmin;
+  `isense_read_sync_avg()` scales DECAY readings ×1000/isense_dk after offset
+  subtraction; burst spread over the sense window; `isense_sync_is_decay()`.
+  Stale PMODE/high-side and free-running Isup = I×D text rewritten.
+- `console.c`: `drv current` names the phase and window; NOT SYNCHRONISED gives
+  the reason (duty 0/brake, fast decay, < isense_dmin). Telemetry flag 0x20.
+- `tools/bench/node.py`: `FLAG_DECAY`, `Telem.decay`.
+- Build clean: RAM 5720 B (4.36%), FLASH 107832 B (27.42%). Flashed; RAM-only
+  cfg values trip_ma 1580, duty_limit 300, vel_slew 0, vel_tmo 2000 re-entered.
+
+**Bench, 12.0 V.**
+- First 20/10/20 run was with the shaft free (not clamped): void.
+- Stalled 20/10/20: 20% drive phase 1329 / 1346 mA, within 0.9% / 1.3% of the
+  iscan tail; 10% BRAKE phase window 3398..3898, 715 mA vs 669 expected = +6.9%.
+- Stalled back-to-back at 10%: `drv current` raw 503/506 vs iscan 3398..3773
+  mean 343 ×1000/690 = 497 → firmware matches the scan within 1.2%. Current at
+  10% was 619 mA vs 715 ten minutes earlier: stall noise / winding temperature.
+- Stalled 20/10/20 repeat: refs 1133 / 1290 mA (12.9% apart) → void. Stall
+  A/B/A cannot resolve ±5% on this clamp; stopped.
+- Free shaft, 20→10% in 1% steps, 64-sample `drv current` + single iscan per
+  step: pure noise (102–343 mA, no trend) — commutation-scale ripple is slow
+  against a 3.2 ms burst.
+- Free shaft, telemetry 5 s/step after 10 s settle: drive 271–325 mA at 20–15%,
+  brake 187–196 mA at 14–10%; flag 0x20 on exactly below 14.5%; 0 gaps.
+- Free shaft, 0.5% steps 20.0→10.0, 60 s settle, 20 s of repeated iscans over
+  the firmware's own windows (>250/step) + telemetry (~1000 lines/step):
+  brake raw 102–110 flat over the whole sweep; drive raw 225 (20%) … 221 (17%),
+  244 (16.5%), 251 (15%), 260 (14.5%); ratio 0.455–0.464 at 17–20%, 0.40–0.42
+  at 14.5–16.5%; telemetry 274 → 313 mA, then 189 mA at 14.0% (−40% step);
+  rpm 13.9 → 5.7. Wheel kept turning to 10%.
+
+**Conclusion.** The code is right (placement, scaling, flag, telemetry all
+verified). The 0.690 factor holds at stall only. While turning, back-EMF makes
+the current ripple inside the period: the drive-phase sample (end of the drive
+phase) reads near the peak and the brake-phase sample near the trough; neither
+is the mean. Documented in `isense.h` and `_REF_DRIVE`; committed as is (user
+decision). Open: supply-side DMM reference at 20% and 15% to find which phase
+is biased; then maybe a speed-dependent factor (not before).

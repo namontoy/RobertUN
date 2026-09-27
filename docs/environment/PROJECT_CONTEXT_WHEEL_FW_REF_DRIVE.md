@@ -607,6 +607,37 @@ permanently high, no compare edge is generated, `adc_wait_eoc()` times out and
 `sync_burst()` returns 0. Documented in `drive.c`, but it prints as though it
 were data. Cosmetic fix queued in task 20.
 
+#### Decay-phase sample below 14.5% — implemented Sep 26, 2026
+
+- **Source selection** is in `drive.c` `place_trigger()`, geometry only:
+  drive phase if it is ≥ 652 ticks (unchanged); otherwise, in **slow decay
+  only**, the brake phase `[0, ccr)` with `last = ccr − 152`,
+  `first = max(1000, last − 500)` (`DRIVE_DECAY_SETTLE_TICKS` 1000,
+  `DRIVE_DECAY_SPAN_TICKS` 500); otherwise none. Accessors
+  `drive_sense_kind/first/last()`. Fast decay, coast, brake and duty 0 → none.
+- `isense_read_sync_avg()` scales a decay reading ×1000/`isense_dk`;
+  `isense_sync_ready()` refuses below `isense_dmin`. New cfg keys
+  **`isense_dk` 690** (400–1000) and **`isense_dmin` 60 o/oo** (30–145);
+  adding them discards the stored cfg record.
+- `drv current` names the phase and window; NOT SYNCHRONISED gives the reason.
+  Telemetry flag **0x20** = brake-phase sample (`Telem.decay` in `node.py`).
+- **Bench, 12.0 V:** at 10% the brake window is 3398..3898; `drv current` agrees
+  with an iscan over that window ×1000/690 within 1.2% (stalled); 20% still
+  drive phase, within 2% of the iscan tail. Stalled A/B/A at 20/10/20 gave
+  +6.9% once, then void (refs 13% apart) — stall noise, not code.
+- **Valid at stall only.** Free shaft, 20 → 10% in 0.5% steps, 1 min settle,
+  >250 reads/step: brake/drive = **0.40–0.46** (not 0.690); telemetry
+  **313 → 189 mA across the 14.5% switch (−40%)**. Brake reading flat
+  102–110 raw over the whole sweep; drive reading rises 221 → 260 raw as its
+  window shortens. Interpretation (not proven): while turning the current
+  ripples inside the period; the drive sample sits near the peak, the brake
+  sample near the trough, neither is the mean. Use the decay reading for
+  stall/protection, not as a torque measure while turning.
+- **Open:** a supply-side DMM reference (avg Isup ≈ D × mean drive-phase
+  current, less the board's draw with the bridge off) at 20% and 15%, to see
+  which phase is biased and by how much; only then consider a speed-dependent
+  factor.
+
 ### ⚠️ HW1: fit the CARRIER, not the bare IC, on the milled board
 
 The DRV8874's 36 °C/W assumes its exposed thermal pad is soldered to copper

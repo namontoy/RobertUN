@@ -85,6 +85,7 @@ FLAG_ENABLED = 0x02   # nSLEEP high
 FLAG_FAULT = 0x04     # nFAULT has been seen low since the last clear
 FLAG_SATURATED = 0x08 # the ADC reading hit its ceiling
 FLAG_WATCHDOG = 0x10  # the command watchdog has expired since arming
+FLAG_DECAY = 0x20     # current sampled in the slow-decay brake phase (<14.5% duty)
 
 # Bit meanings in the VELOCITY `flags` field — a different set on a different
 # record. print_velocity_line() in console.c is the authority; this is the
@@ -148,6 +149,11 @@ class Telem:
     @property
     def watchdog(self) -> bool:
         return bool(self.flags & FLAG_WATCHDOG)
+
+    @property
+    def decay(self) -> bool:
+        """mA came from the brake phase, scaled to motor current (+/-4%)."""
+        return bool(self.flags & FLAG_DECAY)
 
     @classmethod
     def parse(cls, line: str, host_t: float) -> "Telem | None":

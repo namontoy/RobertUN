@@ -1,6 +1,6 @@
 # RobertUN — Wheel Controller Firmware Context
 
-**Last updated:** 2026-09-26 — Decay-phase current reading validated below 14.5%: raw = 0.690 × I, ±4% from 6% duty.
+**Last updated:** 2026-09-26 — Decay-phase sample implemented below 14.5%; verified at stall, reads ~40% low vs drive phase while turning.
 **Budget:** 20 KB. Check with `wc -c` before every commit; trim if over.
 
 > **How to use this file.** This is the hot file for the wheel-firmware track:
@@ -88,14 +88,17 @@ from a step.
 - Decided (09-26): current below 14.5% duty is read in the decay phase.
   Stalled A/B/A scans 5–12%: raw = 0.690 × I (±1.5%, 17 refs), ±4% from 6%
   duty; 5% invalid (−9…−38%). Sep 21's 0.670 was edge-contaminated. → LOG 09-26 night
-- Open: implement the decay-phase sample: end-relative, trigger ≤ drive edge
-  − 150 ticks and ≥ falling edge + 1000 ticks; I = raw / 0.690; refuse < 6%.
+- Done: decay-phase sample in firmware (cfg `isense_dk` 690, `isense_dmin` 60,
+  telem flag 0x20); matches iscan within 1.2%. Valid at stall only: turning,
+  brake/drive = 0.40–0.46, −40% step at the 14.5% switch. → LOG 09-26 late night
+- Open: supply-side DMM reference at 20% and 15% (free shaft) to find which
+  phase is biased while turning; speed-dependent factor only after that.
 - Open: re-measure τ on the rover before freezing gains; meter the motor
   terminals, not just VM. Same session: reverse-vs-forward offset on ≥2 wheels
   (A/B/A), to settle the `ff_b` decision.
 - Note: the ripple test's reference (tail worst excursion) varies ±2 counts run
   to run; repeat a run before calling a 1–2 count flag real.
-- **Next step:** implement the decay-phase sample (desk work), then the rover τ session.
+- **Next step:** supply-side DMM reference at 20%/15%, then the rover τ session.
 
 ## Next tasks (priority order)
 
@@ -115,6 +118,7 @@ from a step.
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 
+- **09-26** — Decay-phase sample implemented (flag 0x20, cfg isense_dk/dmin); exact vs iscan at stall; turning it reads ~40% below drive phase.
 - **09-26** — Decay-phase IPROPI validated: 0.690 × I (±1.5%), ±4% at 6–12% duty, 5% invalid; sample ≥150 ticks before the drive edge.
 - **09-26** — A/B/A: reverse −5.9 o/oo, drift −3.05/42 min; true steps within ripple both ways; ripple test fixed; no direction `ff_b` (rover, ≥2 wheels).
 - **09-26** — Reverse staircase: worst error 0.006 rpm, 0% saturation; direction asymmetry is entirely the integrator; ripple 12.00/rev both ways. A/B/A still owed.
@@ -124,7 +128,6 @@ from a step.
 - **09-25** — Loaded-rig plant `rpm = 0.7993 d − 2.420`; two-pole τ 0.219 s + 2.75 s, checked by two independent methods.
 - **09-25** — Bench tooling `tools/bench/` and `telem`; `drv timeout` watchdog; 12 V free-wheel plant re-taken, CCW +3.49%.
 - **09-23** — 12 V free-wheel plant `rpm ≈ 0.83 d − 0.96`, linear 3–100% duty; breakaway 5–6%, dropout 2–3%.
-- **09-21** — Task 20 bench-verified: 1268 mA measured vs 1263 predicted (+0.4%).
 
 ## Key rules (full list with evidence in `_REF_LEARNINGS`)
 

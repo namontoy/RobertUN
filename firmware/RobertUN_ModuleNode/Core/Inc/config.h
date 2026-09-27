@@ -123,6 +123,8 @@ typedef enum
   CFG_VEL_MAX,            /*!< velocity loop output cap, o/oo */
   CFG_VEL_SLEW,           /*!< setpoint ramp, milli-rpm per second; 0 = step */
   CFG_VEL_TIMEOUT,        /*!< setpoint watchdog, ms; 0 = disarmed */
+  CFG_ISENSE_DECAY_K,     /*!< brake-phase IPROPI / motor current, per-mille */
+  CFG_ISENSE_DECAY_MIN,   /*!< lowest duty the brake-phase reading is used at, o/oo */
   CFG_KEY_COUNT
 } config_key_t;
 

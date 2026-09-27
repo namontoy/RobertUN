@@ -518,6 +518,45 @@ bool drive_slewing(void);
                                 DRIVE_ADC_APERTURE_TICKS + \
                                 DRIVE_TRIGGER_MARGIN_TICKS)
 
+/** @brief How long IPROPI takes to settle after the drive->brake edge. MEASURED
+  *        2026-09-26, stalled iscans at 5-20% duty: ringing (1774, 854, 665,
+  *        792 ...) is gone by ~1000 ticks (11 us) - twice the drive-side settle. */
+#define DRIVE_DECAY_SETTLE_TICKS   1000u
+
+/** @brief Width of the brake-phase region a spread burst averages over, ending
+  *        at the end-relative trigger. The plateau slopes ~1% per 500 ticks, and
+  *        the 0.690 calibration was taken near its end, so the region stays
+  *        near the end rather than spanning the whole (long) brake phase. */
+#define DRIVE_DECAY_SPAN_TICKS      500u
+
+/**
+  * @brief Which phase of the PWM period the ADC trigger samples.
+  *
+  * DRIVE - the drive phase, >= DRIVE_PHASE_MIN_TICKS wide; reads motor current
+  *         1:1 (verified +0.4% against D x Vm / R, 2026-09-21).
+  * DECAY - slow decay only, when the drive phase is too narrow: the brake phase,
+  *         where the low-side mirror reads a FIXED FRACTION of motor current
+  *         (0.690, 2026-09-26). isense.c applies the fraction and the minimum
+  *         duty; this module only reports the geometry.
+  * NONE  - nothing defensible to sample (coast, brake, duty 0, or a narrow
+  *         drive window in fast decay, whose off phase is uncalibrated coast).
+  */
+typedef enum
+{
+  DRIVE_SENSE_NONE = 0,
+  DRIVE_SENSE_DRIVE,
+  DRIVE_SENSE_DECAY
+} drive_sense_t;
+
+/** @brief The phase the trigger currently samples. See drive_sense_t. */
+drive_sense_t drive_sense_kind(void);
+
+/** @brief First and last admissible trigger tick of the settled region inside
+  *        the sensed phase - what a spread burst may use. Both 0 when the kind
+  *        is DRIVE_SENSE_NONE. */
+uint16_t drive_sense_first(void);
+uint16_t drive_sense_last(void);
+
 /**
   * @brief  Width of the drive phase, in TIM4 ticks (11.11 ns each, 4500 to the
   *         period).
@@ -544,7 +583,8 @@ uint16_t drive_phase_start(void);
 
 /**
   * @brief  TIM4 count at which the ADC trigger is armed - near the END of the
-  *         drive phase, or CCR_FULL when there is no phase to sample.
+  *         drive phase, or of the brake phase when drive_sense_kind() is
+  *         DRIVE_SENSE_DECAY, or CCR_FULL when there is no phase to sample.
   * @note   Diagnostic. `drv current` prints it, so a reading taken at the wrong
   *         phase shows up as a number rather than being inferred from nonsense
   *         further down the line.

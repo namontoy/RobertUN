@@ -949,10 +949,11 @@ static void cmd_drv(int argc, char **argv)
 
     if (sync)
     {
-      /* Sampled at a known point inside the drive phase, where IPROPI is live.
-         So this is MOTOR current, measured - no divide by D, and the same units
-         the DRV8874's trip regulates in. The aliasing that made the old
-         free-running average unusable at low duty is written up in isense.h. */
+      /* Sampled at a known point inside the drive phase, where IPROPI is live -
+         or, below 14.5% in slow decay, inside the brake phase, scaled by
+         1000 / isense_dk. Either way MOTOR current, measured - no divide by D,
+         and the same units the DRV8874's trip regulates in. The aliasing that
+         made the free-running average unusable at low duty is in isense.h. */
       debug_uart_printf("Imotor %lu mA  (raw %u, offset %u)  at duty %+d%%"
                         "  decay %s\r\n",
                         (unsigned long)ma,
@@ -966,18 +967,19 @@ static void cmd_drv(int argc, char **argv)
          invisible in the current figure alone. */
       {
         uint16_t ticks = drive_phase_ticks();
+        bool     dec   = isense_sync_is_decay();
 
         uint16_t depth = (uint16_t)((n == 0u) ? ISENSE_SYNC_AVG_DEFAULT
                                               : ((n > 1024u) ? 1024u : n));
-        uint16_t first  = (uint16_t)(drive_phase_start()
-                                   + DRIVE_IPROPI_SETTLE_TICKS);
-        uint16_t last   = drive_phase_trigger();
+        uint16_t first  = drive_sense_first();
+        uint16_t last   = drive_sense_last();
         uint16_t points = (uint16_t)((last > first) ? ISENSE_SYNC_POINTS : 1u);
 
         if (points > depth) { points = depth; }
 
-        debug_uart_printf("  sync: %u samples over %u tick%s in %u..%u, drive"
+        debug_uart_printf("  sync %s: %u samples over %u tick%s in %u..%u, drive"
                           " phase %u ticks = %u.%01u us of 50.0\r\n",
+                          dec ? "BRAKE phase" : "drive phase",
                           (unsigned)depth,
                           (unsigned)points,
                           (points == 1u) ? "" : "s",
@@ -986,6 +988,13 @@ static void cmd_drv(int argc, char **argv)
                           (unsigned)ticks,
                           (unsigned)(ticks / 90u),
                           (unsigned)(((ticks % 90u) * 10u) / 90u));
+
+        if (dec)
+        {
+          debug_uart_printf("  brake-phase reading scaled x1000/%ld"
+                            " (cfg isense_dk); +/-4%% from 6%% duty\r\n",
+                            (long)config_get(CFG_ISENSE_DECAY_K));
+        }
       }
 
       debug_uart_printf("  implies Isup %lu mA  (Imotor x D)\r\n",
@@ -993,11 +1002,11 @@ static void cmd_drv(int argc, char **argv)
     }
     else
     {
-      /* Fallback. The carrier's 20 kOhm IMODE strap blanks IPROPI during
-         slow-decay recirculation, so what a free-running average sees is SUPPLY
-         current - I_motor x D - when it sees anything at all. Named explicitly
-         because the trip regulates MOTOR current: the two are in different
-         units and a line that just said "I" invited reading them as one. */
+      /* Fallback: a free-running average over the whole period. It is not
+         motor current - and since the PMODE strap not clean supply current
+         either, because slow decay's brake phase reads 0.690 x I_motor (see
+         isense.h). Named Isup because the trip regulates MOTOR current and a
+         line that just said "I" invited reading the two as one. */
       debug_uart_printf("Isup %lu mA  (raw %u, offset %u)  at duty %+d%%"
                         "  decay %s\r\n",
                         (unsigned long)ma,
@@ -1008,15 +1017,22 @@ static void cmd_drv(int argc, char **argv)
 
       debug_uart_printf("  NOT SYNCHRONISED - drive phase is %u ticks, under the"
                         " %u a\r\n"
-                        "  synchronised sample needs (IPROPI settles in 500, the"
-                        " aperture is 112,\r\n"
-                        "  the guard is 40). This average runs free across the"
-                        " PWM period and can\r\n"
-                        "  alias against it; treat it as an order of magnitude,"
-                        " not a measurement.\r\n"
-                        "  Raise duty above ~15%% for a real number.\r\n",
+                        "  drive-phase sample needs, and the brake phase is not"
+                        " usable here:\r\n"
+                        "  %s\r\n"
+                        "  This average runs free across the PWM period and can"
+                        " alias against it;\r\n"
+                        "  treat it as an order of magnitude, not a"
+                        " measurement.\r\n",
                         (unsigned)drive_phase_ticks(),
-                        (unsigned)DRIVE_PHASE_MIN_TICKS);
+                        (unsigned)DRIVE_PHASE_MIN_TICKS,
+                        (dmag == 0u)
+                          ? "duty is 0 (coast) or the bridge is braking."
+                          : (drive_decay() == DRIVE_DECAY_FAST)
+                            ? "fast decay coasts in the off phase - uncalibrated."
+                              " Use 'drv decay slow'."
+                            : "duty is under cfg isense_dmin, where the brake-"
+                              "phase reading is not trusted.");
 
       /* Below ~1% the division blows the estimate up into nonsense, so it is
          simply not offered rather than printed with a caveat nobody will read. */
@@ -1980,8 +1996,12 @@ static void cmd_id(int argc, char **argv)
  *   mA     current. Flags bit 0 says which quantity: motor current when the
  *          sample was phase-synchronised, supply current when it was not.
  *          They are in different units - see isense.h - so a host that ignores
- *          the flag will silently mix them.
+ *          the flag will silently mix them. Bit 5 (32) marks a synchronised
+ *          sample taken in the slow-decay BRAKE phase (below 14.5% duty),
+ *          already scaled to motor current; +/-4% rather than the drive
+ *          phase's ~2%.
  *   flags  1 sync  2 enabled  4 fault latched  8 ADC saturated  16 watchdog
+ *          32 brake-phase sample
  *
  * Integer fields throughout. "%f" pulls in newlib's float formatter, which is
  * far too slow to run a hundred times a second, and milli-rpm keeps three
@@ -2008,6 +2028,7 @@ static void print_telem_line(void)
   if (drive_fault_latched())   { flags |= 0x04u; }
   if (isense_saturated())      { flags |= 0x08u; }
   if (drive_timeout_expired()) { flags |= 0x10u; }
+  if (sync && (drive_sense_kind() == DRIVE_SENSE_DECAY)) { flags |= 0x20u; }
 
   debug_uart_printf("T,%lu,%lu,%d,%ld,%ld,%lu,%u\r\n",
                     (unsigned long)telem_seq++,

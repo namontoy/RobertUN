@@ -168,6 +168,20 @@ static const key_info_t keys[CFG_KEY_COUNT] =
   [CFG_VEL_TIMEOUT] =
     { "vel_tmo",      "ms",      0, 60000, 1000,
       "setpoint watchdog - the loop keeps drv's alive, so it needs its own" },
+
+  /* Below 14.5% duty the drive phase is too narrow to sample, so the reading
+     moves into the slow-decay brake phase, where IPROPI reports a fixed
+     fraction of the motor current. Both measured 2026-09-26 on stalled A/B/A
+     scans: 0.690 +/-1.5% (17 refs), within +/-4% from 6% duty, -9..-38% at 5%.
+     Keys, not constants, because the fraction may differ per driver and the
+     rover session is due to re-check it. */
+  [CFG_ISENSE_DECAY_K] =
+    { "isense_dk",    "o/oo",  400,  1000, 690,
+      "brake-phase IPROPI as a fraction of motor current - measured 690" },
+
+  [CFG_ISENSE_DECAY_MIN] =
+    { "isense_dmin",  "o/oo",   30,   145, 60,
+      "lowest duty the brake-phase current reading is trusted at" },
 };
 
 /* ---------------------------------------------------------------------------

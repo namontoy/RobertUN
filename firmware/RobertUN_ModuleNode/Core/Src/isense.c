@@ -157,8 +157,10 @@ uint32_t isense_read_ma(uint16_t samples)
 
 /* --- synchronised measurement -------------------------------------------- *
  * Why this exists rather than "average harder" is in isense.h. drive.c parks
- * TIM4_CH4's compare in the middle of the drive phase; all this end does is
- * point the ADC at that event, take what arrives, and put the trigger back.
+ * TIM4_CH4's compare end-relative in the settled part of the drive phase - or,
+ * below 14.5% duty in slow decay, of the brake phase (drive_sense_kind()); all
+ * this end does is point the ADC at that event, take what arrives, and put the
+ * trigger back.
  * -------------------------------------------------------------------------- */
 
 /**
@@ -222,7 +224,29 @@ static bool adc_wait_eoc(void)
 
 bool isense_sync_ready(void)
 {
-  return drive_phase_ticks() >= (uint16_t)DRIVE_PHASE_MIN_TICKS;
+  switch (drive_sense_kind())
+  {
+    case DRIVE_SENSE_DRIVE:
+      return true;
+
+    case DRIVE_SENSE_DECAY:
+    {
+      /* drive.c places a brake-phase trigger at any narrow slow-decay duty; the
+         floor below which that reading is not trusted is calibration, so it
+         lives here. 5% read -9..-38% on 2026-09-26; 6% and up within +/-4%. */
+      int16_t d = drive_duty();
+      int32_t m = (d < 0) ? -(int32_t)d : (int32_t)d;
+      return m >= config_get(CFG_ISENSE_DECAY_MIN);
+    }
+
+    default:
+      return false;
+  }
+}
+
+bool isense_sync_is_decay(void)
+{
+  return isense_sync_ready() && (drive_sense_kind() == DRIVE_SENSE_DECAY);
 }
 
 /**
@@ -303,8 +327,10 @@ static uint16_t sync_burst(uint16_t samples)
   * in that region reports the region rather than whichever point the trigger
   * happened to land on.
   *
-  * The region is [start + SETTLE, start + ticks - APERTURE - MARGIN] - the same
-  * bounds place_trigger() uses, for the same reasons. At the narrowest admissible
+  * The region is [drive_sense_first(), drive_sense_last()] - for the drive
+  * phase [start + SETTLE, start + ticks - APERTURE - MARGIN], for the brake
+  * phase the last DRIVE_DECAY_SPAN_TICKS before its own end-relative trigger -
+  * the same bounds place_trigger() uses, for the same reasons. At the narrowest admissible
   * window it collapses to a single point and this degrades to one tick, which is
   * the budget being honest rather than an edge case to guard.
   *
@@ -315,12 +341,8 @@ static uint16_t sync_burst(uint16_t samples)
   */
 static uint16_t sync_burst_spread(uint16_t samples)
 {
-  uint32_t start  = (uint32_t)drive_phase_start();
-  uint32_t ticks  = (uint32_t)drive_phase_ticks();
-  uint32_t back   = (uint32_t)DRIVE_ADC_APERTURE_TICKS
-                  + (uint32_t)DRIVE_TRIGGER_MARGIN_TICKS;
-  uint32_t first  = start + (uint32_t)DRIVE_IPROPI_SETTLE_TICKS;
-  uint32_t last   = (ticks > back) ? (start + ticks - back) : first;
+  uint32_t first  = (uint32_t)drive_sense_first();
+  uint32_t last   = (uint32_t)drive_sense_last();
   uint32_t sum    = 0u;
   uint16_t taken  = 0u;
   bool     sat    = false;
@@ -394,8 +416,20 @@ uint16_t isense_read_sync_avg(uint16_t samples)
   }
 
   mean = sync_burst_spread(samples);
+  mean = (mean > zero_offset) ? (uint16_t)(mean - zero_offset) : 0u;
 
-  return (mean > zero_offset) ? (uint16_t)(mean - zero_offset) : 0u;
+  /* The brake phase reports a fixed fraction of the motor current; scale it
+     back to drive-phase counts so every caller - isense_raw_to_ma(), telemetry,
+     the console - stays in one unit. Saturation was judged on the ADC value
+     above, before this, which is the only place it means anything. */
+  if (drive_sense_kind() == DRIVE_SENSE_DECAY)
+  {
+    uint32_t k = (uint32_t)config_get(CFG_ISENSE_DECAY_K);
+    uint32_t v = ((uint32_t)mean * 1000u + k / 2u) / k;
+    mean = (v > 0xFFFFu) ? (uint16_t)0xFFFFu : (uint16_t)v;
+  }
+
+  return mean;
 }
 
 uint16_t isense_read_sync_at(uint16_t tick, uint16_t samples)

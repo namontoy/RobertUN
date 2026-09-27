@@ -96,6 +96,92 @@ static const key_info_t keys[CFG_KEY_COUNT] =
   [CFG_RAMP_FLOOR] =
     { "ramp_floor",   "o/oo",    0,   300, 0,
       "duty to jump to when leaving rest, before ramping; 0 = no floor" },
+
+  /* ---- velocity loop (velocity.c) -----------------------------------------
+     Gains are stored in MILLI-units because config is int32 only and a Kp of
+     3.0 is not representable otherwise. velocity.c converts once, at init and
+     at each `cfg` write, so the tick never divides.
+
+     The textbook gains for this plant are Kp = 1/K = 12.51 and
+     Ki = 1/(K*tau) = 57.1, from K = 0.07993 rpm per o/oo and tau_fast =
+     0.219 s. The shipped defaults are about a QUARTER of that, deliberately:
+     the plant fit is known to be ~4.5% optimistic and its gain droops 25%
+     across the band, the rig is 2.87x light in inertia against the rover, and
+     a loop that is sluggish on first power-up is a bench problem while one
+     that oscillates into the current trip is a hardware problem. Tune up from
+     here with a step response, not down from instability. */
+  [CFG_VEL_KP] =
+    { "vel_kp",       "m o/oo/rpm", 0, 100000, 3000,
+      "velocity Kp x1000 - 3000 is 3.0; textbook is 12510" },
+
+  [CFG_VEL_KI] =
+    { "vel_ki",       "m/rpm-s", 0, 200000, 10000,
+      "velocity Ki x1000 - 10000 is 10.0; textbook is 57100" },
+
+  /* Zero by default and expected to stay there - see the Kd note in
+     velocity.h. tau_fast is 0.219 s against a 20 ms loop, so there is nothing
+     fast enough to anticipate, and the measurement is quantised at 0.36 rpm. */
+  [CFG_VEL_KD] =
+    { "vel_kd",       "m o/oo-s/rpm", 0, 100000, 0,
+      "velocity Kd x1000 - 0, and very unlikely to be needed" },
+
+  /* The inverse plant, duty% = 1.251 * rpm + 3.028, in loop units: the slope
+     is 12.510 o/oo per rpm and the offset is 30 o/oo. Feedforward is what
+     makes the integrator's job small; these are the two numbers to re-measure
+     when the rover's own plant is characterised, NOT the gains. */
+  [CFG_VEL_FF_SLOPE] =
+    { "vel_ff_a",     "m o/oo/rpm", 0, 100000, 12510,
+      "feedforward slope x1000 - inverse plant, 12510 is 12.51 o/oo per rpm" },
+
+  /* Applied with the SIGN OF THE SETPOINT and only when the setpoint is
+     non-zero: it is stiction, and stiction has no preferred direction. */
+  [CFG_VEL_FF_OFFSET] =
+    { "vel_ff_b",     "o/oo",    0,   300, 30,
+      "feedforward friction offset - the intercept of the inverse plant" },
+
+  /* Half the 300 o/oo ceiling. The integrator exists to trim the feedforward's
+     error, not to drive the motor on its own; if it is running into this clamp
+     the feedforward is wrong and that is what should be fixed. */
+  [CFG_VEL_I_LIMIT] =
+    { "vel_ilim",     "o/oo",    0,  1000, 150,
+      "integrator clamp - if it saturates, fix vel_ff_a, not this" },
+
+  /* 30% duty is the stated ceiling for all characterisation work on this
+     rover. The loop clamps to whichever of this and duty_limit is tighter, so
+     raising this alone cannot exceed the bridge's own cap. */
+  [CFG_VEL_MAX] =
+    { "vel_max",      "o/oo",    0,  1000, 300,
+      "velocity loop output cap - 300 is the 30% characterisation ceiling" },
+
+  /* 4000 milli-rpm/s is the 5%/s duty rate proven on the loaded rig, carried
+     through the inverse plant: 50 o/oo/s / 12.51 o/oo per rpm = 4.0 rpm/s.
+     This is the SETPOINT ramp and it belongs here rather than in drive.c -
+     ramping the output under a closed loop just makes the integrator fight
+     the limiter. Arm drv ramp OR vel_slew, not both. */
+  [CFG_VEL_SLEW] =
+    { "vel_slew",     "m rpm/s", 0, 1000000, 4000,
+      "setpoint ramp x1000 - 4000 is 4 rpm/s, the proven 5%/s rate" },
+
+  /* Armed by default, unlike drive.c's, and that asymmetry is the point:
+     enabling this loop means drive_set_duty() is called 50x/s forever, so
+     drive.c's command watchdog can never fire again. This one replaces it. */
+  [CFG_VEL_TIMEOUT] =
+    { "vel_tmo",      "ms",      0, 60000, 1000,
+      "setpoint watchdog - the loop keeps drv's alive, so it needs its own" },
+
+  /* Below 14.5% duty the drive phase is too narrow to sample, so the reading
+     moves into the slow-decay brake phase, where IPROPI reports a fixed
+     fraction of the motor current. Both measured 2026-09-26 on stalled A/B/A
+     scans: 0.690 +/-1.5% (17 refs), within +/-4% from 6% duty, -9..-38% at 5%.
+     Keys, not constants, because the fraction may differ per driver and the
+     rover session is due to re-check it. */
+  [CFG_ISENSE_DECAY_K] =
+    { "isense_dk",    "o/oo",  400,  1000, 690,
+      "brake-phase IPROPI as a fraction of motor current - measured 690" },
+
+  [CFG_ISENSE_DECAY_MIN] =
+    { "isense_dmin",  "o/oo",   30,   145, 60,
+      "lowest duty the brake-phase current reading is trusted at" },
 };
 
 /* ---------------------------------------------------------------------------

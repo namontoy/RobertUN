@@ -169,6 +169,20 @@ void encoder_set_velocity_window(uint16_t ticks);
 /** @brief Current velocity window, in ticks. */
 uint16_t encoder_velocity_window(void);
 
+/**
+  * @brief  Counts how many times the velocity window has CLOSED.
+  *
+  * encoder_rpm() returns the same value between window closures, so a control
+  * loop running on the 1 kHz tick would otherwise see the same measurement 20
+  * times in a row and integrate it 20 times. Comparing this counter against a
+  * remembered copy is how a loop tells a fresh sample from a stale one and
+  * steps at the rate the measurement actually updates.
+  *
+  * Wraps at 2^32, which at 50 Hz is 2.7 years of continuous running; compare
+  * for INEQUALITY, never for ordering, and the wrap is harmless.
+  */
+uint32_t encoder_velocity_seq(void);
+
 /** @brief Result of encoder_probe(). */
 typedef struct
 {

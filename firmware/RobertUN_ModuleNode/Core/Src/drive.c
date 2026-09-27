@@ -59,6 +59,13 @@ static uint16_t phase_ticks;
 static uint16_t phase_start;
 static uint16_t phase_trigger;
 
+/* Which phase the trigger samples, and the settled region inside it that a
+   spread burst may use. Written by place_trigger() alongside the three above,
+   for the same reason. */
+static drive_sense_t sense_kind;
+static uint16_t      sense_first;
+static uint16_t      sense_last;
+
 /** @brief Compare value for 100% output. CCR > ARR never matches, so the
   *        channel stays active for the whole period — a true 100%, not
   *        4499/4500. */
@@ -109,20 +116,54 @@ static void apply(uint32_t ccr1, uint32_t ccr2)
   * isense_sync_ready() refuses those outright, but `drv iscan` deliberately
   * overrides the gate, so the floor here keeps even an overridden placement from
   * landing before the signal has settled.
+  *
+  * DECAY PHASE (2026-09-26). In slow decay the brake phase is [0, start) and
+  * IPROPI reads a fixed fraction of the motor current there (low-side mirror,
+  * PMODE strapped). When @p decay_ok and the drive window is too narrow, the
+  * trigger moves into the brake phase instead, by the same end-relative rule:
+  * APERTURE + MARGIN before the drive edge, and never before
+  * DRIVE_DECAY_SETTLE_TICKS after the falling edge at tick 0. Whether that
+  * reading is USED - the minimum duty and the scale factor - is isense.c's
+  * call, not this one's; this only keeps the geometry true.
   */
-static void place_trigger(uint32_t start, uint32_t ticks)
+static void place_trigger(uint32_t start, uint32_t ticks, bool decay_ok)
 {
+  uint32_t back = (uint32_t)DRIVE_ADC_APERTURE_TICKS
+                + (uint32_t)DRIVE_TRIGGER_MARGIN_TICKS;
+
   phase_ticks = (uint16_t)ticks;
   phase_start = (uint16_t)((ticks == 0u) ? 0u : start);
+  sense_kind  = DRIVE_SENSE_NONE;
+  sense_first = 0u;
+  sense_last  = 0u;
 
   if (ticks == 0u)
   {
     phase_trigger = (uint16_t)DRIVE_CCR_FULL;
   }
+  else if ((ticks < (uint32_t)DRIVE_PHASE_MIN_TICKS) && decay_ok &&
+           (start >= (uint32_t)DRIVE_DECAY_SETTLE_TICKS + back))
+  {
+    /* Brake phase [0, start). The settled region runs from the settle floor
+       (or one MIN_TICKS back from the end, whichever is later - the plateau
+       slopes ~1% per 500 ticks and the calibration was taken near its end)
+       to the end-relative trigger. */
+    uint32_t last  = start - back;
+    uint32_t first = (last > (uint32_t)DRIVE_DECAY_SPAN_TICKS)
+                   ? (last - (uint32_t)DRIVE_DECAY_SPAN_TICKS) : 0u;
+
+    if (first < (uint32_t)DRIVE_DECAY_SETTLE_TICKS)
+    {
+      first = (uint32_t)DRIVE_DECAY_SETTLE_TICKS;
+    }
+
+    sense_kind    = DRIVE_SENSE_DECAY;
+    sense_first   = (uint16_t)first;
+    sense_last    = (uint16_t)last;
+    phase_trigger = (uint16_t)last;
+  }
   else
   {
-    uint32_t back = (uint32_t)DRIVE_ADC_APERTURE_TICKS
-                  + (uint32_t)DRIVE_TRIGGER_MARGIN_TICKS;
     uint32_t tick;
 
     /* Back off the trailing edge far enough for the aperture plus its guard. */
@@ -146,6 +187,16 @@ static void place_trigger(uint32_t start, uint32_t ticks)
     }
 
     phase_trigger = (uint16_t)tick;
+
+    /* Only a window that holds settle + aperture + margin is a sense source;
+       a narrower one keeps its (floored) trigger for `drv iscan` but reports
+       NONE, so isense.c refuses it. */
+    if (ticks >= (uint32_t)DRIVE_PHASE_MIN_TICKS)
+    {
+      sense_kind  = DRIVE_SENSE_DRIVE;
+      sense_first = (uint16_t)(start + (uint32_t)DRIVE_IPROPI_SETTLE_TICKS);
+      sense_last  = (uint16_t)tick;
+    }
   }
 
   __HAL_TIM_SET_COMPARE(&htim4, TIM_CHANNEL_4, (uint32_t)phase_trigger);
@@ -191,7 +242,7 @@ void drive_init(void)
     (void)HAL_TIM_PWM_ConfigChannel(&htim4, &oc, TIM_CHANNEL_4);
   }
 
-  place_trigger(0u, 0u);
+  place_trigger(0u, 0u, false);
 
   /* Start the outputs from here, not from a USER CODE block inside
      MX_TIM4_Init(). A CubeMX regeneration silently dropped that block once and
@@ -269,7 +320,7 @@ static void emit(int16_t permille)
     /* Coast, not brake — see drive.h. Slow decay taken literally would hold
        the wheel at zero duty, which is not what "stop" should mean here. */
     apply(0u, 0u);
-    place_trigger(0u, 0u);
+    place_trigger(0u, 0u, false);
     return;
   }
 
@@ -284,7 +335,7 @@ static void emit(int16_t permille)
           forward ? 0u  : ccr);
 
     /* Fast decay drives from the start of the period: [0, ccr). */
-    place_trigger(0u, ccr);
+    place_trigger(0u, ccr, false);
   }
   else
   {
@@ -298,7 +349,7 @@ static void emit(int16_t permille)
        driven window is the TAIL of the period: [ccr, ARR]. Its width is the
        duty magnitude, which is the point - the same 12% duty puts the sample
        at tick 270 in fast decay and tick 4230 in slow. */
-    place_trigger(ccr, DRIVE_CCR_FULL - ccr);
+    place_trigger(ccr, DRIVE_CCR_FULL - ccr, true);
   }
 }
 
@@ -468,7 +519,7 @@ void drive_brake(void)
 
   /* Braking draws nothing from VM - the current recirculates - so there is no
      drive phase to sample and no honest synchronised reading to take. */
-  place_trigger(0u, 0u);
+  place_trigger(0u, 0u, false);
 }
 
 void drive_coast(void)
@@ -482,7 +533,7 @@ void drive_coast(void)
 
   duty = 0;
   apply(0u, 0u);
-  place_trigger(0u, 0u);
+  place_trigger(0u, 0u, false);
 }
 
 bool drive_faulted(void)
@@ -654,6 +705,21 @@ uint16_t drive_phase_start(void)
 uint16_t drive_phase_trigger(void)
 {
   return phase_trigger;
+}
+
+drive_sense_t drive_sense_kind(void)
+{
+  return sense_kind;
+}
+
+uint16_t drive_sense_first(void)
+{
+  return sense_first;
+}
+
+uint16_t drive_sense_last(void)
+{
+  return sense_last;
 }
 
 void drive_trigger_override(uint16_t tick)

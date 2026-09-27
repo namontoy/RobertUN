@@ -21,7 +21,7 @@ python3 -m pip install -r requirements.txt
 | `pyserial` | the serial link to USART1 | **yes — and it is the only one** |
 | `numpy` | array maths in the analysis and figure scripts | no |
 | `matplotlib` | figures | no |
-| `scipy` | exponential fits for the planned `coastdown` / `step` profiles | not yet |
+| `scipy` | exponential fits for the planned `coastdown` profile | not yet |
 
 Specs are **floors, not pins**, so a distro's own packages normally satisfy
 them and no virtualenv is needed. Verified on Python 3.10.12 with pyserial
@@ -68,6 +68,7 @@ separate cable. Do not connect the adapter's Vcc.
 ./bench.py list                                   # profiles and recent runs
 ./bench.py run sweep                              # CW, 5-29% in 2% steps, 4 s/point
 ./bench.py run sweep --dir ccw                    # the other direction
+./bench.py run step --rpm 20                      # velocity-loop step response
 ./bench.py status                                 # latest run's status.json
 ```
 
@@ -92,9 +93,10 @@ current, elapsed time and the running dropped-sample count. That is the whole
 | profile | what it does | what it yields |
 |---|---|---|
 | `sweep` | duty list, dwell at each, settled speed + current | the steady-state plant table, automated |
+| `step` | commands a setpoint step at the **velocity loop** and records every control step | rise time, overshoot, settling time, steady-state error — the numbers a gain choice is made from |
+| `stair` | holds a series of setpoints for a long dwell each, **on one arming** | settled mean, sd and standard error per setpoint, with the term breakdown — long-run tracking, drift and where the duty ceiling starts to bind |
 
-More profiles (`coastdown`, `step`, `hold`, `stiction`) are planned; the first
-three are what actually unblock PID gain selection.
+`coastdown`, `hold` and `stiction` are still planned.
 
 ### `sweep` options
 
@@ -108,6 +110,100 @@ three are what actually unblock PID gain selection.
 | `--window` | `100` | `enc window`, in 1 ms ticks |
 | `--max-duty` | `30` | refuses anything above it. **Raise it only for deliberate calibration** — the rover's working band tops out well below this, and above ~31% the wheel begins to bounce on the rig belt, which makes those points a property of the rig rather than of the plant. |
 | `--trip` | `1580` | mA; **set at run start**, so the trip is a recorded run condition rather than whatever the board happened to boot with |
+
+### `step` options
+
+`sweep` drives the bridge directly; `step` drives the **velocity loop**, so it
+commands rpm rather than duty and its safety ceiling is a setpoint ceiling.
+
+| flag | default | |
+|---|---|---|
+| `--rpm` | `10` | setpoint stepped **to** |
+| `--from` | `0` | setpoint stepped **from**. Non-zero gives a small-signal step from an already-turning wheel, which is a different plant from rest — stiction is not in it |
+| `--return` | off | step back down afterwards. Not symmetry for its own sake: the feedforward applies its friction offset with the **sign of the setpoint**, so the down-step is the one place a wrong `ff_b` shows up as a different *response* rather than as a constant error |
+| `--max-rpm` | `22` | refuses anything above it. This is the 30% duty ceiling pushed through the plant fit (0.7993 × 300/10 − 2.42 = 21.6 rpm), so it is the same ceiling `--max-duty` enforces, expressed in the units this profile commands. Raise it only as deliberately |
+| `--window` | `20` | **not the sweep's 100.** See the warning below — this is the one default that must not be copied across |
+| `--dwell` | `4.0` | seconds held after the step; the measurement window |
+| `--baseline` | `1.0` | seconds at 0 rpm with the loop armed, before anything moves |
+| `--pre` | `3.0` | seconds at `--from` before the step (ignored when `--from` is 0) |
+| `--stop-dwell` | `2.0` | seconds after `vel stop`, for the setpoint ramp to run out before `vel off` |
+| `--kp` `--ki` `--kd` | board's | `cfg vel_kp/ki/kd` in **milli-units** — `--kp 5000` is Kp = 5.0. Config is int32 only, so every gain is stored ×1000. Left unset, the board keeps what it has |
+| `--ff-a` `--ff-b` | board's | `cfg vel_ff_a` (milli o/oo per rpm) and `vel_ff_b` (o/oo) — the inverse-plant feedforward |
+| `--slew` | board's | `cfg vel_slew`, milli-rpm/s. **0 makes it a true step**; the shipped 4000 ramps the setpoint at 4 rpm/s, which is what you want for the rover and not what you want for a step response |
+
+⚠️ **`enc window` must be 20, not 100, for a step.** The loop advances once per
+encoder window, so window 100 is a **10 Hz control loop with 100 ms of
+measurement lag** — it would dominate the very response being measured, and
+gains chosen against it are gains for a different plant. `--window` therefore
+has no single default: 100 for `sweep`, 20 for `step`. `step` warns above 40.
+
+The profile also sends **`cfg ramp_pmps 0`** unconditionally. `drv ramp` and
+`vel_slew` are two slew limiters in series and must not both be armed: with
+drv's running, `drive_slewing()` is true almost continuously, the integrator is
+frozen for essentially the whole run, and the step measures the limiter.
+
+`vel_tmo` is set to `WATCHDOG_MS` so the loop's setpoint watchdog matches the
+drive watchdog, and `dwell()` refreshes **both** on the same 0.5 s beat. This
+matters: only `vel target` kicks the velocity watchdog — `drv timeout` does
+nothing for it — so a dwell that forgot it would coast the wheel one second in,
+in the middle of the measurement.
+
+### `stair` options
+
+`stair` is `step`'s long-run counterpart. Where `step` asks *how does the loop
+get there*, `stair` asks *what does it do once it is there, for a long time, at
+many speeds*.
+
+```sh
+./bench.py run stair                                  # +10.0 -> +20.0 rpm, 0.5 rpm steps, 60 s each (21 min)
+./bench.py run stair --dir ccw                        # the same range in reverse
+./bench.py run stair --lo 5 --hi 15 --hold 30         # a shorter, lower band
+```
+
+| flag | default | |
+|---|---|---|
+| `--lo` | `10` | first setpoint, rpm **magnitude** |
+| `--hi` | `20` | last setpoint, rpm **magnitude**. Below `--lo`, the staircase walks *down* |
+| `--dir` | `cw` | `ccw` makes every setpoint negative |
+| `--stair-step` | `0.5` | rpm between setpoints |
+| `--hold` | `60` | seconds at each setpoint. **This is the measurement** — see below |
+| `--hold-settle` | `10` | seconds discarded at the head of each hold, so the ramp in from the previous setpoint is not averaged into it |
+| `--abort-ma` | `1200` | ends the run if any point's peak current exceeds it. A soft guard under `--trip`, because this profile runs unattended for 20+ minutes |
+| `--max-rpm` | `22` | the same magnitude ceiling `step` enforces |
+| `--window` | `20` | as for `step`, and for the same reason |
+| `--stop-dwell`, `--rate`, `--trip`, and the gain flags | | shared with `step` |
+
+⚠️ **`--lo` and `--hi` are magnitudes; `--dir` carries the sign.** This is the
+same split `step` uses, and it is not a style choice. Written the obvious way,
+a reverse run reads `--lo -10 --hi -20` — which makes the step count negative
+and yields an *empty* setpoint list, and makes a ceiling guard written as
+`max(setpoints)` return −10 for a run going to −20, waving through any speed at
+all. The guard in `profile_stair` tests **magnitude** for exactly that reason.
+
+**Why a staircase and not N separate `run step` invocations.** The loop stays
+**armed** across the whole sweep. Re-arming between points would reset the
+integrator at every one and throw away precisely the slow drift — thermal,
+friction, integrator wind — that a long run exists to capture.
+
+**Why the long dwell buys the resolution.** At `enc window 20` one encoder
+count is 0.36 rpm, which on its own cannot resolve a 0.5 rpm increment. But the
+ripple decorrelates in ~0.4 s, so a 60 s dwell holds ~150 independent looks and
+the standard error of the mean lands near 0.08 rpm. `sem_rpm` in `stair.csv` is
+that figure, computed per point — **read it before believing any difference
+between adjacent setpoints.**
+
+The run ends itself on either guard rather than logging a note and carrying on:
+the remaining points would be taken under a condition the run header does not
+describe.
+
+| column in `stair.csv` | |
+|---|---|
+| `sp_rpm`, `t_start_s`, `n` | the setpoint, when its hold began, and how many samples survived `--hold-settle` |
+| `mean_rpm`, `sd_rpm`, `min_rpm`, `max_rpm` | the settled tail. `sd_rpm` on this rig is ~1 rpm of **mechanical** ripple at ~12 events per output revolution, not loop noise |
+| `err_rpm`, `sem_rpm` | tracking error, and the uncertainty on it |
+| `out_pm`, `ff_pm`, `p_pm`, `i_pm`, `d_pm` | the term breakdown, o/oo. `ff_pm` is the model; `i_pm` is **what the model missed**, and it is the most informative column here |
+| `sat_frac`, `freeze_frac`, `wd_frac` | fraction of control steps saturated, integrator-frozen, or past the setpoint watchdog |
+| `ma_mean`, `ma_max` | bridge current over the tail |
 
 ## The ramp is in the firmware now
 
@@ -188,14 +284,28 @@ runs/2026-09-25T14-03-11_sweep/
                     info / cfg / drv / enc taken at connect
     console.log     raw byte-for-byte transcript
     telemetry.csv   one row per T-line, plus host arrival time
+    velocity.csv    one row per V-line — one per control step (step, stair)
     events.csv      every command sent, with host time
     sweep.csv       the settled result per duty point
+    step.csv        one row per step segment, with the metrics below
+    stair.csv       one row per setpoint held (stair profile)
     status.json     rewritten every second
 ```
 
 **The raw log is written before anything is parsed.** A parser bug can then
 cost an analysis but never a bench run — the run is re-parsable offline. Bench
 time is the expensive thing here.
+
+⚠️ **A run directory is local-only and gitignored, all of it** — the CSVs, the
+console transcript, `meta.json` and `status.json` alike. It is raw instrument
+output, megabytes per run, and input to the figure scripts rather than a record
+anyone reads. **Two consequences to know about:** regenerating a figure in
+`docs/environment/figures/` needs its run directory present on this machine,
+and a run's provenance — gains, profile arguments, integrity counters — is
+preserved by being *quoted* in the figure and in
+`docs/environment/PROJECT_CONTEXT_WHEEL_FW.md`, not by the JSON surviving
+anywhere a clone can see. If a number matters, write it down there. A figure
+in the repo is the published result; the rows behind it are not.
 
 ## Reading the data correctly
 
@@ -224,9 +334,20 @@ Two more things the columns are telling you:
 In the order it matters:
 
 1. **`try` / `finally` plus a SIGTERM handler.** A normal exit, an exception,
-   Ctrl-C and `kill` all end at the same stop: `drv duty 0`, `drv coast`,
-   `drv disable`, `telem off`. Best-effort — each step is attempted even if an
-   earlier one raised, because a half-executed stop is the worst outcome.
+   Ctrl-C and `kill` all end at the same stop: **`vel off`**, `drv duty 0`,
+   `drv coast`, `drv disable`, `telem off`. Best-effort — each step is attempted
+   even if an earlier one raised, because a half-executed stop is the worst
+   outcome.
+
+   **`vel off` is first, and that ordering is load-bearing.** With the velocity
+   loop armed, the board calls `drive_set_duty()` fifty times a second from its
+   own tick, so `drv duty 0` and `drv coast` are both overwritten about 20 ms
+   after they land. `drv disable` would still cut nSLEEP and stop the motor, but
+   a stop sequence whose first three steps are silently undone is one that works
+   by accident. The general rule, and it will recur at the next layer up
+   (CAN, then the rover supervisor): **arming a control loop invalidates every
+   stop sequence that addresses the layer below it.** The loop is disarmed
+   first, or the sequence is not a stop.
 2. **The board's own watchdog.** `drv timeout 2000` is armed at run start and
    refreshed while dwelling. This is the part `finally` *cannot* cover:
    `kill -9` and a yanked USB cable run no Python at all, so the board has to
@@ -280,3 +401,113 @@ slow to run at 100 Hz.
 
 `print_telem_line()` in `Core/Src/console.c` is the authority for this format;
 the constants in `node.py` are the mirror.
+
+## Velocity-loop line format
+
+A second, opt-in record. `T,` says what the **bridge and plant** did; `V,` says
+what the **loop decided**, which is not inferable from the other.
+
+```
+V,<seq>,<ms>,<sp_mrpm>,<meas_mrpm>,<out>,<ff>,<p>,<i>,<d>,<flags>
+```
+
+| field | |
+|---|---|
+| `seq` | uint32, +1 per emitted line; restarts at 0 on `telem on`, same as `T,`'s |
+| `ms` | `HAL_GetTick()` at the control step |
+| `sp_mrpm` | the **ramped** setpoint the loop acted on, milli-rpm — not the commanded target, which `vel` reports |
+| `meas_mrpm` | `encoder_rpm()` × 1000: the boxcar the loop acted on |
+| `out` | signed per-mille written to `drive_set_duty()` — the sum of the four terms, after clamping |
+| `ff` `p` `i` `d` | the four contributions separately, per-mille, **before** the clamp. They sum to the unclamped output, so `out` differing from their sum is exactly the saturation |
+| `flags` | 1 saturated · 2 integrator frozen · 4 …because `drive_slewing()` · 8 …because bridge disabled or fault latched · 16 setpoint watchdog **has** expired since arming (sticky) · 32 setpoint still ramping · 64 at least one control step went unpublished before this line |
+
+**Bit 2 with 4 and 8 clear is the anti-windup freeze** — the mechanism doing
+its job under saturation. Bit 2 *with* 4 or 8 means the integrator is being
+held off because something else is in the way, and the run measured the
+obstruction rather than the loop. The two look identical in `out` and want
+opposite corrections, which is the whole reason they are separate bits.
+
+**Bit 64 is not a gap.** A `seq` gap means lines were lost on the wire; bit 64
+means a control step was computed and never published, because the main loop
+did not drain the slot before the next tick overwrote it. There is no missing
+`seq` to reveal it, so it is flagged in-band and counted separately
+(`veloc_steps_missed` in `meta.json` and `status.json`). Either one marks the
+run `suspect`. Without it a decimated stream reads as a slow control loop,
+which is the wrong conclusion for someone about to change a gain.
+
+### Turning it on, and the bandwidth it costs
+
+```
+telem on                   the master switch — V needs this too
+telem vel on               one line per control step
+telem rate 50              the pairing that fits
+```
+
+The V channel is **not** on the `telem` timer. It publishes once per control
+step, which is `1000 / enc window` Hz — 50 Hz at window 20. Riding the telem
+timer would alias it: at 100 Hz every step would appear twice, at 30 Hz they
+would beat. Neither is readable as a step response, and the integrator and
+derivative only mean anything per step.
+
+115200 8N1 is 11.52 kB/s. A `T,` line is ~45–59 bytes, a `V,` line ~50–76.
+`T` at 100 Hz plus `V` at 50 Hz is ~9.7 kB/s — 84% of the link, before the echo
+of anything typed. **`telem rate 50` is the pairing that fits**, and
+`telem vel on` warns when `telem_ms < 20`.
+
+`telem off` remains a complete stop for both channels, which is what
+`safe_stop()` already sends.
+
+`print_velocity_line()` in `Core/Src/console.c` is the authority for this
+format; the `VFLAG_*` constants in `node.py` are the mirror.
+
+## Reading `step.csv`
+
+One row per step segment (`up`, and `return` if `--return` was passed).
+
+⚠️ **READ `anchor_s` FIRST.** `vel_slew` ramps the *setpoint*, and it ships at
+4 rpm/s, so a `--rpm 10` "step" spends its first 2.5 s with the loop tracking a
+moving target and `--rpm 20` spends 5 s. **Nothing in that window is a step
+response.** Everything below is anchored accordingly, and the first version of
+this tool was not: it reported the limiter's properties under the loop's name,
+and the tell was that `rise_s` came back at 2.0 s for a 0 → 10 step *no matter
+what Kp was*. Run with **`--slew 0`** to measure the loop's own step response.
+
+**The setpoint ramp**
+
+| column | |
+|---|---|
+| `ramp_s` | how long `VFLAG_RAMPING` was set — the setpoint ramp's duration |
+| `slew_rpm_s` | the ramp rate recovered from the data; cross-check against `cfg vel_slew` |
+| `anchor_s` | when the ramp ended. **`overshoot_*` and `settle_s` are measured from here** |
+| `track_lag_rpm` | mean (setpoint − measured) over the back four-fifths of the ramp. While the setpoint moves, the loop's error *is* its bandwidth — **this is the number a gain change moves**, and it is the one to read when `ramp_limited` is set |
+
+**Rise**
+
+| column | |
+|---|---|
+| `rise_s` | 10% → 90% of the commanded change, **from the command instant** — deliberately not anchored, because it is what an operator actually waits |
+| `rise_slew_floor_s` | `0.8 × ramp_s`: the 10→90% time the ramp costs before the loop does anything at all |
+| `ramp_limited` | `rise_s` is within 30% of that floor, so **this segment measured `vel_slew`, not the loop**. A warning is printed |
+
+**Regulation**
+
+| column | |
+|---|---|
+| `overshoot_pct`, `overshoot_rpm`, `peak_rpm` | peak past the final setpoint, searched from `anchor_s` over `overshoot_window_s` |
+| `tail_sd_rpm` | sd of the settled tail — the ripple the peak has to be judged against |
+| `overshoot_above_ripple` | whether the peak clears **2 × `tail_sd_rpm`**. ⚠️ **`false` means there is no overshoot to attribute.** A maximum drawn from a rippling signal sits 2–3 sd high whatever the gains do; on this rig every peak so far is 4 encoder counts above target at *both* 10 and 20 rpm, which is quantisation and ripple, not a controller |
+| `overshoot_window_s`, `overshoot_window_truncated` | the peak is searched over 3 s (the plant's slow pole is 2.75 s) so a longer `--dwell` cannot manufacture a bigger overshoot. Truncated means the dwell was too short to fill the window and the peak **reads low and is not comparable** with a full run |
+| `settle_s` | the **last** moment outside ±2%, not the first moment inside it — a response that dips back out is not settled, and the first-crossing definition would call it settled anyway. Measured **from `anchor_s`**: this is the loop's own settling. `null` means it never settled within the dwell |
+| `settle_from_command_s` | the same instant measured from the command. Both are true; their difference is `vel_slew`, and reporting only the second is what the old metric did |
+| `settle_band_below_quantum` | the ±2% band is narrower than one encoder count at this `enc window`, so **`settle_s` cannot be computed honestly**. A warning is printed |
+| `ss_error_rpm` | mean of the last quarter of the dwell, minus the setpoint |
+| `i_at_rest_permille` | what the integrator is carrying once settled — **this is how much the feedforward missed by**. A large steady `i` with a small `ss_error` says `ff_a`/`ff_b` want re-fitting, not that Ki wants raising |
+| `sat_fraction` | fraction of control steps with the output clamped |
+| `freeze_fraction` | fraction with the integrator frozen, split into `freeze_antiwindup` / `freeze_drv_slewing` / `freeze_no_bridge` |
+
+⚠️ **These are computed from `meas_mrpm`**, the boxcar the loop acted on. That
+is deliberate — they describe the closed loop *as the controller experienced
+it*, which is the right frame for choosing gains. It is the wrong frame for a
+plant time constant: the warning above about fitting `mrpm` applies with more
+force inside a loop, because the filter's lag is now in the feedback path.
+Plant-side timing comes from the `T,` rows and `rpm_from_counts()`.

@@ -27,6 +27,7 @@
 #include "mks_servo.h"
 #include "encoder.h"
 #include "drive.h"
+#include "velocity.h"
 #include "isense.h"
 #include "config.h"
 #include "dipsw.h"
@@ -58,6 +59,17 @@ static bool     telem_on   = false;
 static uint16_t telem_ms   = 20u;   /* period, not rate - see cmd_telem()     */
 static uint32_t telem_next;         /* HAL_GetTick() at which the next is due */
 static uint32_t telem_seq;          /* +1 per line; gaps = dropped lines      */
+
+/* The velocity channel. A SECOND record type on the same wire rather than more
+   columns on T: node.py's Telem.parse() rejects any line without exactly eight
+   fields, and every committed run directory holds a telemetry.csv with the
+   seven-field header, so a widened T would mean two incompatible things
+   depending on which reader saw it. A new letter breaks nothing.
+
+   It is gated behind telem_on as well as its own switch, so `telem off` - what
+   every host stop sequence already sends - remains a complete stop. */
+static bool     telem_vel_on = false;
+static uint32_t telem_vseq;         /* +1 per V line; restarts with telem on  */
 
 /** @brief Fastest stream the wire can carry. A ~55-byte line at 100 Hz is
   *        5.5 kB/s against 11.52 kB/s at 115200 8N1 - under half. At 200 Hz it
@@ -786,10 +798,17 @@ static void cmd_drv(int argc, char **argv)
 
     if (drive_timeout() != 0u)
     {
+      /* The latch is sticky and a kick does NOT clear it, so "expired" alone
+         is ambiguous: it is true both while the watchdog is down and long
+         after traffic resumed. Printed in the present tense beside a live
+         countdown it reads as a fault that is happening now. Split on the
+         countdown, which is what actually says whether it is down. */
       debug_uart_printf("  watchdog %lu ms armed, %lu ms remaining%s\r\n",
                         (unsigned long)drive_timeout(),
                         (unsigned long)drive_timeout_remaining(),
-                        drive_timeout_expired() ? "  - HAS EXPIRED" : "");
+                        (!drive_timeout_expired())        ? ""
+                        : (drive_timeout_remaining() == 0u) ? "  - EXPIRED NOW"
+                        : "  - timed out earlier (latched)");
     }
     else if (drive_timeout_expired())
     {
@@ -930,10 +949,11 @@ static void cmd_drv(int argc, char **argv)
 
     if (sync)
     {
-      /* Sampled at a known point inside the drive phase, where IPROPI is live.
-         So this is MOTOR current, measured - no divide by D, and the same units
-         the DRV8874's trip regulates in. The aliasing that made the old
-         free-running average unusable at low duty is written up in isense.h. */
+      /* Sampled at a known point inside the drive phase, where IPROPI is live -
+         or, below 14.5% in slow decay, inside the brake phase, scaled by
+         1000 / isense_dk. Either way MOTOR current, measured - no divide by D,
+         and the same units the DRV8874's trip regulates in. The aliasing that
+         made the free-running average unusable at low duty is in isense.h. */
       debug_uart_printf("Imotor %lu mA  (raw %u, offset %u)  at duty %+d%%"
                         "  decay %s\r\n",
                         (unsigned long)ma,
@@ -947,18 +967,19 @@ static void cmd_drv(int argc, char **argv)
          invisible in the current figure alone. */
       {
         uint16_t ticks = drive_phase_ticks();
+        bool     dec   = isense_sync_is_decay();
 
         uint16_t depth = (uint16_t)((n == 0u) ? ISENSE_SYNC_AVG_DEFAULT
                                               : ((n > 1024u) ? 1024u : n));
-        uint16_t first  = (uint16_t)(drive_phase_start()
-                                   + DRIVE_IPROPI_SETTLE_TICKS);
-        uint16_t last   = drive_phase_trigger();
+        uint16_t first  = drive_sense_first();
+        uint16_t last   = drive_sense_last();
         uint16_t points = (uint16_t)((last > first) ? ISENSE_SYNC_POINTS : 1u);
 
         if (points > depth) { points = depth; }
 
-        debug_uart_printf("  sync: %u samples over %u tick%s in %u..%u, drive"
+        debug_uart_printf("  sync %s: %u samples over %u tick%s in %u..%u, drive"
                           " phase %u ticks = %u.%01u us of 50.0\r\n",
+                          dec ? "BRAKE phase" : "drive phase",
                           (unsigned)depth,
                           (unsigned)points,
                           (points == 1u) ? "" : "s",
@@ -967,6 +988,13 @@ static void cmd_drv(int argc, char **argv)
                           (unsigned)ticks,
                           (unsigned)(ticks / 90u),
                           (unsigned)(((ticks % 90u) * 10u) / 90u));
+
+        if (dec)
+        {
+          debug_uart_printf("  brake-phase reading scaled x1000/%ld"
+                            " (cfg isense_dk); +/-4%% from 6%% duty\r\n",
+                            (long)config_get(CFG_ISENSE_DECAY_K));
+        }
       }
 
       debug_uart_printf("  implies Isup %lu mA  (Imotor x D)\r\n",
@@ -974,11 +1002,11 @@ static void cmd_drv(int argc, char **argv)
     }
     else
     {
-      /* Fallback. The carrier's 20 kOhm IMODE strap blanks IPROPI during
-         slow-decay recirculation, so what a free-running average sees is SUPPLY
-         current - I_motor x D - when it sees anything at all. Named explicitly
-         because the trip regulates MOTOR current: the two are in different
-         units and a line that just said "I" invited reading them as one. */
+      /* Fallback: a free-running average over the whole period. It is not
+         motor current - and since the PMODE strap not clean supply current
+         either, because slow decay's brake phase reads 0.690 x I_motor (see
+         isense.h). Named Isup because the trip regulates MOTOR current and a
+         line that just said "I" invited reading the two as one. */
       debug_uart_printf("Isup %lu mA  (raw %u, offset %u)  at duty %+d%%"
                         "  decay %s\r\n",
                         (unsigned long)ma,
@@ -989,15 +1017,22 @@ static void cmd_drv(int argc, char **argv)
 
       debug_uart_printf("  NOT SYNCHRONISED - drive phase is %u ticks, under the"
                         " %u a\r\n"
-                        "  synchronised sample needs (IPROPI settles in 500, the"
-                        " aperture is 112,\r\n"
-                        "  the guard is 40). This average runs free across the"
-                        " PWM period and can\r\n"
-                        "  alias against it; treat it as an order of magnitude,"
-                        " not a measurement.\r\n"
-                        "  Raise duty above ~15%% for a real number.\r\n",
+                        "  drive-phase sample needs, and the brake phase is not"
+                        " usable here:\r\n"
+                        "  %s\r\n"
+                        "  This average runs free across the PWM period and can"
+                        " alias against it;\r\n"
+                        "  treat it as an order of magnitude, not a"
+                        " measurement.\r\n",
                         (unsigned)drive_phase_ticks(),
-                        (unsigned)DRIVE_PHASE_MIN_TICKS);
+                        (unsigned)DRIVE_PHASE_MIN_TICKS,
+                        (dmag == 0u)
+                          ? "duty is 0 (coast) or the bridge is braking."
+                          : (drive_decay() == DRIVE_DECAY_FAST)
+                            ? "fast decay coasts in the off phase - uncalibrated."
+                              " Use 'drv decay slow'."
+                            : "duty is under cfg isense_dmin, where the brake-"
+                              "phase reading is not trusted.");
 
       /* Below ~1% the division blows the estimate up into nonsense, so it is
          simply not offered rather than printed with a caveat nobody will read. */
@@ -1342,6 +1377,195 @@ static void cmd_drv(int argc, char **argv)
   }
 }
 
+/** @brief Render a milli-rpm integer without dragging the caller through the
+  *        sign handling. -1234 must print "-1.234", not "-1.-234". */
+static void print_mrpm(const char *label, int32_t mrpm, const char *tail)
+{
+  int32_t whole = mrpm / 1000;
+  int32_t frac  = mrpm % 1000;
+
+  if (frac < 0) { frac = -frac; }
+
+  debug_uart_printf("%s%s%ld.%03ld%s", label,
+                    ((mrpm < 0) && (whole == 0)) ? "-" : "",
+                    (long)whole, (long)frac, tail);
+}
+
+static const char *vel_state_name(velocity_state_t s)
+{
+  switch (s)
+  {
+    case VELOCITY_OFF:     return "off";
+    case VELOCITY_RUNNING: return "running";
+    case VELOCITY_HOLDING: return "holding (coasting)";
+    case VELOCITY_TIMEOUT: return "TIMEOUT - coasted";
+    default:               return "?";
+  }
+}
+
+static void cmd_vel(int argc, char **argv)
+{
+  if (argc < 2)
+  {
+    int16_t ff, p, i, d;
+
+    velocity_terms(&ff, &p, &i, &d);
+
+    debug_uart_printf("velocity loop %s, state %s\r\n",
+                      velocity_enabled() ? "ARMED" : "off",
+                      vel_state_name(velocity_state()));
+
+    print_mrpm("  setpoint ", velocity_setpoint(), " rpm");
+    print_mrpm(" -> ramped ", velocity_ramped_setpoint(), " rpm\r\n");
+    print_mrpm("  measured ", velocity_measured(), " rpm");
+    print_mrpm(", error ",    velocity_error(),    " rpm\r\n");
+
+    debug_uart_printf("  output %d o/oo%s   ff %d  p %d  i %d  d %d\r\n",
+                      (int)velocity_output(),
+                      velocity_saturated() ? " (SATURATED)" : "",
+                      (int)ff, (int)p, (int)i, (int)d);
+
+    debug_uart_printf("  step %lu us (encoder window), bridge %s%s\r\n",
+                      (unsigned long)velocity_period_us(),
+                      drive_is_enabled() ? "enabled" : "DISABLED",
+                      drive_fault_latched() ? ", FAULT LATCHED" : "");
+
+    /* The one thing a reader must not have to infer. Arming this loop means
+       drive_set_duty() is called at the measurement rate forever, so drv's own
+       watchdog stops being able to fire; this one is what is left. */
+    if (velocity_timeout() == 0u)
+    {
+      debug_uart_puts("  setpoint watchdog DISARMED - nothing will stop this"
+                      " loop if the host dies\r\n");
+    }
+    else
+    {
+      /* Same split as drv's above, and for the same reason: velocity.c's latch
+         is cleared only by velocity_enable(), so a loop that timed out once and
+         then recovered would otherwise report "HAS EXPIRED" beside a healthy
+         countdown for the rest of the arming. Seen on the bench. */
+      debug_uart_printf("  setpoint watchdog %lu ms, %lu remaining%s\r\n",
+                        (unsigned long)velocity_timeout(),
+                        (unsigned long)velocity_timeout_remaining(),
+                        (!velocity_timeout_expired())        ? ""
+                        : (velocity_timeout_remaining() == 0u) ? "  <-- EXPIRED NOW"
+                        : "  <-- timed out earlier (latched)");
+    }
+
+    debug_uart_puts("  sub: on | off | target <rpm|Nm> | stop | gains |"
+                    " timeout <ms> | reset\r\n");
+    return;
+  }
+
+  if (strcmp(argv[1], "on") == 0)
+  {
+    if (!drive_is_enabled())
+    {
+      debug_uart_puts("bridge is disabled - 'drv enable' first, or the loop"
+                      " will wind up\r\n");
+      return;
+    }
+
+    velocity_enable();
+    debug_uart_printf("velocity loop ARMED at setpoint 0, watchdog %lu ms\r\n",
+                      (unsigned long)velocity_timeout());
+    debug_uart_puts("  'drv duty' now fights the loop - use 'vel target'."
+                    "  'vel off' hands the bridge back\r\n");
+  }
+  else if (strcmp(argv[1], "off") == 0)
+  {
+    velocity_disable();
+    debug_uart_puts("velocity loop off, bridge coasted - 'drv duty' is yours"
+                    " again\r\n");
+  }
+  else if (strcmp(argv[1], "target") == 0)
+  {
+    char *end = NULL;
+    long  v;
+
+    if (argc < 3)
+    {
+      print_mrpm("target ", velocity_setpoint(), " rpm\r\n");
+      return;
+    }
+
+    if (!velocity_enabled())
+    {
+      debug_uart_puts("loop is off - 'vel on' first (the setpoint would be"
+                      " ignored)\r\n");
+      return;
+    }
+
+    v = strtol(argv[2], &end, 10);
+
+    /* Bare number is rpm; an 'm' suffix is milli-rpm, which is the resolution
+       the loop actually works in and the only way to ask for a fraction from a
+       console that has no float parser. `vel target 1500m` is 1.5 rpm. */
+    if ((end != NULL) && ((*end == 'm') || (*end == 'M')))
+    {
+      velocity_set_setpoint((int32_t)v);
+    }
+    else
+    {
+      velocity_set_setpoint((int32_t)v * 1000);
+    }
+
+    print_mrpm("target ", velocity_setpoint(), " rpm");
+    debug_uart_printf(", ramping at %ld m rpm/s\r\n", (long)velocity_slew());
+  }
+  else if (strcmp(argv[1], "stop") == 0)
+  {
+    /* Walks the ramp down and then coasts. This is NOT an emergency stop:
+       'drv coast' is, and it stays immediate. */
+    velocity_set_setpoint(0);
+    debug_uart_puts("setpoint 0 - ramping down, then coast."
+                    "  'drv coast' if you want it now\r\n");
+  }
+  else if (strcmp(argv[1], "reset") == 0)
+  {
+    velocity_reset();
+    debug_uart_puts("integrator and derivative cleared\r\n");
+  }
+  else if (strcmp(argv[1], "timeout") == 0)
+  {
+    if (argc >= 3)
+    {
+      velocity_set_timeout((uint32_t)strtoul(argv[2], NULL, 10));
+    }
+
+    if (velocity_timeout() == 0u)
+    {
+      debug_uart_puts("setpoint watchdog DISARMED - the loop will hold its"
+                      " last setpoint forever\r\n");
+    }
+    else
+    {
+      debug_uart_printf("setpoint watchdog %lu ms, %lu remaining\r\n",
+                        (unsigned long)velocity_timeout(),
+                        (unsigned long)velocity_timeout_remaining());
+      debug_uart_puts("  every 'vel target' kicks it; expiry forces setpoint 0"
+                      " and coasts\r\n");
+    }
+  }
+  else if (strcmp(argv[1], "gains") == 0)
+  {
+    debug_uart_printf("kp %ld  ki %ld  kd %ld   (all x1000)\r\n",
+                      (long)velocity_kp(), (long)velocity_ki(),
+                      (long)velocity_kd());
+    debug_uart_printf("ff  %ld x1000 o/oo per rpm + %ld o/oo\r\n",
+                      (long)velocity_ff_slope(), (long)velocity_ff_offset());
+    debug_uart_printf("ilim %u o/oo   max %u o/oo (drv limit %u)   slew %ld m rpm/s\r\n",
+                      (unsigned)velocity_i_limit(), (unsigned)velocity_max(),
+                      (unsigned)drive_limit(), (long)velocity_slew());
+    debug_uart_puts("  change them with 'cfg vel_kp <n>' etc - applied live,"
+                    " 'cfg save' to keep\r\n");
+  }
+  else
+  {
+    debug_uart_printf("unknown subcommand '%s' - try 'vel'\r\n", argv[1]);
+  }
+}
+
 static void cmd_reset(int argc, char **argv)
 {
   (void)argc;
@@ -1361,9 +1585,49 @@ static void cmd_reset(int argc, char **argv)
 
 /** @brief One table row. * marks unsaved, so a forgotten 'cfg save' is visible
   *        without having to remember what was typed. */
+/**
+  * @brief Let the wire catch up before queueing another line of a listing.
+  *
+  * The TX ring is 1024 bytes and `debug_uart_write()` DROPS the overflow rather
+  * than blocking — the right choice for a control loop, which must never be
+  * stalled by a debug facility, and the wrong one for a console listing, which
+  * is read by a person or parsed by a tool and is useless with a hole in it.
+  *
+  * A listing is emitted in a tight loop that fills the ring in microseconds,
+  * while the DMA drains it at 11.5 kB/s. Anything past ~1 kB in one command is
+  * therefore lost silently. `cfg` crossed that line the day the nine velocity
+  * keys were added: 20 keys is ~1.3 kB, and 538 bytes went in the bin — taking
+  * the last three keys, the legend, the sub-command line and the prompt with
+  * them. Nothing reported it but `stats`.
+  *
+  * So: before each line, wait until the ring has room for one. Bounded, because
+  * a console that can hang is worse than one that truncates, and DMA-driven, so
+  * it drains without the main loop. Safe here and only here — this is called
+  * from command handlers, which already run at the console's leisure.
+  *
+  * Call it from any loop that prints one line per item. The per-item printers
+  * below do it themselves, so adding a key or a command cannot re-open this.
+  */
+#define CONSOLE_PACE_TIMEOUT_MS  200u
+
+static void console_pace(size_t headroom)
+{
+  uint32_t start = HAL_GetTick();
+
+  while ((DEBUG_UART_TX_BUF_SIZE - debug_uart_tx_pending()) < headroom)
+  {
+    if ((HAL_GetTick() - start) >= CONSOLE_PACE_TIMEOUT_MS)
+    {
+      break;      /* give up and let it drop rather than hang the console */
+    }
+  }
+}
+
 static void cfg_print_key(config_key_t k)
 {
   int32_t now = config_get(k);
+
+  console_pace(96u);            /* one key line is ~60 bytes */
 
   debug_uart_printf("  %c %-11s %8ld %-5s (default %ld, %ld..%ld)\r\n",
                     (now == config_default(k)) ? ' ' : '*',
@@ -1447,6 +1711,10 @@ static void cmd_cfg(int argc, char **argv)
       cfg_print_key((config_key_t)i);
     }
 
+    /* The per-key pace above leaves only its own headroom, and this tail is
+       ~120 bytes. Pacing the loop but not what follows it is why the first
+       version of this fix held for one run and truncated on the next. */
+    console_pace(256u);
     debug_uart_puts(
       "  (* = differs from the compiled default)\r\n"
       "  sub: <key> [value] | save | revert | default [<key>] | help\r\n");
@@ -1504,6 +1772,9 @@ static void cmd_cfg(int argc, char **argv)
   {
     for (uint16_t i = 0u; i < (uint16_t)CFG_KEY_COUNT; i++)
     {
+      /* The worst offender of the lot: a help string is far longer than a
+         value line, so this listing is several times the ring. */
+      console_pace(160u);
       debug_uart_printf("  %-11s %s\r\n",
                         config_name((config_key_t)i),
                         config_help((config_key_t)i));
@@ -1570,6 +1841,69 @@ static void cmd_cfg(int argc, char **argv)
     drive_set_ramp_floor((uint16_t)want);
     debug_uart_printf("  applied now: ramp floor %u o/oo\r\n",
                       (unsigned)drive_ramp_floor());
+  }
+
+  /* Every velocity key applies LIVE, including while the loop is running.
+     That is the whole point: tuning a gain by rebooting between trials is not
+     tuning. The integrator is deliberately NOT reset on a gain change - with
+     the clamp in place the bump is bounded, and clearing it would hide exactly
+     the steady-state behaviour a Ki change is being judged on. Use
+     'vel reset' when a clean start is what you want. */
+  else if (k == CFG_VEL_KP)
+  {
+    velocity_set_kp(want);
+    debug_uart_printf("  applied now: kp %ld x1000\r\n", (long)velocity_kp());
+  }
+  else if (k == CFG_VEL_KI)
+  {
+    velocity_set_ki(want);
+    debug_uart_printf("  applied now: ki %ld x1000\r\n", (long)velocity_ki());
+  }
+  else if (k == CFG_VEL_KD)
+  {
+    velocity_set_kd(want);
+    debug_uart_printf("  applied now: kd %ld x1000\r\n", (long)velocity_kd());
+  }
+  else if (k == CFG_VEL_FF_SLOPE)
+  {
+    velocity_set_ff(want, velocity_ff_offset());
+    debug_uart_printf("  applied now: ff slope %ld x1000 o/oo per rpm\r\n",
+                      (long)velocity_ff_slope());
+  }
+  else if (k == CFG_VEL_FF_OFFSET)
+  {
+    velocity_set_ff(velocity_ff_slope(), want);
+    debug_uart_printf("  applied now: ff offset %ld o/oo\r\n",
+                      (long)velocity_ff_offset());
+  }
+  else if (k == CFG_VEL_I_LIMIT)
+  {
+    velocity_set_i_limit((uint16_t)want);
+    debug_uart_printf("  applied now: integrator clamp %u o/oo\r\n",
+                      (unsigned)velocity_i_limit());
+  }
+  else if (k == CFG_VEL_MAX)
+  {
+    velocity_set_max((uint16_t)want);
+    debug_uart_printf("  applied now: vel max %u o/oo (drv limit %u -"
+                      " the tighter wins)\r\n",
+                      (unsigned)velocity_max(), (unsigned)drive_limit());
+  }
+  else if (k == CFG_VEL_SLEW)
+  {
+    velocity_set_slew(want);
+    debug_uart_printf("  applied now: setpoint ramp %ld m rpm/s\r\n",
+                      (long)velocity_slew());
+  }
+  else if (k == CFG_VEL_TIMEOUT)
+  {
+    /* This re-arms the countdown, and that is correct: a deadline you have
+       just changed has not been missed yet. It does not clear the sticky
+       expired flag - only 'vel on' does. */
+    velocity_set_timeout((uint32_t)want);
+    debug_uart_printf("  applied now: setpoint watchdog %lu ms%s\r\n",
+                      (unsigned long)velocity_timeout(),
+                      (velocity_timeout() == 0u) ? " - DISARMED" : "");
   }
 
   /* Three keys change the meaning of every current number the board reports,
@@ -1662,8 +1996,12 @@ static void cmd_id(int argc, char **argv)
  *   mA     current. Flags bit 0 says which quantity: motor current when the
  *          sample was phase-synchronised, supply current when it was not.
  *          They are in different units - see isense.h - so a host that ignores
- *          the flag will silently mix them.
+ *          the flag will silently mix them. Bit 5 (32) marks a synchronised
+ *          sample taken in the slow-decay BRAKE phase (below 14.5% duty),
+ *          already scaled to motor current; +/-4% rather than the drive
+ *          phase's ~2%.
  *   flags  1 sync  2 enabled  4 fault latched  8 ADC saturated  16 watchdog
+ *          32 brake-phase sample
  *
  * Integer fields throughout. "%f" pulls in newlib's float formatter, which is
  * far too slow to run a hundred times a second, and milli-rpm keeps three
@@ -1690,6 +2028,7 @@ static void print_telem_line(void)
   if (drive_fault_latched())   { flags |= 0x04u; }
   if (isense_saturated())      { flags |= 0x08u; }
   if (drive_timeout_expired()) { flags |= 0x10u; }
+  if (sync && (drive_sense_kind() == DRIVE_SENSE_DECAY)) { flags |= 0x20u; }
 
   debug_uart_printf("T,%lu,%lu,%d,%ld,%ld,%lu,%u\r\n",
                     (unsigned long)telem_seq++,
@@ -1699,6 +2038,56 @@ static void print_telem_line(void)
                     (long)(encoder_rpm() * 1000.0f),
                     (unsigned long)isense_raw_to_ma(raw),
                     (unsigned)flags);
+}
+
+/* -----------------------------------------------------------------------------
+ * THE VELOCITY RECORD
+ *
+ *   V,<seq>,<ms>,<sp_mrpm>,<meas_mrpm>,<out>,<ff>,<p>,<i>,<d>,<flags>
+ *
+ * One line per CONTROL STEP, not per telemetry period. velocity_on_tick()
+ * advances only when the encoder's velocity window closes - 50 Hz at the
+ * default window 20 - and the loop publishes a snapshot each time it does.
+ * This drains that. Sampling it on the `telem` timer instead would alias it:
+ * at 100 Hz every step would appear twice and at 30 Hz they would beat, and
+ * the integrator and the derivative only mean anything per step.
+ *
+ *   seq   uint32, +1 per LINE, restarting at 0 on `telem on` - exactly T's
+ *         semantics, so the same gap detector works. A gap means the line was
+ *         dropped on the wire. A dropped STEP is a different failure and is
+ *         reported separately, by flag bit 64.
+ *   ms    HAL_GetTick() at the step. The join key against the T stream.
+ *   sp    the RAMPED setpoint in milli-rpm - what the loop actually chased,
+ *         which during a ramp is not what was commanded. Bit 32 says which.
+ *   meas  encoder_rpm() x1000 AS THE LOOP SAW IT. This is deliberately the
+ *         boxcar-filtered figure and not a fresh differentiation of `count`:
+ *         the question this stream answers is what the controller did, and
+ *         the controller acted on the filtered value. Fit the PLANT from T's
+ *         `count`; judge the LOOP from this.
+ *   out   per-mille handed to drive_set_duty(). T's `duty` is what the bridge
+ *         then ran - they differ while drv's own slew limiter is armed.
+ *   ff p i d  the four contributions, per-mille, summing to the unclamped
+ *         output. Separated because "it oscillates" and "it winds up" look
+ *         identical in `out` and want opposite corrections.
+ *   flags 1 saturated  2 integrator frozen  4 ...slewing  8 ...no bridge
+ *         16 watchdog expired  32 setpoint ramping  64 a step was dropped
+ *
+ * Integer fields throughout, for the reason above print_telem_line().
+ * -------------------------------------------------------------------------- */
+
+static void print_velocity_line(const velocity_sample_t *s)
+{
+  debug_uart_printf("V,%lu,%lu,%ld,%ld,%d,%d,%d,%d,%d,%u\r\n",
+                    (unsigned long)telem_vseq++,
+                    (unsigned long)s->ms,
+                    (long)s->sp_mrpm,
+                    (long)s->meas_mrpm,
+                    (int)s->out,
+                    (int)s->ff,
+                    (int)s->p,
+                    (int)s->i,
+                    (int)s->d,
+                    (unsigned)s->flags);
 }
 
 static void cmd_telem(int argc, char **argv)
@@ -1715,7 +2104,62 @@ static void cmd_telem(int argc, char **argv)
                     "  16 watchdog\r\n");
     debug_uart_puts("  count is the measurement; milli_rpm is filtered by"
                     " 'enc window' and lags\r\n");
-    debug_uart_puts("  sub: on | off | rate <1..100 hz>\r\n");
+
+    debug_uart_printf("velocity channel %s, vseq %lu\r\n",
+                      telem_vel_on ? "on" : "off",
+                      (unsigned long)telem_vseq);
+    debug_uart_puts("  V,seq,ms,sp_mrpm,meas_mrpm,out,ff,p,i,d,flags\r\n");
+    debug_uart_puts("  flags: 1 saturated  2 frozen  4 slewing  8 no bridge"
+                    "  16 watchdog  32 ramping  64 step dropped\r\n");
+    debug_uart_puts("  one line per CONTROL STEP (1000/'enc window' Hz),"
+                    " not per telem period\r\n");
+
+    debug_uart_puts("  sub: on | off | rate <1..100 hz> | vel on|off\r\n");
+    return;
+  }
+
+  if (strcmp(argv[1], "vel") == 0)
+  {
+    bool von;
+
+    if ((argc < 3) || !parse_on_off(argv[2], &von))
+    {
+      debug_uart_printf("velocity channel is %s\r\n",
+                        telem_vel_on ? "on" : "off");
+      return;
+    }
+
+    telem_vel_on = von;
+    debug_uart_printf("velocity channel %s\r\n", von ? "on" : "off");
+
+    if (von)
+    {
+      if (!velocity_enabled())
+      {
+        debug_uart_puts("  the loop is off, so nothing will be emitted -"
+                        " 'vel on' to arm it\r\n");
+      }
+
+      /* 100 Hz of T plus 50 Hz of V is ~9.7 kB/s of an 11.52 kB/s wire, and
+         the echo of anything typed then comes out of what is left. The board
+         will not refuse it - a short burst is fine and tx_dropped counts the
+         damage - but the pairing that actually fits is said out loud. */
+      if (telem_ms < 20u)
+      {
+        debug_uart_printf("  WARNING: T is at %u Hz. Both channels together"
+                          " will outrun 115200.\r\n"
+                          "  'telem rate 50' is the pairing that fits;"
+                          " check 'stats' for tx_dropped\r\n",
+                          (unsigned)(1000u / telem_ms));
+      }
+
+      if (!telem_on)
+      {
+        debug_uart_puts("  'telem on' is still the master switch - nothing"
+                        " streams until it is on\r\n");
+      }
+    }
+
     return;
   }
 
@@ -1752,7 +2196,8 @@ static void cmd_telem(int argc, char **argv)
 
   if (!parse_on_off(argv[1], &on))
   {
-    debug_uart_puts("usage: telem on|off | telem rate <hz>\r\n");
+    debug_uart_puts("usage: telem on|off | telem rate <hz>"
+                    " | telem vel on|off\r\n");
     return;
   }
 
@@ -1761,10 +2206,12 @@ static void cmd_telem(int argc, char **argv)
   if (on)
   {
     telem_seq  = 0u;
+    telem_vseq = 0u;
     telem_next = HAL_GetTick();
 
-    debug_uart_printf("telem on at %u Hz - seq restarted at 0\r\n",
-                      (unsigned)(1000u / telem_ms));
+    debug_uart_printf("telem on at %u Hz - seq restarted at 0%s\r\n",
+                      (unsigned)(1000u / telem_ms),
+                      telem_vel_on ? ", velocity channel on" : "");
 
     if (monitor_on)
     {
@@ -1776,8 +2223,9 @@ static void cmd_telem(int argc, char **argv)
   }
   else
   {
-    debug_uart_printf("telem off - %lu lines sent\r\n",
-                      (unsigned long)telem_seq);
+    debug_uart_printf("telem off - %lu T lines, %lu V lines sent\r\n",
+                      (unsigned long)telem_seq,
+                      (unsigned long)telem_vseq);
   }
 }
 
@@ -1795,6 +2243,7 @@ static const command_t commands[] =
   { "mks",       "<sub> [args]", "MKS SERVO42C on UART4 - 'mks' for subcommands", cmd_mks   },
   { "enc",       "[sub]",        "drive encoder - 'enc' for position and speed", cmd_enc   },
   { "drv",       "[sub]",        "drive H-bridge - 'drv' for state",          cmd_drv       },
+  { "vel",       "[sub]",        "closed-loop wheel speed - 'vel' for state", cmd_vel   },
   { "telem",     "[sub]",        "machine-readable stream for the bench host", cmd_telem   },
   { "cfg",       "[key] [val]",  "stored tunables - 'cfg' to list",           cmd_cfg       },
   { "id",        "",             "module identity from the DIP switches",     cmd_id        },
@@ -1812,6 +2261,8 @@ static void cmd_help(int argc, char **argv)
 
   for (size_t i = 0u; i < COMMAND_COUNT; i++)
   {
+    console_pace(128u);         /* see console_pace(): the ring drops, it does
+                                   not block, and this table outgrows it */
     debug_uart_printf("  %-10s %-12s %s\r\n",
                       commands[i].name, commands[i].args, commands[i].help);
   }
@@ -1859,6 +2310,15 @@ static void execute_line(void)
   dispatch(line);
   line_len  = 0u;
   burst_len = 0u;
+
+  /* Pace here and the prompt survives whatever the handler just did to the
+     ring, for every command that exists and every one added later. This is
+     not cosmetic: the host tooling's ask() keys on the prompt to know a reply
+     is complete, so a dropped prompt is the difference between a listing with
+     a cosmetic hole in it and a hard timeout that fails the run. Handlers
+     should still pace their own long listings -- this only protects the two
+     bytes below, not the output above it. */
+  console_pace(64u);
   debug_uart_puts(CONSOLE_PROMPT);
 }
 
@@ -2092,6 +2552,25 @@ void console_report_telem(void)
   if (!telem_on)
   {
     return;
+  }
+
+  /* The velocity channel FIRST, and outside the schedule below. It is paced by
+     the control loop, not by telem_ms - draining it inside the period check
+     would throttle a 50 Hz loop to whatever T happens to be set to, and the
+     whole reason this is a separate record is that it must not be resampled.
+
+     One per call: there is only ever one slot, so a second call would return
+     false anyway. The main loop runs far faster than any loop rate we can
+     configure, and when it does not, the dropped step comes back as flag 64
+     rather than as silence. */
+  if (telem_vel_on)
+  {
+    velocity_sample_t vs;
+
+    if (velocity_take_sample(&vs))
+    {
+      print_velocity_line(&vs);
+    }
   }
 
   uint32_t now = HAL_GetTick();

@@ -176,10 +176,13 @@
   * >> (I_motor x D) and blamed the carrier's 20 kOhm IMODE strap for blanking
   * >> IPROPI during recirculation. Both halves were wrong:
   * >>
-  * >>   - The cause. IPROPI does not read zero during recirculation because
-  * >>     something blanks it. In slow decay the current recirculates through
-  * >>     the HIGH-side FETs, and IPROPI mirrors only the low-side sense
-  * >>     element - it is physically blind to that path. No strap involved.
+  * >>   - The cause. IPROPI did not read zero during recirculation because
+  * >>     something blanked it. With PMODE unstrapped the bridge was in
+  * >>     independent half-bridge, recirculation ran through the HIGH-side
+  * >>     FETs, and IPROPI mirrors only the low-side sense element - blind to
+  * >>     that path. No strap involved. With PMODE strapped (Sep 19) slow
+  * >>     decay brakes on the LOW side and IPROPI reads it: 0.690 x I_motor,
+  * >>     measured 2026-09-26. See DECAY-PHASE READING below.
   * >>   - The conclusion. The Sep 12 numbers were taken with the trigger in
   * >>     the wrong place AND with PMODE unstrapped, so the bridge was not in
   * >>     the decay mode the analysis assumed. The commit that moved the
@@ -208,8 +211,10 @@
   * part of the measurement.
   *
   * isense_read_avg() - the free-running path - is a different quantity. It
-  * averages the whole period, including the recirculation time where IPROPI
-  * reads zero, so it returns something close to I_motor x D. It is kept for
+  * averages the whole period. Before the PMODE strap the recirculation read
+  * zero and that came out as I_motor x D; in slow decay now the brake phase
+  * reads 0.690 x I_motor, so the average is neither supply nor motor current
+  * and `Isup / D` over-reads. Treat it as a coarse indicator only. It is kept for
   * isense_zero() and as the sub-15%-duty fallback, and its figure is labelled
   * Isup at the console precisely so the two are never read as one number.
   *
@@ -224,6 +229,10 @@
   * AND THE FREE-RUNNING AVERAGE TURNED OUT TO ALIAS - 2026-09-14
   *
   * >> PARTLY RETRACTED 2026-09-15. Read this whole section with that in mind.
+  * >> SUPERSEDED 2026-09-26: every scan below predates the PMODE strap (Sep 19);
+  * >> the driver was in independent half-bridge, so decay was high-side and the
+  * >> low-side mirror read 0. In PWM mode the decay phase reads 0.690 x I_motor
+  * >> (valid >= 6% duty, +/-4%); see the wheel-FW LOG, 2026-09-26 (night).
   * >> The aliasing story was built on three low-count readings and does not
   * >> survive the Sep 12 stall test, where this same free-running sampler
   * >> returned 189 and 190 mA on repeat - 0.5%, which a badly-aliasing sampler
@@ -265,11 +274,13 @@
   *
   * SO THERE ARE TWO READING PATHS, AND THEY RETURN DIFFERENT QUANTITIES
   * --------------------------------------------------------------------
-  *   isense_read_avg()      free-running. SUPPLY current, I_motor x D, and aliases
-  *                          as described. Kept for isense_zero(), which runs with
-  *                          the bridge off and no carrier to alias against, and as
-  *                          the fallback below the ~14.5% duty the synchronised
-  *                          path needs.
+  *   isense_read_avg()      free-running. Was SUPPLY current, I_motor x D, before
+  *                          the PMODE strap; in slow decay now it also picks up the
+  *                          brake phase (see DECAY-PHASE READING), so it is only a
+  *                          coarse indicator. Kept for isense_zero(), which runs
+  *                          with the bridge off, and as the fallback where no
+  *                          synchronised reading exists (fast decay below 14.5%,
+  *                          slow decay below isense_dmin).
   *
   *   isense_read_sync_avg() triggered from TIM4_CH4, in the settled tail of the
   *                          drive phase. IPROPI is live there, so this is MOTOR
@@ -318,9 +329,35 @@
   *
   * THE COST IS THE 14.5% FLOOR. It used to be 4.3%, which was not a smaller
   * floor but a wrong one - it green-lit readings whose entire drive window was
-  * shorter than the settle time. Below 14.5% there is no synchronised reading
-  * to be had at this carrier frequency, only a free-running Isup figure or a
-  * slower carrier.
+  * shorter than the settle time. Below 14.5% there is no DRIVE-phase reading
+  * at this carrier frequency.
+  *
+  * DECAY-PHASE READING (2026-09-26)
+  * ---------------------------------
+  * Below 14.5%, in slow decay, the trigger moves into the brake phase [0, ccr),
+  * which is widest exactly there. The low-side mirror reads a fixed fraction
+  * of the motor current in that phase - stalled A/B/A iscans at 5-20% duty:
+  *
+  *     brake / drive = 0.690 +/-1.5%  (17 reference runs at 20%)
+  *     error vs. I proportional to D:  within +/-4% at 6-12%, -9..-38% at 5%
+  *
+  * The fraction is not what L/R predicts (~4% loss over the window, not 31%);
+  * its cause is unknown, but it is reproducible, so it is a calibration:
+  * isense_read_sync_avg() divides by cfg isense_dk (690) and refuses below cfg
+  * isense_dmin (60 o/oo). Placement: settle 1000 ticks after the falling edge,
+  * trigger APERTURE + MARGIN before the drive edge (a sample 50 ticks before
+  * it straddles the edge and reads low - Sep 21's "0.670" was that). Fast
+  * decay has no brake phase to read and still falls back to free-running.
+  *
+  * VALID AT STALL ONLY. With the shaft turning (free, unloaded, 0.5% steps
+  * 20 -> 10%, 1 min settle, >250 reads/step) the ratio is 0.40-0.46, not
+  * 0.690, and telemetry drops 313 -> 189 mA across the 14.5% switch (-40%).
+  * The brake reading is flat (102-110 raw) while the drive reading rises
+  * 221 -> 260 raw as its window shortens: with back-EMF the current ripples
+  * inside the period, the drive sample sits near the peak and the brake sample
+  * near the trough, and neither is the mean. Use the decay reading for stall
+  * and protection, not as a torque measure while turning. Open: a supply-side
+  * DMM reference, then maybe a speed-dependent factor.
   *
   *
   * SAMPLING TIME IS 28 CYCLES ON PURPOSE
@@ -461,25 +498,37 @@ uint16_t isense_read_avg(uint16_t samples);
 /**
   * @brief  Drive current in milliamps.
   * @param  samples  averaging depth; 0 selects ISENSE_AVG_DEFAULT.
-  * @return mA of SUPPLY current, I_motor x D - this path averages the whole
-  *         period, including the recirculation time where IPROPI reads zero.
+  * @return mA averaged over the whole period. I_motor x D only if the off
+  *         phase reads zero (not verified for fast decay since the PMODE strap);
+  *         in slow decay the brake phase reads 0.690 x I_motor, so this
+  *         over-reads supply current.
   *         Record drive_duty() alongside it.
   */
 uint32_t isense_read_ma(uint16_t samples);
 
 /**
   * @brief  Whether a synchronised sample can be taken right now.
-  * @retval true   the drive phase is at least DRIVE_PHASE_MIN_TICKS wide
-  * @retval false  duty is 0, the bridge is braking, or the phase is too narrow
-  *                for the sampling aperture to sit inside it
+  * @retval true   the drive phase is at least DRIVE_PHASE_MIN_TICKS wide, or
+  *                (slow decay) the brake phase is being sampled and |duty| is
+  *                at least cfg isense_dmin
+  * @retval false  duty is 0, the bridge is braking or coasting, fast decay
+  *                below 14.5%, or slow decay below isense_dmin
   * @note   Ask before reading rather than interpreting a 0 afterwards - a
   *         genuine 0 mA and a refusal are the same number.
   */
 bool isense_sync_ready(void);
 
 /**
+  * @brief  True when the synchronised reading comes from the slow-decay BRAKE
+  *         phase (duty below 14.5%, at or above cfg isense_dmin), scaled by
+  *         1000 / cfg isense_dk. False for a drive-phase reading or none.
+  */
+bool isense_sync_is_decay(void);
+
+/**
   * @brief  Average of @p samples conversions taken in the settled tail of the
-  *         PWM drive phase, offset-corrected.
+  *         PWM drive phase - or of the brake phase below 14.5% duty, scaled by
+  *         1000 / isense_dk - offset-corrected. Always drive-phase counts.
   * @note   The samples are spread over ISENSE_SYNC_POINTS ticks inside the
   *         settled region, not stacked on one tick. Same count, same cost.
   * @param  samples  1..1024; 0 selects ISENSE_SYNC_AVG_DEFAULT.

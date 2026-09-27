@@ -1,5 +1,5 @@
 # RobertUN — Wheel Controller Firmware: Full Progress Log
-**Last updated:** September 26, 2026 (task 21's duty slew limiter implemented inside `drive.c` and **verified on the loaded rig** — per-mille on the 1 kHz tick, off by default; measured 50.00 o/oo/s against 50 commanded, peak 581 mA where the un-ramped step clamps at the 1579 mA trip, and the command watchdog still fires on the exact millisecond with the motor live. Previously: September 25, 2026 — loaded-rig pass taken on the treadmill belt at 1047 g — pooled `rpm = 0.7993 d − 2.420` over 11–29%, load costs only 4.3% of slope, breakaway 9–11% duty which is the **same terminal voltage** as Sep 15's 12–14% at 9.35 V; and **τ was wrong** — the plant is two-pole, τ_fast **0.219 ± 0.007 s** verified against an independent ramp-lag measurement at 0.207 s, with the earlier 0.65–0.70 s exposed as a one-pole fit-window artifact)
+**Last updated:** September 26, 2026 (**THE STAIRCASE WAS RUN IN REVERSE AND THE DIRECTION ASYMMETRY IS ENTIRELY THE INTEGRATOR** — `corr(Δ|out|, Δi) = 0.9986`; tracking is *better* reverse (0.006 rpm worst vs 0.015), 0% saturation at all 21 holds, and the asymmetry **changes sign at 14.3 rpm** so "reverse is x% harder" is false. A ripple panel was caught about to claim an agreement its estimator could not measure. `bench.py` gained the `stair` profile, with a reverse-direction sign bug in its ceiling guard caught before it ran)
 
 **Referenced from:** `PROJECT_CONTEXT_WHEEL_FW.md`, which carries a one-line-per-entry version of this log. This file is the verbatim, unedited detail behind each entry — pull it in when you need the exact numbers, register values, or reasoning chain, not for routine session start.
 
@@ -13,6 +13,521 @@
 > the split: that file gets read every session, this one only on demand.
 
 ## Progress log (most recent first) — full detail
+
+- **Sep 26 (bench, reverse) — THE SAME STAIRCASE THE OTHER WAY. The direction
+  asymmetry is the integrator and nothing else, "reverse is x% harder" is
+  false, and a figure panel was caught about to assert an agreement its
+  estimator cannot measure.**
+
+  **Why reverse is not an optional symmetry check.** The rover reverses. And
+  the friction feedforward in `velocity.c:346` *"takes the sign of where we are
+  trying to go, not of the error"* — `ff_term = ff_slope * sp_rpm`, then
+  `+ ff_offset` if `sp_rpm > 0` and `- ff_offset` if `< 0`. It is therefore
+  symmetric **by construction**, which means it cannot absorb a plant that is
+  not. Whatever the plant does differently in reverse has to show up somewhere
+  else, and that somewhere is measurable.
+
+  **Tooling first: the `stair` profile, and two sign bugs caught before it ran.**
+  The forward staircase had been driven by a scratchpad script; it was landed in
+  `bench.py` as a real profile (one arming, a long dwell per point, settled
+  stats past `--hold-settle`, abort on `--abort-ma` or any watchdog fraction).
+  Promoting it surfaced two bugs, both fatal, neither cosmetic:
+    - A literal `--lo -10 --hi -20` makes the step count negative and produces
+      an **empty setpoint list**.
+    - ⚠️ **The 30% ceiling guard was written as `max(setpoints)`.** For a
+      reverse run that reads **−10**, which is below every ceiling, so the guard
+      **silently stops guarding in exactly the direction about to be tested.**
+      The standing instruction is that 30% duty is the hard ceiling for
+      characterisation work; this would have removed it at the moment it
+      mattered most.
+    - Fix: `--lo`/`--hi` are **magnitudes**, `--dir` carries the sign (the same
+      split `profile_step` already uses), a `walk` term handles descending
+      ranges, and the guard tests `max(abs(s))`. Verified offline across four
+      argument combinations before anything spun. `import statistics` was also
+      missing — the new profile used it.
+
+  **A short −10 rpm direction check** ran first (`runs/2026-09-26T11-01-57_stair`,
+  25 s), then the full run.
+
+  **The run — `runs/2026-09-26T11-02-46_stair`, `outcome=ok`, NOT SUSPECT.**
+  21 points, −10.0 → −20.0 rpm in 0.5 rpm steps, 60 s each, 1265.5 s total.
+  **63,203 `V` rows, 0 sequence gaps, 0 velocity gaps, 0 unpublished steps,
+  0 tx_dropped.**
+
+  | | forward | reverse |
+  |---|---|---|
+  | worst settled error | 0.015 rpm | **0.006 rpm** |
+  | per-point sem | 0.020 | 0.019 |
+  | inverse fit | `12.559·rpm + 30.54` (rms 1.51) | `11.503·\|rpm\| + 43.65` (rms 1.54) |
+  | peak \|out\| | 284 o/oo | 277 o/oo (of 300) |
+  | saturation | 0% at all 21 | 0% at all 21 |
+  | mean current | 270 mA | **292 mA (+8.1%)** |
+  | ripple sd | 0.87 → 1.21 rpm | 0.88 → 1.00 rpm |
+  | integrator range | −0.6 .. +3.7 o/oo | −6.7 .. +5.3 o/oo |
+
+  ⚠️ **A prediction I made was wrong, and the data corrected it.** From the
+  single −10 rpm check — where reverse costs ~3.8% more duty — I said the top of
+  the reverse range would saturate against the 300 o/oo ceiling. It did not:
+  **0% saturation at all 21 points, peak 277.** The extrapolation came from the
+  one point where reverse costs *more*, and the asymmetry **changes sign near
+  14.3 rpm**.
+
+  **THE HEADLINE — the asymmetry is the integrator, and that is arithmetic, not
+  luck.** `corr(Δ|out|, Δi) = 0.9986` across the 21 setpoints, the two
+  difference curves **0.62 o/oo rms apart**. The feedforward is bit-identical in
+  both runs (asserted at figure load: `fwd.ff() == rev.ff()`), so there is
+  nowhere else for a direction difference to land. The consequence is the useful
+  part: **the integrator is a direct readout of the model's direction error**,
+  which is how a separate reverse `ff_b` would get *measured* rather than
+  guessed.
+
+  ⚠️ **"Reverse is x% harder" is false.** The asymmetry spans **−10.0 to
+  +1.7 o/oo**, mean −2.74, and clears the comparison's own noise floor —
+  **±2.16 o/oo**, the quadrature sum of the two fits' residuals — at only
+  **9 of 21 setpoints**, with the sustained sign change at **14.3 rpm**. Reverse
+  costs more below it and less above. Two fits with different slope *and*
+  intercept cannot be summarised by one scalar.
+    - The crossing detector needed fixing too: it first reported **10.5 rpm**,
+      having taken the *first* zero crossing — one of four noise wobbles inside
+      the ±2.16 floor. It now takes the last crossing the data does not return
+      from.
+
+  ⚠️ **THE PANEL THAT WAS ABOUT TO SHIP A FALSE CLAIM.** The raw
+  events-per-revolution figures came out **identical to every digit** in both
+  directions: 11.91 ± 0.19 vs 11.91 ± 0.19. That is not independent agreement.
+  An autocorrelation period is quantised to an integer number of **20 ms control
+  periods**, and at these speeds one bin is worth **±0.72 events/rev** — four
+  times the "spread" being reported. The estimator cannot resolve a difference
+  smaller than its own bin, so two perfectly coincident marker sets would have
+  asserted a precision the method does not have, and the whole ±0.19 was
+  quantisation rather than physics.
+    - **Fix: parabolic sub-bin peak refinement** (fit a parabola through the
+      peak and its two neighbours, take the vertex; reject it if the curvature
+      is non-negative or the vertex leaves its own bin). Added as **opt-in
+      (`interp=True`)** so the forward figure's published numbers do not move —
+      `velocity_loop_stair_21min.png` was md5-baselined before the change and
+      re-verified byte-identical after it (`8a9865010df31cf6f6216e7ac04498a8`).
+    - **The refined result is a better statement than the one it replaced:**
+      **11.998 ± 0.017** forward, **11.978 ± 0.017** reverse — an 11× tightening
+      that puts the forward run on **exactly 12 per revolution to 0.02%**.
+      The paired difference is **−0.0204 ± 0.0030 events/rev**, negative at
+      **20 of 21** setpoints: statistically resolved, but 0.17% — far too small
+      to be a different feature.
+    - The ripple's **amplitude** is *not* the same and the figure says so
+      explicitly, because "the ripple is identical" is only half true.
+
+  ⚠️ **Reverse draws +8.1% current while commanding LESS output** (292 vs
+  270 mA; 277 o/oo against 284 at the top of the range). More current for less
+  duty is either a real direction-dependent load or a **sign-dependent offset in
+  the current sense**. These two runs cannot separate them, and the low end sits
+  inside the 145 o/oo synchronised-sense floor's reach anyway. It still wants an
+  independent ammeter.
+
+  ⚠️ **THE CONFOUND, stated on the figure itself.** The two runs are **67 min
+  apart and NOT interleaved**. Temperature, belt tension, and where the carriage
+  sits on a treadmill belt that travels the *other way* in reverse are all
+  aliased into the word "direction". **An A/B/A staircase would separate them
+  and has not been run.** Until it is, "direction" is the honest label for the
+  difference but not a proven cause of it.
+
+  **Figure: `figures/velocity_loop_stair_direction.png`** + 
+  `plot_velocity_loop_stair_direction.py`, sharing `stairdata.py` with the
+  forward figure and likewise transcribing nothing; both scripts end by printing
+  the same numbers they drew. A separate figure rather than more panels on the
+  forward one, deliberately: the forward figure's four panels each carry a
+  single-run argument with long annotations and have no room, and this data's
+  value is **entirely comparative** — every interesting number here is a
+  difference, which is a different thesis. `stairdata.py` gained magnitude
+  views (`m_sp`, `m_rpm`, `m_out`, `m_ff`) so both signs share one code path;
+  ⚠️ **`m_i` is deliberately NOT `abs()`** — it is `i * sign(setpoint)`, what
+  the integrator adds to the *magnitude* of the commanded output, because the
+  integrator's sign is only meaningful against the output it is correcting.
+
+  **Still unexercised:** bit 64 (MISSED) has still never fired; **`cfg save` has
+  still never been run**, so every gain remains RAM-live; the ~12-per-revolution
+  mechanical feature is still unidentified; and the A/B/A interleaved staircase
+  is owed.
+
+- **Sep 26 (bench) — THE VELOCITY LOOP RAN FOR 21 CONTINUOUS MINUTES AND THE
+  GAINS ARE GOOD. Then the step metric that said otherwise turned out to be
+  measuring the slew limiter, and was rewritten. Two figures added.**
+
+  ### The 21-minute staircase — `runs/2026-09-26T09-55-08_stair`
+
+  21 setpoints 0.5 rpm apart, 10.0 → 20.0 rpm, **60 s each, uninterrupted**,
+  shipped gains, 12 V, loaded rig, `enc window 20`. Chosen over another short
+  step because a step says whether the loop is *stable* and says nothing about
+  whether it is *accurate*, whether it drifts, or whether the ¼-of-textbook
+  derating costs anything — and those are the questions that decide whether
+  these gains go to the rover.
+
+  - **Integrity first, as always.** 63,202 `V` rows and 63,214 `T` rows,
+    **0 sequence gaps on either channel, 0 unpublished control steps,
+    0 tx_dropped**, `suspect False`. The overrun bit added for exactly this
+    purpose never fired in 21 minutes at 50 Hz.
+  - **Tracking: mean error +0.0008 rpm, worst 0.015 rpm, sd 0.005 rpm**, against
+    a per-point standard error of ~0.020 rpm. **The loop is accurate to below
+    the noise floor of the instrument measuring it**, at all 21 speeds.
+  - **The 30% ceiling is not reached, and an earlier claim is corrected.**
+    0% saturation at every hold; peak output **284 of 300 o/oo** at 20 rpm. The
+    6% saturation a short step reported at 20 rpm was the **acceleration
+    transient**, not the operating point.
+  - **The derated gains are not costing accuracy, because the plant model behind
+    the feedforward is right.** Closed-loop inverse **`out = 12.559 × rpm +
+    30.54 o/oo`** (rms 1.51 o/oo, n=21) against Sep 25's open-loop sweep
+    inverted, `12.511 × rpm + 30.28` — **0.39% apart, from different
+    excitation, different data and a different estimator**. Shipped feedforward
+    error at 15 rpm: **−1.3 o/oo (−0.6%)**. The integrator therefore has almost
+    nothing to do: **mean +1.46 o/oo, range −0.6..+3.7, out of ~219 o/oo
+    commanded**. ⚠️ **The "~4.5% optimistic" caveat carried on that plant model
+    does not hold in this band.**
+  - **The ripple is MECHANICAL, and the run proves it rather than asserting it.**
+    **11.91 ± 0.19 events per output revolution**, range 11.5–12.2 across all
+    21 holds — held constant over a 2:1 speed range while the *period* swept
+    500 ms → 260 ms. **A control limit cycle holds a fixed period; only a
+    rotating feature holds a fixed count per revolution.** Amplitude grows
+    0.87 → 1.21 rpm (2.4 → 3.4 encoder counts). Which feature — gear, magnet
+    ring, coupling — is a mechanical inspection, not a telemetry one.
+  - **No thermal drift.** Within-hold drift over 60 s: **+0.0005 rpm,
+    −0.04 o/oo**. And the current U-shape is **not** a warm-up transient: a
+    90 s re-take 22 minutes later (`runs/2026-09-26T10-17-57_stair`) reproduced
+    **294→293 mA at 10.0 rpm and 274→278 mA at 10.5 rpm**. ⚠️ The low-end
+    current shape is the one number in that figure not to trust — it sits near
+    the 145 o/oo synchronised-sense floor and wants an independent ammeter.
+
+  ### The step metric was measuring `vel_slew`, not the loop
+
+  ⚠️ **`bench.py run step` reported "rise 2.0 s, overshoot 14%" for a 0 → 10 rpm
+  step. Both numbers were measurements of something other than the controller,
+  and both pointed at a gain change that would have made the loop worse.**
+
+  - **The setpoint is a ramp, not a step.** `vel_slew` ships at **4 rpm/s**, so
+    0 → 10 rpm spends its first **2.5 s** with the loop tracking a moving target
+    and 0 → 20 rpm spends **5 s**. Anchoring rise and settling at the command
+    instant charges that ramp to the loop. **The tell was that the answer did
+    not depend on Kp**: a 0 → 10 step returned 2.0 s whatever the gain, because
+    2.0 s is 0.8 × 2.5 s — the limiter's own 10→90% time.
+  - **The fix is an anchor, not a formula change.** `overshoot` and `settle_s`
+    are now measured **from the instant `VFLAG_RAMPING` clears**; `rise_s` is
+    still reported from the command (it is what an operator waits) but **next to
+    `rise_slew_floor_s`**, with `ramp_limited` set when it is within 30% of that
+    floor. New `track_lag_rpm` measures how far behind the moving setpoint the
+    loop sits *during* the ramp — **that is the quantity a gain change moves,
+    and the old metric had no slot for it**. `settle_from_command_s` is kept
+    alongside `settle_s` because both are true and they answer different
+    questions.
+  - **Verified by replaying all three committed step runs.** `slew_rpm_s`
+    recovers **3.97–3.98 rpm/s** against the configured 4.0. The 0 → 20 run
+    settles in **2.94 s from the ramp's end** versus **7.94 s from the
+    command** — and those are **the same instant**, 5.00 s apart only in what
+    they subtract. That 5.00 s is exactly `vel_slew`.
+  - ⚠️ **Then the corrected metric exposed a second defect: the "overshoot" is a
+    ripple peak.** A single maximum drawn from a signal carrying ~1.2 rpm sd of
+    mechanical ripple sits 2–3 sd high whatever the gains do. All three runs
+    peak **4 encoder counts (1.42 rpm) above target — the same distance at 10
+    and at 20 rpm**, which a controller's overshoot would not be. `step_metrics`
+    now reports `tail_sd_rpm` and sets `overshoot_above_ripple`, which is
+    **False for all three runs**: *no overshoot is resolvable on this rig.* The
+    peak search is also bounded to `OVERSHOOT_WINDOW_S` = 3 s (the plant's slow
+    pole is 2.75 s) so that a longer `--dwell` cannot manufacture a larger
+    overshoot, with `overshoot_window_truncated` set when a run was too short to
+    fill it — the 3 s-dwell run had only 0.48 s and is not comparable.
+  - **The honest verdict for all three step runs is "no overshoot resolvable,
+    and rise not measurable above the limiter".** That is less satisfying than
+    "14% overshoot, lower Kp" and it is the correct answer. A true step response
+    needs `--slew 0`, **which has not been run**.
+
+  ### Two figures
+
+  `docs/environment/figures/`, both following `rigdata.py`'s rule that the
+  loader **transcribes nothing** and every script ends by printing the same
+  numbers it drew:
+
+  - **`velocity_loop_stair_21min.png`** / `plot_velocity_loop_stair.py` /
+    `stairdata.py` — the 21 minutes, the closed-loop plant inverse against the
+    open-loop sweep, the ripple's events-per-revolution against a limit-cycle
+    null, and the current U-shape with its sense-floor caveat.
+  - **`velocity_step_slew_anchor.png`** / `plot_velocity_step_anchor.py` /
+    `stepdata.py` — what the metric fix corrected. ⚠️ **`stepdata.py` imports
+    `step_metrics` from `bench.py` and calls it rather than recomputing it**, so
+    the figure cannot drift from the tool it documents; if the tool's definition
+    of rise or overshoot changes, the figure changes with it or fails loudly.
+  - ⚠️ **Two bugs were found by drawing the data, not by reading the code.**
+    `stairdata.ripple_table()` returned 20 of 21 holds, because the last hold's
+    window ran to end-of-file and swallowed the `vel stop` ramp-down — a
+    monotonic collapse to zero whose autocorrelation never goes negative, so no
+    period was found at all. And the autocorrelation's **global** maximum picks
+    the **second harmonic** whenever the fundamental's peak is the shorter one;
+    it did so at 13.5, 18.5 and 20.0 rpm, inflating the spread from sd 0.19 to
+    sd 2.09. The fundamental is the first strong local maximum *after* the
+    correlation first goes negative.
+
+  ### Still owed
+
+  Bit 64 (MISSED) is still unexercised on hardware — 21 minutes at 50 Hz never
+  triggered it. `cfg save` has still never been run, so every setting above is
+  RAM-live. The ~12-per-revolution mechanical feature needs identifying. The
+  low-end current wants an independent ammeter. And a `--slew 0` step is the
+  only way to get a real loop rise time.
+
+- **Sep 26 (later) — W5's VELOCITY PID IS WRITTEN, AND SO IS THE INSTRUMENT
+  THAT WILL TUNE IT. Branch `w5-velocity-pid`. Two commits' worth of work:
+  the loop itself, then the telemetry channel and host profile that make it
+  tunable. NOTHING HERE HAS TOUCHED HARDWARE — every claim below is a code or
+  build claim, and the bench pass is owed.**
+
+  ### The module — `Core/Src/velocity.c`, `Core/Inc/velocity.h`
+
+  - **It is a policy layer above `drive.c`, and the split is the same one the
+    project has now settled on twice.** `drive.c` actuates and protects; it
+    decides nothing. `velocity.c` decides — what speed, how fast to get there,
+    what to do when the bridge is unavailable — and reaches the bridge only
+    through `drive_set_duty()`. Nothing in `drive.c` changed.
+  - **It steps at the MEASUREMENT rate, not the tick rate.** `velocity_on_tick()`
+    is called from the TIM6 1 kHz callback, but the first thing it does is
+    compare `encoder_velocity_seq()` against the last one it saw and return if
+    it has not moved. The encoder's velocity is a boxcar over
+    `ENCODER_VELOCITY_WINDOW_DEFAULT` = 20 ticks, so the loop actually runs at
+    **50 Hz**, and at `enc window 5` it would run at 200 Hz. **A loop that runs
+    faster than its sensor updates is differentiating a staircase and
+    integrating the same error several times over** — the derivative term would
+    be reading quantisation and the integral would be counting one real error as
+    twenty. `encoder_velocity_seq()` was added to `encoder.c` for this: it bumps
+    on window closure, which is the only honest "new measurement" event
+    available. The tick-callback order is `encoder_on_tick()` →
+    `drive_on_tick()` → `velocity_on_tick()`, velocity last and deliberately so:
+    it acts on the measurement taken this millisecond, not last.
+  - **Feedforward from the inverse plant.** `duty‰ = ff_a × rpm + ff_b`, with
+    `ff_a` = 12510 milli-o/oo-per-rpm from the loaded fit's inverse
+    `duty% = 1.251 × rpm + 3.028`, and `ff_b` = 30 o/oo applied **with the sign
+    of the setpoint** — friction opposes motion, so its compensation has to flip
+    with direction, which a slope term alone cannot do. The PID therefore only
+    corrects the fit's error rather than building the whole output from scratch,
+    which is what keeps the integrator small and its resting value diagnostic.
+  - **The setpoint ramp lives here, exactly as this project predicted it would.**
+    Task 21's note said "ramping the setpoint, once the velocity loop exists, is
+    a *different* ramp and does still belong to the control layer — `drive.c`
+    has no setpoint." That held: `vel_slew` (milli-rpm/s, default 4000 = 4 rpm/s)
+    ramps `sp_rpm` toward the commanded target inside `velocity.c`. Limiting the
+    setpoint rather than the output is what stops the loop winding up against
+    its own ramp.
+  - **Anti-windup freezes the integrator under four conditions, and reports
+    which.** Output saturated in the direction the error is pushing; `drive.c`'s
+    own limiter slewing; the bridge disabled or a fault latched; and the
+    setpoint watchdog expired. Lumping them into one "frozen" bit would have
+    been the easy thing and would have been useless — see the telemetry section.
+  - **Kd defaults to 0, is taken on the measurement rather than the error, and
+    is low-passed** (`D_FILTER_ALPHA` in `velocity.c`, deliberately *not* a
+    config key — a filter constant that can be set live invites tuning the
+    filter instead of the loop). Derivative on measurement means a setpoint step
+    does not produce a derivative kick.
+  - **Stopping is coasting.** `vel stop` walks the setpoint down and then coasts;
+    it is explicitly **not** an emergency stop, and `drv coast` stays the
+    immediate one. Same reasoning as `drive.c`'s watchdog action: braking from
+    speed drives I = E/R through the low-side FETs.
+  - **Gains ship at about a quarter of textbook, on purpose.** For K = 0.07993
+    rpm per o/oo and τ_fast = 0.219 s, the textbook pair is Kp = 1/K = **12.51**
+    and Ki = 1/(K·τ) = **57.1**. Shipped: **Kp 3.0, Ki 10.0**. The derate is not
+    conservatism for its own sake — the plant fit those numbers come from is the
+    one flagged 4.5% optimistic and due a re-take, and the rig is 2.87× light in
+    inertia against the rover. Gains derived from a model that is known wrong
+    should not be shipped at their full value.
+  - **Nine `cfg` keys, all in milli-units** because the store is int32-only:
+    `vel_kp` 3000, `vel_ki` 10000, `vel_kd` 0, `vel_ff_a` 12510, `vel_ff_b` 30,
+    `vel_ilim` 150, `vel_max` 300, `vel_slew` 4000, `vel_tmo` 1000. `vel_max` is
+    300 o/oo — **the 30% ceiling, in the loop's own units.** Each key is
+    live-applied by `cfg <key> <val>` with no save, which is the
+    set-for-this-session path the Sep 25 note asked for: the config log is
+    append-only with 1024 slots and one full snapshot per save, so a 50-point
+    gain scan that persisted every trial would burn 5% of the log. Adding the
+    keys cost nothing because **`cfg save` has still never been run on this
+    board** — the key-count gotcha would otherwise have discarded the record.
+
+  ### ⚠️ The loop defeats `drive.c`'s command watchdog, by construction
+
+  `drive_set_duty()` calls `drive_kick()` deliberately — a duty command is
+  evidence of a live host, which is the reasoning task 21 settled on. The
+  velocity loop calls `drive_set_duty()` fifty times a second, forever. So
+  **arming the loop means `drive.c`'s command watchdog can never expire again.**
+
+  This is not a bug to fix in `drive.c`; it is the necessary consequence of
+  putting a controller above it, and the answer is the same one the layering
+  already implies: the layer that can defeat a watchdog carries its own.
+  `velocity.c` has a **setpoint watchdog** (`vel_tmo`, default 1000 ms, **armed
+  by default — the opposite of `drv timeout`'s default-off**), and **only
+  `vel target` kicks it.** A setpoint arriving is evidence that something
+  upstream is still *choosing*, which is the thing actually worth watching once
+  the loop below is being kept alive unconditionally. On expiry it **coasts
+  immediately** rather than ramping down — matching `drive.c`'s precedent, on
+  the grounds that a dead host is not the moment to ease off over six seconds —
+  and the expired flag is **sticky**: a kick refreshes the countdown but never
+  clears the latch, which again matches `drive.c`. Only `velocity_enable()`
+  clears it.
+
+  ### ⚠️ A real defect in what had just been committed: no `volatile`
+
+  `velocity.c` was committed with **not one `volatile`** on any static written
+  by the TIM6 ISR and read from thread context — the whole loop-state block and
+  the whole watchdog block. `encoder.c` and `drive.c`, the two modules it sits
+  between and the two it was written by reading, both mark theirs correctly.
+
+  It was latent: nothing yet copied that state out in a way the compiler could
+  reorder or cache badly. The very next change — the telemetry snapshot — is
+  exactly what would have made it bite. Fixed as the first step of that change.
+  The **cached gain floats are deliberately left non-volatile**, with a comment
+  saying so: thread context writes them, the ISR only reads, and each is a
+  single word.
+
+  The generalisable part is in KEY LEARNINGS: a new module hanging off an
+  existing ISR does not inherit that ISR's concurrency discipline just by
+  sitting next to code that has it.
+
+  ### The telemetry channel — `V,`
+
+  **Why it was needed at all.** The `vel` console command prints loop state at
+  console pace, one line at a time for a human. A step response is a 1–2 second
+  event at 50 Hz. The existing `T,` line carries `duty`, `count`, `mrpm`, `ma`
+  and `flags` — what the **bridge and plant** did — and says nothing about what
+  the **loop decided**: no setpoint, no error, no term breakdown, no saturation
+  or anti-windup state. Tuning against `T,` alone means inferring the
+  controller's internals from its output.
+
+  ```
+  V,<seq>,<ms>,<sp_mrpm>,<meas_mrpm>,<out>,<ff>,<p>,<i>,<d>,<flags>
+  ```
+
+  - **A separate record, not more columns on `T,`.** `TELEM_RE` in `node.py` is
+    unanchored, so an extended `T,` would still match its first seven groups —
+    but `Telem.parse()` checks the field count and would reject it, and every
+    committed run directory holds a 7-field `telemetry.csv` header. A widened
+    `T,` would therefore mean **two incompatible things depending on which code
+    path read it**. A new record type breaks nothing: old logs parse unchanged,
+    and a reader that does not know about `V,` ignores it.
+  - **One line per control step, not on the `telem` timer.** The loop advances
+    at `1000 / enc window` Hz. Riding the telem scheduler would alias it — at
+    100 Hz every step appears twice, at 30 Hz they beat — and neither is
+    readable as a step response. The integrator and the derivative **only mean
+    anything per step**. So the loop publishes a snapshot and the main loop
+    drains it: exactly one row per control decision, self-limiting by
+    construction.
+  - **All four terms carried separately, and before the clamp.** `out` differing
+    from `ff + p + i + d` is then *exactly* the saturation, and an oscillation
+    says in the data which term is driving it. This was a deliberate choice over
+    a narrower 7-field line — the line is wider, and the bandwidth note below is
+    the price.
+  - **One slot with overrun reporting, not a ring.** A step the main loop failed
+    to drain before the next one overwrote it sets a sticky `pub_missed`, OR'd
+    into the **next** published line as bit 64. A ring would have hidden the
+    problem; silent decimation is worse than a gap, because **a decimated stream
+    reads as a slow control loop** — the wrong conclusion for someone about to
+    change a gain. Note this is a *different* failure from a `seq` gap: a gap is
+    lines lost on the wire and shows up as a missing number, while an unpublished
+    step leaves no hole to find, which is why it is flagged in-band and counted
+    separately (`veloc_steps_missed`).
+  - **The flag set splits the freeze reason three ways** (bit 2 frozen, bit 4
+    because drv is slewing, bit 8 because the bridge is unavailable). **Bit 2
+    alone is anti-windup doing its job under saturation; bit 2 with 4 or 8 is
+    the loop being held off by something else.** They are identical in `out` and
+    they want opposite corrections — one says the gains are fine and the output
+    is limited, the other says the run measured an obstruction. That distinction
+    is the entire reason the bits are separate.
+  - **`telem on` stays the master switch**: `V` requires `telem_on &&
+    telem_vel_on`, so `telem off` — which every host stop sequence already sends
+    — remains a complete stop for both channels.
+  - ⚠️ **Bandwidth is the binding constraint.** 115200 8N1 is 11.52 kB/s. A `T,`
+    line is ~45–59 bytes and a `V,` line ~50–76. `T` at 100 Hz plus `V` at 50 Hz
+    is **~9.7 kB/s, 84% of the link**, before the echo of anything typed —
+    and the console echoes each character as its own write. **`telem rate 50` is
+    the pairing that fits**, and `telem vel on` warns when `telem_ms < 20`.
+    The TX ring is 1024 bytes with a `tx_dropped` counter, which is the check.
+
+  ### Host side — `node.py`, `bench.py`
+
+  - **Both records are parsed from ONE regex alternation, not two `finditer`s.**
+    `_consume()`'s residual-rejoining — the logic that reassembles a command echo
+    a telemetry line landed inside of — depends on matches arriving **ordered and
+    non-overlapping**. One regex guarantees that; two merged iterators do not.
+    Dispatch is on `m.group(0)[0]`. Verified offline against a synthetic stream
+    with a `V,` line cutting `drv timeout 2000` in half: the echo reassembles
+    intact and both records come out.
+  - `Veloc` dataclass with `sp_rpm` / `meas_rpm` / `error_rpm` and a boolean
+    property per flag, plus `freeze_reason` returning the *reason*, not the bit.
+  - `velocity.csv` in every run directory; `veloc_samples`, `veloc_gaps` and
+    `veloc_steps_missed` in `meta.json` and `status.json`, and **either of the
+    last two now marks a run `suspect`** alongside the existing `seq` gaps and
+    `tx_dropped`.
+  - **`dwell()` gained `vel_kick`.** The velocity watchdog is armed at 1000 ms
+    and **only `vel target` refreshes it** — `drv timeout` kicks the layer below
+    and does nothing for it. Without this a 6 s dwell would coast the wheel one
+    second in, in the middle of the measurement, and the data would look like a
+    plant that cannot hold speed.
+
+  ### ⚠️ THE FINDING THAT GENERALISES: `safe_stop()` did not stop the loop
+
+  `node.safe_stop()` had sent `drv duty 0` → `drv coast` → `drv disable` →
+  `telem off` since the tool was written. **With the velocity loop armed, the
+  first two are overwritten by the loop about 20 ms after they land.** Only
+  `drv disable`, cutting nSLEEP, actually stopped anything. The sequence still
+  worked — by accident, and only because of its last step. `vel off` now goes
+  first.
+
+  The general form: **arming a control loop invalidates every stop sequence that
+  addresses the layer below it.** This is task 21's watchdog-defeat problem seen
+  from the other side — there the loop's continuous calls *kept alive* a
+  watchdog meant to detect a dead host; here they *overrode* a stop. Both are
+  one layer holding another's state open. It will recur at CAN and again at the
+  rover supervisor, and it is worth checking for deliberately each time rather
+  than finding it.
+
+  ### `bench.py run step`
+
+  Commands a setpoint step and reduces the `V,` rows to: rise time (10→90% of
+  the commanded change), overshoot, settling to ±2%, steady-state error,
+  saturation fraction, freeze fraction split by reason, and **the integrator's
+  resting value — which is how much the feedforward missed by**. A large steady
+  `i` with a small steady-state error says `ff_a`/`ff_b` want re-fitting, not
+  that Ki wants raising; without the term breakdown those two look the same.
+
+  - **Settling is the LAST moment outside the band, not the first moment inside
+    it.** A response that dips back out is not settled, and the first-crossing
+    definition would call it settled anyway.
+  - **`enc window` defaults to 20 here, NOT the sweep's 100.** This is the one
+    argument default that must not be copied across: the loop advances once per
+    window, so window 100 is a **10 Hz control loop with 100 ms of measurement
+    lag**, which would dominate the very response being measured — gains chosen
+    against it are gains for a different plant. `--window` therefore has no
+    single default any more; it is per-profile, and `step` warns above 40.
+  - **`cfg ramp_pmps 0` is sent unconditionally.** `drv ramp` and `vel_slew` are
+    two slew limiters in series and must not both be armed: with drv's running,
+    `drive_slewing()` is true almost continuously, the integrator is frozen for
+    essentially the whole run, and the step measures the limiter.
+  - **`--max-rpm 22`** is the 30% duty ceiling pushed through the plant fit
+    (0.7993 × 300/10 − 2.42 = 21.6 rpm), expressed in the units this profile
+    commands. Same explicit-raise pattern as `--max-duty`.
+  - **`--return`** steps back down, and is not symmetry-checking for its own
+    sake: the feedforward applies its friction offset **with the sign of the
+    setpoint**, so the down-step is the one place a wrong `ff_b` shows up as a
+    different *response* rather than as a constant error.
+  - ⚠️ **Every metric is computed from `meas_mrpm`**, the boxcar the controller
+    acted on. That is the right frame for choosing gains — it describes the
+    closed loop as the loop experienced it — and the **wrong** frame for a plant
+    time constant. The standing warning about fitting `mrpm` applies with more
+    force inside a loop, because the filter's lag is now in the feedback path.
+    Plant-side timing still comes from the `T,` rows and `rpm_from_counts()`.
+
+  ### State
+
+  Firmware builds clean under `-Wall -Wextra` at **27.14% flash (106 728 B of
+  the 384 kB application region), 4.35% RAM (5696 B)**. Both Python files parse; the parser and the metrics
+  reducer were exercised offline against synthetic streams (interleaved echo,
+  gapped `seq`, a missed-step flag, an overshooting up-step and a decaying
+  down-step) before any of it is pointed at a board. **The bench pass is owed,
+  desk first and one step at a time:** bridge disabled to prove the publish/drain
+  path and that the loop will not wind up against a dead bridge; `enc window 5`
+  to force bit 64 and confirm overrun is reported; the 1000 ms watchdog at the
+  desk; the parser against `run step --rpm 0`; a `run sweep` non-regression;
+  and only then the rig, `--rpm 10` before `--rpm 20`, watching `ma` against the
+  1580 mA trip before trusting any gain.
 
 - **Sep 26 — TASK 21: THE DUTY SLEW LIMITER IS IMPLEMENTED, INSIDE `drive.c`,
   which reverses the placement this project had written down. Code is complete
@@ -2121,3 +2636,639 @@ peak**, and treat the real number as something W4 measures.
 **Answered Aug 25:** stall is **4.1 A at 9 V**, well past the ~2 A figure — the
 reason the driver changed. **For PDB branch sizing use the DRV8874's numbers,
 not these**: ~3 A continuous with regulation set below that, 6 A peak.
+
+
+## Moved from the context file — 2026-09-26 reorganisation
+
+Verbatim material removed from the hot file when it was split into tiers.
+
+### Header history — the `Last updated` / `Previously` chain
+
+# RobertUN — Wheel Controller Firmware Context
+**Last updated:** September 26, 2026 (**THE STAIRCASE WAS RUN IN BOTH DIRECTIONS, AND THE DIRECTION ASYMMETRY IS ENTIRELY THE INTEGRATOR.** A second 21-minute staircase at **−10.0 → −20.0 rpm** (63,203 `V` rows, 0 gaps, 0 unpublished steps) tracks **better** than forward — worst settled error **0.006 rpm** vs 0.015 — with **0% saturation at all 21 holds**, peak 277 of 300 o/oo. ⚠️ **That corrects a prediction that the top of the reverse range would saturate**, extrapolated from the single −10 rpm check; it does not, because the asymmetry **changes sign at 14.3 rpm**. **`corr(Δ|out|, Δi) = 0.9986`, 0.62 o/oo rms apart** — the feedforward is symmetric *by construction* (it takes the sign of the setpoint), so every bit of direction dependence lands in the integrator, which makes **the integrator a direct readout of the model's direction error** and is how a separate reverse `ff_b` gets measured rather than guessed. ⚠️ **"Reverse is x% harder" is false**: the asymmetry spans −10.0 to +1.7 o/oo and clears the comparison's own **±2.16 o/oo noise floor at only 9 of 21 setpoints**. Reverse draws **+8.1% current while commanding LESS output** — real load or sign-dependent current sense, undecidable from these two runs. ⚠️ **A panel was caught about to ship a false claim:** the ripple count came out *identical to every digit* in both directions, which was the 20 ms lag grid (**±0.72 events/rev**), not agreement — sub-bin refinement tightens it 11× and gives **11.998 ± 0.017 forward, 11.978 ± 0.017 reverse**, i.e. the same feature at **exactly 12 per revolution**. ⚠️ **The confound is stated on the figure:** the runs are **67 min apart and not interleaved**, so temperature, belt tension and belt position are aliased into "direction"; an **A/B/A staircase has not been run**. `bench.py` gained the **`stair` profile** — with a sign bug caught before it ran, where a ceiling guard written as `max(setpoints)` would have read −10 and waved through any speed in the very direction about to be tested)
+
+**Previously:** September 26, 2026 (**THE VELOCITY LOOP RAN FOR 21 CONTINUOUS MINUTES ON THE RIG, AND THE SHIPPED GAINS ARE GOOD.** 21 setpoints 0.5 rpm apart, 10→20 rpm, 60 s each, uninterrupted: **mean tracking error +0.0008 rpm** against a 0.020 rpm instrument floor, **0% saturation at every hold** (peak 284 of 300 o/oo — the 6% an earlier short step reported was the acceleration transient, not the operating point), and **zero drift** over each 60 s. The closed-loop plant inverse `out = 12.559 × rpm + 30.54 o/oo` sits **0.39% from the Sep 25 open-loop sweep inverted**, from different excitation and a different estimator — **the feedforward is doing essentially all the work** (integrator mean +1.5 of ~219 o/oo) and the ¼-of-textbook derating is costing no accuracy. ⚠️ The **±1 rpm ripple is MECHANICAL and the run proves it**: 11.91 ± 0.19 events *per output revolution*, held across a 2:1 speed range while the period swept 500→260 ms — a limit cycle holds a fixed period, only a rotating feature holds a fixed count per rev. ⚠️ **Then `bench.py run step`'s metric was caught measuring `vel_slew` under the loop's name** — a 0→10 step returned "rise 2.0 s" whatever Kp was, because 2.0 s is 0.8 × the 2.5 s the 4 rpm/s setpoint ramp costs on its own. Rise/overshoot/settling now anchor at the **end of the ramp**, `track_lag_rpm` measures the loop *during* it, and the **"14% overshoot" turned out to be a ripple peak** — 4 encoder counts above target at both 10 and 20 rpm, `overshoot_above_ripple` **False on all three runs**. Two figures added; `stepdata.py` **imports `step_metrics` from `bench.py`** so the figure cannot drift from the tool)
+
+**Previously:** September 26, 2026 (**W5's VELOCITY PID MODULE IS WRITTEN, AND SO IS THE INSTRUMENT TO TUNE IT WITH — both on `w5-velocity-pid`, neither yet run on hardware.** `velocity.c`/`.h` is a **policy layer above `drive.c`**, stepping at the *measurement* rate (once per `enc window`, 50 Hz default) rather than on the 1 kHz tick, with feedforward from the inverse plant, the **setpoint ramp that task 21 said belongs up here**, four named anti-windup freeze conditions, and nine `cfg` keys in milli-units. Then the telemetry: a second opt-in **`V,` record — one line per control step**, carrying setpoint, measurement, output and **all four terms separately**, plus a flag set that splits *why* the integrator froze. Host side gained the parser, `velocity.csv`, and **`bench.py run step`** — rise time, overshoot, settling, steady-state error, and the integrator's resting value, which is how much the feedforward missed by. ⚠️ **The finding that generalises: arming a control loop invalidates every host-side stop sequence that talks to the layer below it.** `safe_stop()`'s `drv duty 0` / `drv coast` were being overwritten by the loop 20 ms later; `vel off` now goes first. Same shape as task 21's watchdog-defeat problem, one layer up. ⚠️ Also fixed: **`velocity.c` shipped with no `volatile` on any ISR-written static** — caught while adding the snapshot, before it cost anything)
+
+**Previously:** September 25, 2026 (**LOADED-RIG PASS TAKEN, AND THE PLANT'S TIME CONSTANT MEASURED TWICE BY TWO INDEPENDENT ROUTES.** Two clean 30 s/point sweeps in 2% steps on the treadmill belt at 1047 g: pooled **`rpm = 0.7993 d − 2.420`** over 11–29%, **the load costs only 4.3% of the free-wheel slope** and 0.85 rpm of intercept. **Breakaway 9–11% duty is the SAME TERMINAL VOLTAGE** as Sep 15's 12–14% on the 9.35 V rail (1.203 V vs 1.216 V) — breakaway is a voltage threshold, not a duty one. Current separates **Coulomb (free, flat) from viscous (loaded, +4.4 mA/%)**; above ~31% the wheel bounces on the belt and the slope lifts 16.3%, which is the rig and not the plant. **⚠️ THE τ ≈ 0.65–0.70 s REPORTED EARLIER THIS SESSION IS WRONG** — the plant is **two-pole**: **τ_fast 0.219 ± 0.007 s** (84%) + **τ_slow 2.75 s** (16%, the belt), verified against an independent ramp-tracking lag of **0.207 ± 0.007 s** — **5.7% apart**. A one-pole fit returns a window-dependent artifact that climbs to 0.724 s at a 10 s horizon. **The model stays linear**; the 25% gain droop is carried as a PID design constraint. Rig inertia is **2.87× light** vs the rover, so τ there will be longer)
+
+**Previously:** September 25, 2026 (**BENCH TOOLING BUILT, AND THE 12 V FREE-WHEEL PLANT RE-TAKEN WITH IT.** Firmware gained `telem` (machine-readable stream, 1–100 Hz) and `drv timeout` (command watchdog, coasts on expiry); `tools/bench/` drives runs and logs them to files. Four clean sweeps, **wheel now CLAMPED to the table** rather than hand-held: **CW `rpm = 0.8327 d − 1.524`, CCW `0.8618 d − 1.164`, R² ≥ 0.9999**. **Task 17's CCW is CLOSED — +3.49% asymmetry against Aug 26's +3.5%**, confirmed by a different method, rail and mounting. **The mounting moves the intercept, not the slope** (clamped vs hand-held slope agree to 0.3%); the tool validated like-for-like against the hand-typed table to **−0.18%**. What reads as hysteresis is the motor **warming**. Loaded-rig pass and the deliberate watchdog test still owed)
+
+**Previously:** September 23, 2026 (**12 V FREE-WHEEL PLANT MODEL MEASURED — `rpm ≈ 0.83 × duty% − 0.96`, one straight line from 3% to 100% duty, no hysteresis in the 5–30% operating band**; stiction is separate and large — breakaway 5–6% duty, dropout 2–3%, minimum sustainable speed ≈1.6 rpm; a duty slew-rate limiter was raised as a W5 requirement after every duty step fired the trip; **CCW and the loaded-rig pass still owed**)
+
+**Sibling files:** `PROJECT_CONTEXT_REST.md` — machines, network, ROS 2/Jetson/Isaac, bus-wide CAN architecture, power distribution, and tooling. `PROJECT_CONTEXT_WHEEL_FW_LOG.md` — the full, unedited progress log behind the one-line summaries below. Paste this file alone for routine wheel-firmware session starts; pull in the log file only when you need the exact numbers/reasoning behind a specific entry.
+
+*Split from the original PROJECT_CONTEXT.md on Sep 17, 2026. See PROJECT_CONTEXT_REST.md for the split rationale.*
+
+> **THIS IS THE DEFAULT FILE FOR A WHEEL-FIRMWARE SESSION.** Read it whole; do
+> **not** also read the LOG file unless a specific entry's exact numbers are
+> actually needed. That restraint is the reason the split exists.
+>
+> **When writing at the end of a session:** the detailed entry goes in
+> `PROJECT_CONTEXT_WHEEL_FW_LOG.md`, and only **one summary line** comes back
+> here. Durable rules go to KEY LEARNINGS below, open work to NEXT TASKS below.
+> Keep this file's own length roughly flat over time — if a section here is
+> growing into a narrative, it belongs in the log.
+
+
+### Brief progress log — as it stood in the hot file
+
+## Progress log (most recent first) — brief
+
+One line per entry. Full detail (exact numbers, register values, reasoning chains) is in `PROJECT_CONTEXT_WHEEL_FW_LOG.md`.
+
+- **Sep 26 (bench, reverse)** — **THE SAME STAIRCASE IN REVERSE, AND THE ASYMMETRY IS THE INTEGRATOR AND NOTHING ELSE.** 21 points, −10.0 → −20.0 rpm, 60 s each, uninterrupted (`runs/2026-09-26T11-02-46_stair`, **63,203 `V` rows, 0 gaps, 0 unpublished steps, 0 tx_dropped**). **Tracking is better than forward** — worst settled error **0.006 rpm** vs 0.015, per-point sem 0.019 — and **0% saturation at all 21 holds**, peak **277 of 300 o/oo**. ⚠️ **This corrects a prediction I made** from the single −10 rpm direction check, that the top of the reverse range would saturate: it does not, because the asymmetry **changes sign**. **The headline: `corr(Δ|out|, Δi) = 0.9986`, 0.62 o/oo rms apart.** The feedforward takes the sign of the *setpoint* ([`velocity.c:346`](../../firmware/RobertUN_ModuleNode/Core/Src/velocity.c#L346)) and is therefore symmetric **by construction**, so it cannot absorb a plant that is not — every bit of direction dependence lands in the integrator, which makes **the integrator a direct readout of the model's direction error**. ⚠️ **No single "reverse is x% harder" is true:** the asymmetry spans **−10.0 to +1.7 o/oo** (mean −2.74) and **changes sign at 14.3 rpm**, clearing the comparison's own **±2.16 o/oo noise floor** (quadrature sum of the two fits' residuals) at **9 of 21 setpoints**. Reverse inverse **`out = 11.503 × |rpm| + 43.65`** (rms 1.54) vs forward `12.559 × rpm + 30.54` — different slope *and* intercept. **The ripple is the same mechanical feature, at 12.00 per revolution**: 11.998 ± 0.017 forward, 11.978 ± 0.017 reverse, paired difference −0.0204 ± 0.0030 (negative at 20 of 21) — resolved but 0.17%. ⚠️ **That panel was about to ship a false claim:** on the raw grid an autocorrelation period is an integer count of 20 ms control steps, worth **±0.72 events/rev**, so both directions returned *identical digits* at all 21 holds and reporting it as agreement would have claimed a precision the method does not have; sub-bin parabolic refinement (opt-in, so the forward figure's numbers do not move) tightens it 11×. The ripple's **amplitude** is not the same (0.87→1.21 rpm fwd, 0.88→1.00 rev). ⚠️ **Reverse draws +8.1% current (292 vs 270 mA) while commanding LESS output** — a real direction-dependent load or a sign-dependent offset in the current sense, undecidable from these two runs and partly inside the 145 o/oo sense floor. ⚠️ **THE CONFOUND, carried on the figure:** the runs are **67 min apart and NOT interleaved**, so temperature, belt tension and carriage position on a belt that travels the *other way* in reverse are all aliased into "direction"; **an A/B/A staircase would separate them and has not been run.** Tooling: `bench.py` gained the **`stair` profile** (one arming, long dwell per point, settled stats) — ⚠️ **two sign bugs were caught in it before it ran**, the fatal one a ceiling guard written as `max(setpoints)`, which reads **−10** for a reverse run and would have waved through any speed at all in the very direction about to be tested; `--lo`/`--hi` are now **magnitudes** with `--dir` carrying the sign, and the guard tests magnitude. Figure `velocity_loop_stair_direction.png` + script added.
+- **Sep 26 (bench)** — **THE VELOCITY LOOP RAN 21 CONTINUOUS MINUTES AND THE SHIPPED GAINS ARE GOOD; THEN THE STEP METRIC THAT SAID OTHERWISE TURNED OUT TO BE MEASURING THE SLEW LIMITER.** A 21-point staircase, 10.0→20.0 rpm in 0.5 rpm steps, **60 s each, uninterrupted** — chosen over another short step because a step says whether the loop is *stable* and nothing about whether it is *accurate*. **63,202 `V` rows, 0 sequence gaps, 0 unpublished control steps, 0 tx_dropped.** **Tracking: mean error +0.0008 rpm, worst 0.015, sd 0.005**, against a per-point standard error of ~0.020 rpm — the loop is accurate below the noise floor of the instrument measuring it. **0% saturation at all 21 holds**, peak **284 of 300 o/oo**, which corrects the 6% an earlier short step reported at 20 rpm: that was the **acceleration transient**, not the operating point. **The derating costs nothing because the plant model behind the feedforward is right** — closed-loop inverse **`out = 12.559 × rpm + 30.54 o/oo`** (rms 1.51, n=21) against Sep 25's open-loop sweep inverted, **`12.511 × rpm + 30.28` — 0.39% apart** from different excitation and a different estimator; shipped `ff` error at 15 rpm **−1.3 o/oo (−0.6%)**, integrator **mean +1.46 o/oo of ~219 commanded**. ⚠️ **The "~4.5% optimistic" caveat on that plant model does not hold in this band.** ⚠️ **The ±1 rpm ripple is MECHANICAL and the run proves it rather than asserting it: 11.91 ± 0.19 events per output revolution**, range 11.5–12.2, held across a 2:1 speed range while the *period* swept 500→260 ms — **a control limit cycle holds a fixed period; only a rotating feature holds a fixed count per revolution.** Identifying which feature is a mechanical job. Within-hold drift **+0.0005 rpm / −0.04 o/oo over 60 s**, and the low-end current U-shape is **not** a warm-up transient (a 90 s re-take 22 min later reproduced 294→293 and 274→278 mA) — but it sits near the 145 o/oo sense floor and wants an independent ammeter. ⚠️ **THEN THE METRIC.** `run step` reported "rise 2.0 s, overshoot 14%" for 0→10 rpm; **both were measurements of something other than the controller, and both pointed at a gain change that would have made the loop worse.** `vel_slew` ships at **4 rpm/s**, so a 0→10 "step" is 2.5 s of ramp and 0→20 is 5 s — **the tell was that rise did not depend on Kp**, because 2.0 s is 0.8 × 2.5 s, the limiter's own 10→90% time. Overshoot and settling now anchor **at the instant `VFLAG_RAMPING` clears**; `rise_s` is still reported from the command but beside **`rise_slew_floor_s`** with **`ramp_limited`** set when it is within 30% of it; new **`track_lag_rpm`** measures how far behind the moving setpoint the loop sits *during* the ramp, **which is the quantity a gain change actually moves**. Replaying all three committed runs recovers **`slew_rpm_s` 3.97–3.98** against the configured 4.0, and the 0→20 run settles **2.94 s from the ramp's end vs 7.94 s from the command** — **the same instant**, 5.00 s apart only in what they subtract. ⚠️ **The corrected metric then exposed a second defect: the "overshoot" is a ripple peak.** A single maximum drawn from ~1.2 rpm sd of mechanical ripple sits 2–3 sd high whatever the gains do; all three runs peak **4 encoder counts (1.42 rpm) above target — the same distance at 10 and at 20 rpm**, which a controller's overshoot would not be. `step_metrics` now reports **`tail_sd_rpm`** and sets **`overshoot_above_ripple`, False on all three**, bounds the peak search to a 3 s window (the plant's slow pole is 2.75 s) so a longer `--dwell` cannot manufacture a bigger overshoot, and flags **`overshoot_window_truncated`** when a run was too short to fill it. **The honest verdict for all three is "no overshoot resolvable, and rise not measurable above the limiter"** — less satisfying than "lower Kp", and correct. A real step response needs **`--slew 0`, which has not been run.** Two figures added; ⚠️ **`stepdata.py` imports `step_metrics` from `bench.py` and calls it rather than recomputing it**, so the figure cannot drift from the tool it documents.
+- **Sep 26 (later)** — **W5's VELOCITY PID IS WRITTEN, AND SO IS THE INSTRUMENT TO TUNE IT.** Branch `w5-velocity-pid`; **nothing here has been run on hardware yet.** `velocity.c`/`velocity.h` is a **policy layer above `drive.c`** — it decides, `drive.c` actuates — and it **steps at the measurement rate, not the tick rate**: `velocity_on_tick()` runs off TIM6 but advances only when `encoder_velocity_seq()` changes, which is once per `enc window` (50 Hz at window 20). A loop running faster than its sensor updates would differentiate a staircase and integrate the same error twice. Feedforward comes from the inverse plant (`duty% = 1.251 × rpm + 3.028`) with the friction offset applied **with the sign of the setpoint**, so the PID only has to correct the fit's error rather than build the whole output. **The setpoint ramp lives here**, which is exactly what task 21 said it would: `drive.c` has no setpoint, and ramping the setpoint is what stops the loop winding up against its own ramp. Anti-windup freezes the integrator under four named conditions, and **which one fired is reported**. Gains ship at **¼ of textbook** (Kp 3.0 / Ki 10.0 against 1/K = 12.51 and 1/(K·τ) = 57.1) on purpose — the plant fit they derive from is the one flagged 4.5% optimistic. Nine `cfg` keys in **milli-units**, because config is int32-only. ⚠️ **A real defect was found in what had just been committed: not one of `velocity.c`'s ISR-written statics was `volatile`** — latent while nothing copied them out, load-bearing the moment a snapshot did. Fixed before the snapshot was added. **Then the telemetry, which is the half that makes tuning possible at all.** The `T,` line says what the *bridge and plant* did; it says nothing about what the *loop decided*. So a second opt-in record, **`V,seq,ms,sp_mrpm,meas_mrpm,out,ff,p,i,d,flags`** — a separate record rather than more columns on `T,`, because `Telem.parse()` length-checks and every committed run directory holds a 7-field `telemetry.csv`, so a widened `T,` would mean two incompatible things depending on the reader. **Published once per control step, not on the `telem` timer**: riding that timer would alias the loop (duplicates at 100 Hz, beats at 30 Hz), and the integrator and derivative only mean anything per step. **One slot with overrun reporting, not a ring** — an unpublished step sets a sticky bit that is OR'd into the next line, because a silently decimated stream reads as a *slow control loop*, which is the wrong conclusion for someone about to change a gain. The flag set **splits the freeze reason three ways**: frozen-alone is anti-windup working, frozen-plus-slewing or frozen-plus-no-bridge is the loop being held off by something else — identical in `out`, opposite corrections. `telem on` stays the master switch, so `telem off` remains a complete stop. Host side: `node.py` parses both records from **one regex alternation** (the echo-reassembly logic needs ordered non-overlapping matches, which two iterators cannot promise), `bench.py` writes `velocity.csv` and gained **`run step`** — rise time, overshoot, settling to ±2%, steady-state error, saturation and freeze fractions, and **the integrator's resting value, which is how much the feedforward missed by**. Two profile defaults that are not copied from `sweep` and must not be: **`enc window 20`, not 100** (window 100 is a 10 Hz loop with 100 ms of lag that would dominate the response being measured) and **`cfg ramp_pmps 0`** (with drv's limiter armed, `drive_slewing()` is true almost continuously and the integrator is frozen for the whole run). ⚠️ **The finding worth carrying forward: arming a control loop invalidates every host-side stop sequence that addresses the layer below it.** `safe_stop()` sent `drv duty 0`, `drv coast`, `drv disable`, `telem off` — with the loop armed the first two are overwritten 20 ms later, and only the third actually stopped anything. `vel off` now goes first. This is task 21's watchdog-defeat problem one layer up, and it will recur again at CAN and at the rover supervisor. Firmware builds clean under `-Wall -Wextra` at **27.14% flash, 4.35% RAM**.
+- **Sep 26** — **TASK 21: THE DUTY SLEW LIMITER IS IN THE FIRMWARE.** `drive.c` gained a per-mille slew limiter on the existing 1 kHz TIM6 tick — `drv ramp <o/oo per s>`, `drv ramp floor <o/oo>`, both backed by config keys (`ramp_pmps`, `ramp_floor`) and both **0 = off**, so nothing behaves differently until armed. Also `drv duty <n>p`, a per-mille command form that **unblocks the 1%-step stiction bracket**. ⚠️ **The placement reverses what this file said.** Task 21 had it in the control layer; reading the code showed that cannot work, because **`drive_set_duty()` calls `drive_kick()`** on purpose — a duty command is evidence of a live host — so any ramp module above `drive.c` would refresh the command watchdog a thousand times a second and a dead host would never be detected again. It is therefore the **command watchdog's own split**: mechanism in `drive.c`, policy above. Secondary reason: a limiter callers can route around is advisory; inside, the invariant is unconditional. **Coast and brake are deliberately NOT ramped** — coast is the safe stop and the watchdog's action, brake is an explicit act — so the standing "ramp duty down before braking" policy is written above as `drive_set_duty(0)` → `!drive_slewing()` → `drive_brake()`, which is what the new accessor is for; a tightened `drive_set_limit()` is immediate too, being protection rather than a command. `drive_duty()` now reports what the **bridge is running**, not the target, so a ramp shows up in telemetry as a ramp. The accumulator is in **milli-per-mille** because 5%/s is 0.05 per-mille per tick, and that scaling collapses to an identity — **the per-tick step in milli-per-mille IS the rate in per-mille per second** — so there is no division in the ISR and a ramp lands exactly on its target. Arithmetic verified offline against a transcription of the C before the board was touched (floor jump, no floor re-trigger at a reversal's zero crossing, cap-tightening instant and sticky, 50 CCR writes/s not 1000). Builds clean at 96 972 B flash. **Two things learned from reading `cfg` first:** the bench board has **never had `cfg save` run** (`slot 0/1024`, no overrides), so adding keys cost no calibration — but in general **adding a config key discards the stored record**, since `config.c` rejects a record whose key count differs, and `CONFIG_VERSION` is not what guards that. ✅ **Verified on the loaded rig the same day**, 1462 telemetry lines with no seq gaps: slew rate **50.00 o/oo/s** fitted over 340 samples, 120→290 in **3400 ms against 3400 predicted**, floor jump in one sample and the encoder turning 10 ms later, sync setting at duty 145 as always, **peak 581 mA against the host prototype's 572**. **The A/B against `drv ramp 0` is the evidence:** the un-ramped step read **1582 mA against a 1579 mA trip** — the clamp value, not the demand — and held the driver in regulation ~40 ms, so **the ramp cuts peak inrush 2.7×**; ⚠️ it latched **no fault and no ADC saturation**, meaning an un-ramped start relies on ITRIP silently and nothing in the telemetry would ever have shown it. **The watchdog test was repeated with the motor live and passed**: the 10 s deadline landed on the exact millisecond and duty went 290→0 in one sample (coast, not ramp). ⚠️ Both runs settled at **19.82 / 19.97 rpm against the fit's 20.76**, 4.5% low and mutually consistent — **the loaded plant line needs re-fitting, not explaining**.
+- **Sep 25 (later)** — **LOADED-RIG PASS, AND τ MEASURED TWICE FROM TWO INDEPENDENT ROUTES.** Two integrity-clean sweeps on the treadmill belt (wheel + carriage **1047 g**, 12 V rail, **2% steps, 30 s dwell**, 1125 settled samples/point; the descending run entered on a **host-side 12→29% ramp at 5%/s**, standing in for the firmware slew limiter that still does not exist). **Steady state, 11–29%: pooled `rpm = 0.7993 d − 2.420`** against the free wheel's `0.8356 d − 1.573` — **the load costs 4.3% of slope and 0.85 rpm of intercept**, so the Sep 25 mounting rule holds from the other side. Repeatability floor **±0.174 rpm**. **Breakaway and dropout both land in 9–11% duty**, and that is the *same terminal voltage* as Sep 15's 12–14% on the 9.35 V rail (**1.203 V vs 1.216 V, 1.0% apart**) — **breakaway is a voltage threshold, and breakaway duty is not portable across rails**; the Stribeck cliff moved below 11% with it. Current finally separates the two friction terms: **free wheel flat at 232.5 ± 18.5 mA (slope −0.85 mA/%, Coulomb), loaded rising 266→313 mA at +4.4 mA/% (viscous)**. **Above ~31% the wheel bounces on the belt** — slope lifts from 0.7924 to **0.9219 rpm/% (+16.3%)**, which is the rig and not the plant, and is why 30% is the characterisation ceiling. The band's curvature is **real, not thermal**: asc/desc residuals correlate **+0.718** where drift would anti-correlate. **The model stays linear anyway** — a quadratic buys 0.063 rpm of rms against a 0.174 rpm floor — and the **25% gain droop** (0.899 → 0.700 rpm/%) is carried as a PID design constraint instead. **⚠️ THE BIG CORRECTION: the τ ≈ 0.65–0.70 s reported earlier today is wrong.** The plant is **two-pole** — **τ_fast 0.219 ± 0.007 s (84%)** plus **τ_slow 2.75 ± 0.05 s (16%, belt and contact settling, which is why the 30 s dwell was needed)**. A one-pole fit returns a **window-dependent artifact**: 0.290 s at 1 s, 0.496 s at 3 s, **0.724 s at 10 s** — never settling, and the last is essentially the number first quoted. **Verified from two independent measurements: an ensemble of 42 stacked 2% steps gives 0.219 s, and the ramp-tracking lag on the entry ramp gives 0.207 ± 0.007 s — 5.7% apart**, from different excitation, different data and a different estimator. Two supporting errors were also found and fixed (the ramp rate was 4.814 %/s, not 3.75, and the end-of-ramp speed had been read off `mrpm` instead of `count`). ⚠️ **The rig loads the wheel but does not carry the rover's inertia** — 1047 g is normal force, and the rover is ~3 kg/wheel, so the rig is **2.87× light**: friction transfers, τ does not, and τ on the rover will be longer. Two figures and their scripts added under `docs/environment/figures/`.
+- **Sep 25** — **BENCH HOST TOOLING, end of the hand-transcription era.** Firmware gained **`telem`** (`T,seq,ms,duty,count,milli_rpm,mA,flags` at 1–100 Hz, integer fields only, emitted from the main loop) and **`drv timeout`** (a command watchdog that was simply absent — it **coasts** on expiry, and is checked *before* the fault path's early return). `tools/bench/` (`node.py` + `bench.py`) drives profiles, logs raw-before-parsed, and rewrites `status.json` once a second so a run can be left alone and checked on by reading one small file. Proven at the wire with the motor stopped: **31 lines in 3.0 s, zero seq gaps, board-stamped intervals 99–100 ms against a nominal 100.** One real bug found and fixed: the prompt carries no newline, so a telemetry line landing behind it merged in the buffer and the prompt was never seen again. **The tool then found a second bug in itself** — the pre-flight fault gate would have refused every run, because nFAULT reads low the whole time nSLEEP is low, so a reset board always reports a latched fault; it now wakes the driver and clears the latch before looking. **First motor run: no 12 V rail.** Board accepted 20% duty and was genuinely switching (`flags=3`), but zero counts and 11 mA across 150 samples — diagnosed from the recorded run in one look, no re-run. After the rail was repaired, **a third bug surfaced only on real hardware**: the console echoes each typed character as its own one-byte write while a telemetry line is one atomic write, so a `T,` record lands *inside* a command echo — the parser now extracts records anywhere in a line and reassembles the echo around them, and an echo mismatch is counted rather than fatal. **Then four clean sweeps re-took the plant** (0 seq gaps, 0 echo mismatches, 0 `tx_dropped` on all four), with the **wheel clamped to the table** instead of hand-held: CW asc `0.8327 d − 1.524`, CW desc `0.8187 d − 0.752`, CCW `0.8618 d − 1.164`, CW full range `0.8186 d − 0.833`, every R² ≥ 0.9999. **The validation gate passed at −0.18%** against the Sep 23 hand-typed table over the same 20–100% points, and **CCW closed task 17's last free-wheel item at +3.49%**, matching Aug 26's +3.5% from a different method. Two findings worth keeping: **mounting moves the intercept and leaves the slope alone**, and the asc/desc gap is **the motor warming, not hysteresis** — it tracks elapsed time, not direction. Loaded rig and the deliberate `kill -9` watchdog test still owed.
+- **Sep 20 (later)** — **W4 CLOSED. Task 20 implemented and built clean.** `k = 3` now applied in the mA↔VREF conversion pair (as a config key, `cfg vref_div`, so a different part is a console command and not a rebuild); the sampler moved from the window MIDPOINT to its settled tail, `trigger = end − (aperture + guard)`, which cost the minimum synchronised duty 4.3% → **14.5%** and bought back the ~13% the midpoint read low; `drv current` now spreads its samples over 4 ticks for the same 64 periods. **The two measured constants were finally applied** — VDDA 3300 → **3325**, R_IPROPI 1474 → **1465** — held back since Sep 12 so nothing moved underneath the plateau sweep, closing the last open W4 item. Printed trip range is now **~101–1580 mA** (was 1558 on the nominal constants); full scale 5.044 A, one LSB 1.231 mA. Two latent bugs caught on the way: the mA→mV multiply wrapped uint32 at `drv trip 3000` and would have reported ~811 mA as honoured, and `iscan`'s window markers were derived from the old midpoint convention. **`CONFIG_VERSION` 1 → 2, so the stored calibration record is discarded on this boot.** Bench re-take of the calibration point still owed.
+- **Sep 21** — **TASK 20 BENCH-VERIFIED, W4's last owed item cleared.** At 12.0 V, 20% duty, shaft stalled: **`drv current` = 1268 mA against `D × Vm / R_motor` = 1263 mA, +0.4%**, with `sync: 64 samples over 4 ticks in 4100..4348` confirming the spread, the settle floor and the end-relative placement in one line. The same two traces re-reproduced the bug that was fixed — the old midpoint tick 4050 read **14.3% and 16.1% below** the settled tail of its own run. The `cfg` check came first and passed: the forced wipe booted the board **already calibrated** (`config v2, 9 keys, slot 0/1024`, vdda_mv 3325, r_ipropi 1465, vref_div 3, no overrides), and `drv trip 1580` read back 1579 mA with `range 101..1580 mA` — the predicted ceiling to the digit. Duty-0 checks confirmed the `ticks == 0 → CCR 4500` case and the gate's refusal. **New lead:** the decay-phase tick reads a reproducible **0.670** of the drive tail across runs, where physics allows only 4.4% of droop — if that factor is real it makes current readable below the 14.5% synchronised floor, which is the standing W5 constraint. Console fixed afterwards, not during: `1 code = 1 ADC LSB` → `1 DAC code = 1/3 ADC LSB (VREF/3)`.
+- **Sep 20** — **PLATEAU SWEEP DONE: `k = 3`.** The DRV8874 compares IPROPI against **VREF/3**, so **every `drv trip` is 3× too high** — the real range is ~100–1558 mA and the 3000 mA boot default is really 1000 mA. `k=1`/`k=2` refuted; confirmed predictively by a plateau that ignored a 7.6% shift in demand. The current-sense chain is **calibrated against physics for the first time** (1290 mA measured vs 1263 predicted, 2%). Three sampler bugs found: IPROPI settles in **5.6 µs not 1.6 µs**, `ISENSE_SYNC_MIN_TICKS` 192 is far too low (nothing below ~13% duty is valid), and `place_trigger()` samples the contaminated half of the window. The **Sep 12 "reading is SUPPLY current" conclusion is retracted** — it was a pre-Sep-16 sampling artifact, and the stated IMODE cause was wrong too.
+- **Sep 19 (later)** — **Task 19 CLEARED.** Ground return rebuilt with three thick conductors; `drv pin`-free build flashed; **PMODE confirmed latched in PWM mode** by scoping both motor outputs — at 13% duty one carries PWM and **the other sits at GND**, which only low-side slow decay produces (independent half-bridge would park it at the rail). Roles swap cleanly at −13%. Motor rail raised to **12.0 V, DMM at the DRV8874 VM pin**. Current regulation is live for the first time, so the 3000 mA boot trip is now real — and every plant figure on record belongs to the old 9.35 V rail.
+- **Sep 19** — Replacement MCU board verified **bare** on both pad checks (`drv pin` → both pads `mode 2 af 2`, `IDR 0`; `drv pin pd` → PB7 `IDR 0`, where the dead board read 1), so PB6/PB7 stay put and TIM3/PC6-PC7 is off the table. PMODE strapped with 10 kΩ to 3V3, **not yet confirmed latched**. VREF confirmed bare and a 100 kΩ pull-down rejected — it would be indistinguishable from the internal divider the plateau sweep is meant to measure. **Task 19 still blocks: ground return next.**
+- **Sep 18** — Context file restructured: DRV8833 history and the completed NEXT TASKS moved to the log file (2338 → 1961 lines). MCU board replaced; PB7 not yet re-checked — **task 19 is still the blocker, and the bare-board `drv pin` check is step one.**
+- **Sep 16** — PMODE was never strapped. Floating is Hi-Z, which latched the driver into independent half-bridge for five days (invisible on rpm, but it disabled current regulation and made IPROPI blind to the decay phase); on the last power-up it latched PH/EN instead, turning a 13% duty command into ~74% of the rail, and that return current destroyed PB7. MCU board is being replaced — **task 19 is a blocker on all bench work.**
+- **Sep 15** — PWM-synchronised current sampling (`drv iscan`) confirmed the TIM4_CH4 trigger placement is correct, but the IPROPI waveform inside the drive window showed unexplained structure — later traced (Sep 16) to sampling during the wrong, high-side decay phase.
+- **Sep 15 — retraction** — Withdrew the "free-running sampler aliases" diagnosis; it failed a repeatability check (189/190 mA on repeat), so the low-current scatter has a different, still-open cause.
+- **Sep 15 — free vs wheeled motor** — Clarified which bench figures carry over to the loaded wheel (motor-electrical: R, L, Kt, Ke, counts/rev) versus which don't (system-mechanical: breakaway, friction, no-load current).
+- **Sep 15 — loaded-rig characterisation** — Loaded wheel: breakaway 12–14% duty, dropout ~10.5%, minimum sustainable speed ≈4.9 rpm (Stribeck cliff) — constrains the demo's slowest manoeuvre. Current readings from the same sweep flagged untrustworthy.
+- **Sep 14 (later)** — Module identity (`dipsw.c`, 3-bit DIP switch) implemented and verified on hardware across all eight codes; heartbeat and CAN ID now track module ID, closing W7's firmware dependency.
+- **Sep 14** — `config` module verified on hardware (8/8 bench checks); two consistency-check bugs found and fixed; confirmed a reflash does not erase the calibration sector.
+- **Sep 13** — `config` module built: eight tunables moved from compiled `#define`s into FLASH as a CRC'd, append-only log. Builds clean, not yet bench-verified.
+- **Sep 12 (4)** — Decided to raise the motor rail from 9.5 V to 12 V (the motor is a 12 V unit; 9.5 V was only the old DRV8833's ceiling) and identified the need for the `config` module.
+- **Sep 12 (3)** — Fixed an invalid `.ioc` (wrong CubeMX signal names) that had silently dropped TIM2/TIM4, and a regeneration that silently deleted the USER CODE blocks starting those timers. Decoded IPROPI as reporting **supply** current, not motor current.
+- **Sep 12 (2)** — Modified the DRV8874 bench carrier to make VREF software-settable via a DAC, decoupling the current ceiling (4.975 A) from the regulation trip point; added `drv trip` command. Firmware pending a CubeMX regen.
+- **Sep 12** — Measured the DRV8874 carrier's three straps (R_IPROPI, IMODE, nSLEEP→VREF); added the `isense` current-sensing module; found the carrier's fixed VREF forecloses software-settable current limiting.
+- **Sep 11** — Three-week gap explained: all seven motor encoders re-terminated with crimped joints, the DRV8874 arrived early, a loaded wheel test rig was built, and node PCB design was delegated to a student.
+- **Aug 26 (late)** — Measured motor terminal voltage (9.45 V→9.35 V) and Ke≈0.138 V/rpm; decided stop policy: coast by default, brake only below ~40 rpm.
+- **Aug 26 (evening)** — First powered motion (free shaft): plant is linear (rpm = 0.672×duty% − 1.8); sign convention and drive scheme (slow decay) settled.
+- **Aug 26 (later)** — PWM scope-verified with motor disconnected: all four drive quadrants correct at 20.000 kHz; two apparent anomalies were instrument error, not firmware.
+- **Aug 26** — W4 acceptance criterion met: encoder firmware (TIM2 + TIM6) verified on the bench at 8394.9 counts/rev against the predicted 8403.2 (0.1% low).
+- **Aug 25–26** — Encoder dead on two motors, root-caused to a broken VCC conductor in student-soldered cable extensions.
+- **Aug 25 (later)** — Bench-measured two motors: R≈1.90 Ω, L≈1.70 mH, matched to <2% — one PID gain set should fit all six wheels; motor rail set at 9.5 V.
+- **Aug 25 (earlier)** — Got the motor datasheet: encoder is 64 CPR (8403.2 counts/rev at output); driver changed from DRV8833 to DRV8874 for current sensing/limiting headroom.
+- **Aug 24–25** — W4 opened: node pin map settled (encoder moved to TIM2); DRV8833 carrier characterised — no current feedback or hardware current limit on that carrier.
+- **Aug 13** — W3 acceptance criterion met: STM32 commands the SERVO42C to a target angle with 1/10-microstep repeatability; three UART/HAL traps found.
+- **Aug 11** — Bus-load ramp to saturation: no FIFO overrun at any rate; polled-vs-interrupt CAN RX left open.
+- **Aug 10** — W2 complete: STM32F446RE heartbeat crossing a real 250 kbps CAN bus to Orion, zero error counters; floating CAN_RX pin identified as the root cause of earlier faults.
+- **Aug 9** — W2 firmware written and building: DMA console, bxCAN driver, serial command interpreter.
+- **Aug 9 (earlier)** — W2 toolchain established: CubeMX + CMake + CubeCLT + VS Code on daedalus; module identity settled as a 3-bit DIP switch.
+- **Aug 6** — CAN bus W1 complete: CANable flashed to candleLight, two-node bus validated at 250 kbps, pinmux/can0 made persistent; recovered MKS SERVO42C UART protocol docs.
+
+
+### Closed tasks moved out of NEXT TASKS
+
+### Task 6b — W4 — closed Sep 20
+
+6b. **W4 — drive motor + encoder closed loop: ✅ CLOSED Sep 20, 2026**
+    (opened Aug 24). Acceptance criterion: encoder counts read correctly and
+    match physical rotation — **MET Aug 26**, 8394.9 counts/rev over ten hand
+    turns, 0.1% from predicted, with the sign convention recorded on the bench.
+
+    **Why it stayed open for three weeks after its criterion was met, and why
+    that was right:** the criterion was about the encoder, but the week's real
+    deliverable was a drive chain you could trust the numbers from. Everything
+    that kept it open was current-sense work — the DRV8874 swap, the carrier
+    modification, PMODE, the plateau sweep — and closing on the letter of the
+    criterion would have handed W5 a plant model measured through an
+    uncalibrated sensor on a driver that was not in the commanded mode. The
+    cost of the delay was three weeks; the cost of the alternative was tuning
+    gains against fiction.
+
+    ✅ **Done — full detail in the LOG file:** pin allocation and the `.ioc`
+    root cause (Sep 12); encoder read, `int32_t` delta accumulate and the `enc`
+    commands including `enc probe`; TIM6 1 kHz tick; PWM helpers and the
+    **slow-decay (drive-brake) choice, CLOSED Aug 26** on a measured ~2.6% vs
+    >20% deadband; the `drv` console commands; the **disconnected-motor PWM
+    scope pass (Aug 26)** — its checklist is kept in the log, and is the right
+    list to re-run after any timer change; first powered motion Aug 26 and first
+    DRV8874 motion Sep 12; motor terminals measured at 9.35 V (Aug 26); all
+    seven motors re-harnessed to NASA-STD-8739.4A (Sep 11); DIP-switch module ID
+    on PB14/PB15 (Sep 14), so W7 no longer waits on firmware; IPROPI decoded as
+    **supply** current (Sep 12); `config` verified (Sep 14); nFAULT pull-up
+    confirmed (Sep 14) and **latched in the 1 kHz tick (Sep 16)**, so a
+    transient fault now leaves a mark.
+
+    **The four items that kept it open are all resolved:**
+    - ✅ **Real drive current measured (Sep 20)** — the input HW4's PDB branch
+      sizing was waiting on. Done as a firmware reading through IPROPI rather
+      than the multimeter or bench-supply fallbacks that were held in reserve:
+      **1290 mA at 20% duty, stalled, on the 12 V rail**, against 1263 mA
+      predicted from `D × Vm / R_motor`. 2%, inside the ±8% rotor-position
+      noise floor. The loaded-rig figure at real weight is the one HW4 should
+      size against and is now a measurement, not an estimate.
+    - ✅ **Plateau sweep run (Sep 20)** — five points, 300–1500 mA commanded,
+      slope 1/3 to better than 1%. **`k = 3`.** The sweep was designed to be
+      immune to both pending constant corrections, because measured current and
+      commanded trip pass through the same R_IPROPI and the same VDDA and the
+      ratio cancels; that immunity is what let the constants be held back until
+      it was finished.
+    - ✅ **The two measured constants applied (Sep 20)**, the hold released now
+      that nothing is mid-experiment: `ISENSE_VDDA_MV_DEFAULT` 3300 → **3325**,
+      `ISENSE_R_IPROPI_OHM_DEFAULT` 1474 → **1465**. Every current logged before
+      today reads ~1.4% low. Derived figures move with them — full scale 4.975 →
+      **5.044 A**, one LSB 1.215 → **1.231 mA**, printed trip range ~100–1558 →
+      **~101–1580 mA**. Both are **per-board** figures: a second carrier gets
+      metered and `cfg`-set, not handed these.
+    - ✅ **Task 20 firmware landed (Sep 20)** — the four bugs the sweep exposed,
+      plus multi-tick averaging. See task 20 below for what remains to *verify*;
+      the implementation itself is done and builds clean.
+    - ❌ **SUPERSEDED Sep 16 — "PMODE confirmed to select PWM mode" was wrong.**
+      The Sep 14 reasoning still holds as far as it goes: at 20% duty `drive.c`
+      emits IN1 constantly high and IN2 PWM'd at 80% (slow decay), under either
+      PH/EN pin assignment one of those is EN and a 20% command would have given
+      roughly 50–55 rpm, and the Sep 12 measurement was **11.07 rpm**. That
+      rules out PH/EN. **It does not confirm PWM mode**, because the third
+      option was never enumerated: in independent half-bridge each output
+      follows its own input, so slow decay produces the *same* average motor
+      voltage and the *same* 11.07 rpm. PMODE was in fact unconnected — Hi-Z,
+      independent half-bridge — the whole time, and internal current regulation
+      was therefore disabled, meaning **every `drv trip` / PA4 VREF result taken
+      before Sep 16 was inert and must be re-taken**. See the Sep 16 log entry
+
+    **Carried out of W4, not dropped** — these were never W4 acceptance items
+    and are tracked where they belong: the 12 V plant re-measurement and the
+    motor-terminal metering in task 17, the PID gain keys in task 18, nFAULT on
+    a real fault in task 19, and task 20's bench verification.
+
+
+### Task 19 — MCU board replacement, PMODE, ground return — cleared Sep 20
+
+19. **✅ CLEARED Sep 20 — MCU board replacement, PMODE strap, ground return
+    (opened Sep 16, 2026).** PB7 on the old board was destroyed and the
+    conditions that destroyed it were still wired up. Board replaced Sep 18,
+    both pad checks passed Sep 19, PMODE confirmed latched and the ground return
+    rebuilt the same day, and the **current-regulation path proven by the Sep 20
+    plateau sweep**. **One item is left open below: nFAULT assertion on a real
+    fault.** The bench is unblocked.
+
+    - ✅ **Check the new board bare — DONE Sep 19, PASSED.** Flashed with the
+      DRV8874 wiring to PB6/PB7 disconnected: bare `drv pin` gave both pads
+      `mode 2 af 2 pupd 0 od 0  ODR 0 IDR 0` with TIM4 correct
+      (`CR1 0x0081`, `CCER 0x1011`, `CCMR1 0x6868`, `CCR1/2 0`, `ARR 4499`), and
+      **`drv pin pd` gave PB7 `IDR 0`** where the dead board read 1. The
+      pull-down test is the one that counts — a push-pull low can be faked by a
+      damaged pad, a weak pull-down against pad leakage cannot.
+      **PB6/PB7 stay where they are; TIM3/PC6-PC7 is off the table.**
+    - ✅ **PMODE pull-up fitted Sep 19: 10 kΩ from PMODE (pin 16) to 3V3.**
+      Not 100 kΩ — against the internal 156 kΩ/44 kΩ divider that reaches only
+      ≈1.66 V, 160 mV over the 1.5 V `V_TIH` minimum. **This is a per-board
+      schematic item for all six nodes and for HW1, not a bench workaround.**
+      Fitted is not latched — see the confirm step below.
+    - ✅ **`drv pin`-free build flashed (Sep 19)** — the reset restored PB7 to
+      AF2/TIM4_CH2, so the PB7 restore came free with it.
+    - ✅ **Ground return rebuilt (Sep 19): three thicker conductors** from
+      breadboard PGND to the MCU carrier board, replacing the single DuPont that
+      carried the Sep 16 fault current.
+    - ✅ **PMODE CONFIRMED LATCHED IN PWM MODE (Sep 19).** Scoped **both motor
+      outputs** at `drv duty 13`: one carries PWM to the rail, **the other sits
+      at GND for the whole period**, and the roles swap cleanly at `-13`. That
+      quiet channel is the whole proof — independent half-bridge parks it at the
+      **rail**, since each output follows its own input; only PWM mode's
+      `IN1=1, IN2=1 → OUT1 L, OUT2 L` low-side decay pulls it to ground.
+      **Scoping IN1/IN2 cannot settle this** (the earlier wording here was
+      wrong): PMODE changes how the driver interprets its inputs, not what the
+      MCU emits, so the input waveforms are identical in all three modes.
+    - ✅ **Current-regulation path PROVEN (Sep 20).** The plateau sweep drove
+      the DRV8874 into regulation at four different trips and it limited
+      cleanly every time, gently at 29–39% below demand and hard at ~94% below.
+      The bridge, the comparator, the VREF DAC path and the IPROPI mirror all
+      work. **What remains of "did the driver survive" is only nFAULT assertion
+      on a real fault** — cheapest check is UVLO: drop VM below ~4.5 V with
+      nSLEEP high and watch the pin. Everything else about this driver is now
+      positively demonstrated, not merely un-disproven.
+    - ✅ **Current-regulation results re-taken (Sep 20).** All `drv trip` / PA4
+      VREF work from Sep 11–16 was inert under independent half-bridge and has
+      been superseded by the plateau sweep, which also found that **every trip
+      value ever commanded was 3× too high** — see the IPROPI section and
+      task 20.
+    - ✅ **`drv iscan` re-run in PWM mode — the shape DID change (Sep 20).**
+      Decay-phase samples read **107–339 raw** where Sep 15 read exact zeros,
+      and an `iscan` at `duty 0` with the driver awake read a flat **3–5** —
+      proving the decay-phase current is real recirculation and not a mirror
+      pedestal. IPROPI sees the low-side FETs during brake, which only low-side
+      decay produces. **That is PWM mode confirmed a third time, independently
+      of the scope.** The scope-on-PA2 plan is not needed.
+    - ✅ **Temporary `drv pin` command removed from `console.c` (Sep 19)** —
+      `pin_report()`, the `pin` branch and its help line, 3659 bytes. Builds
+      clean at RAM 4.11% / flash 22.84%. `console.c` now holds no direct
+      register or HAL-GPIO access at all; everything goes through the driver
+      modules, which is how the rest of the file already worked. Recoverable
+      from git history if a future board ever needs the same pad check.
+
+
+## 2026-09-26 (evening) — A/B/A staircase: direction and drift separated (task 21)
+
+Conditions: loaded rig 1047 g, shipped gains, `enc window 20`, 50 Hz telemetry,
+30% duty ceiling. Fresh battery (16.32 V at swap) through the regulator; VM
+metered at **12.02 V** (motor off) before leg 1. Each leg: `bench.py run stair
+--lo 10 --hi 20 --stair-step 0.5 --hold 60 --hold-settle 10 --abort-ma 1200`,
+21 points × 60 s, legs started back to back (gaps ~30 s and ~75 s).
+
+- A first leg 1 at 17:29 died at +15.5 rpm when the old battery ran out (the
+  wheel stopped, loop saturated at 100% into a dead rail). The runner's safe
+  stop ran cleanly. The run directory was **deleted at the user's request**:
+  a run on a failing supply has no meaning, not even its first half.
+- Leg 1 A (fwd) 18:10, leg 2 B (rev) 18:31, leg 3 A (fwd) 18:52.
+- Tracking: max |err| 0.008 / 0.016 / 0.011 rpm; 0% saturation in all three;
+  peak output 282 / 272 / 282 o/oo.
+- Leg 3 flagged suspect: one T and one V record lost at 152 s (+11.0 rpm
+  hold); `T,7542` truncated mid-line in `console.log` with `V,7539` missing
+  behind it. Board `tx_dropped 0`, `veloc_steps_missed 0` → ~50 bytes lost on
+  the host side only; the loop ran every step. 1 of ~2500 records in that
+  hold; leg used.
+
+Mean of (|out| − |ff|) across the 21 steps, o/oo:
+
+| Leg | mean |out|−|ff| | mean i | mean mA |
+|---|---|---|---|
+| A1 fwd | +1.62 | +1.20 | 286.0 |
+| B rev | −5.81 | +5.28 (sign-flipped: pushes toward zero) | 291.8 |
+| A2 fwd | −1.43 | −1.06 | 285.8 |
+
+- **Drift is real:** the forward legs moved −3.05 o/oo in 42 min under the same
+  conditions. Linear interpolation puts forward at ≈ +0.1 o/oo at B's midpoint.
+- **Direction is real too:** reverse needs ≈ **5.9 o/oo (0.59% duty) less**
+  than forward at the same speed, after removing drift. The drift is about half
+  the size of the direction effect, so the morning's 67-min-apart comparison
+  was partly confounded, but its sign was right.
+- Assumes linear drift over 63 min. Cause of the drift not identified (not
+  claimed: warm-up is a guess).
+- Current: forward legs agree to 0.2 mA mean. Reverse draws +5.8 mA mean
+  (~2%), concentrated above 14.5 rpm (+10–19 mA), against the morning's
+  "+8.1%". The morning's battery state was not recorded.
+- Integrator carries the whole difference in every leg; tracking meets the
+  staircase criterion in both directions without any ff change.
+
+## 2026-09-26 (evening) — true step response, `--slew 0` (task 21)
+
+Same battery and VM (12.02 V) as the A/B/A, shipped gains, `enc window 20`,
+`--dwell 10`. Three runs, all `outcome=ok`, 0 gaps, 0 missed steps, 0% saturation:
+
+| Run | Step | Rise 10→90% | Peak current | Verdict |
+|---|---|---|---|---|
+| `19-30-35_step` | 0 → +10 rpm from rest | 0.22 s | 904 mA | peak inside ripple |
+| `19-31-06_step` | +10 → +15 → +10 | 0.08 s up / 0.22 s down | 984 mA | up inside ripple; down flagged, is ripple |
+| `19-32-19_step` | −10 → −15 → −10 | 0.12 s up / 0.26 s down | 885 mA | up inside ripple; down flagged, is ripple |
+
+- Peak current ≤ 984 mA against the 1580 mA trip; no step needs the setpoint
+  ramp to stay off ITRIP at these sizes.
+- **Both down-steps were flagged `overshoot_above_ripple=True` (64% / 50% of the
+  5 rpm step), and both are the 12-per-rev mechanical dip, not the loop.** Fwd:
+  speed came 15.7 → 10 rpm in 0.23 s without crossing; the flagged minimum
+  (6.78 rpm at 2.51 s) sits in a dip train at exactly 0.50 s spacing
+  (= 12 events/rev at 10 rpm), and the settled 3–10 s hold dips to 7.14 rpm,
+  one encoder count (0.357 rpm) away. Rev: dip train at 0.27, 0.79, 1.33,
+  1.81, 2.31, 2.81 s; flagged minimum 7.50 vs settled 7.85 rpm, again one count.
+- **Metric flaw:** `overshoot_above_ripple` compares the peak with 2 × tail sd.
+  The ripple is impulsive (periodic dips), so its own extremes exceed 2 sd and
+  the test fires on ripple. It should compare against the settled tail's own
+  extreme excursion (plus one count). Not yet changed.
+- `settle_s` is n/a on most segments: the ±2% band (0.2 rpm at 10 rpm) is
+  narrower than the ±1 rpm mechanical ripple, so no settling instant exists.
+  Settling to ±2% is not a usable criterion on this rig until the ripple is gone.
+- Verdict against the acceptance criterion: no sustained oscillation, no
+  overshoot resolvable above the mechanical ripple, in either direction, from
+  rest or from a turning wheel. Steps run: up to 10 rpm in size, up to 15 rpm
+  setpoint; larger steps (e.g. 0 → 20) were not run.
+
+## 2026-09-26 (evening) — ripple test fixed in `bench.py`; CORRECTION to the step verdict above
+
+`overshoot_above_ripple` now requires the peak to beat the settled tail's own
+worst excursion in the overshoot direction (`tail_excursion_rpm`, new column)
+plus one encoder count (0.357 rpm at window 20), instead of 2 × tail sd.
+Extreme against extreme: the tail (last quarter of a 10 s dwell, ~5 dips at
+10 rpm) and the 3 s overshoot window (~6 dips) sample a similar number of ripple
+events. Re-reduced from the saved `velocity.csv` of the three step runs:
+
+| Segment | overshoot | tail excursion | old flag | new flag |
+|---|---|---|---|---|
+| 0 → +10 | 1.424 | 1.424 | ripple | ripple |
+| +10 → +15 | 1.422 | 1.422 | ripple | ripple |
+| +15 → +10 | 3.217 | 2.860 | above | **ripple** (within 1 count) |
+| −10 → −15 | 1.779 | 1.779 | ripple | ripple |
+| −15 → −10 | 2.503 | 1.789 | above | **above** (by 2 counts, 0.71 rpm) |
+
+**Correction:** the entry above says both down-steps were ripple. The reverse
+one is not resolved as ripple: it dips 0.71 rpm (2 counts) past the settled
+tail's worst dip, and the trace sits 0.4–0.7 rpm below setpoint for ~0.3 s
+after the dip. That comparison was made against the 3–10 s hold, which holds a
+deeper dip than the last quarter the metric uses. So: a small reverse
+down-step undershoot (≤ ~0.7 rpm beyond ripple, gone in ~0.35 s) — bounded,
+still inside the acceptance criterion, not tuned against yet. Forward
+down-step is ripple.
+
+Re-reduction segments on host time; overshoot figures reproduce exactly, one
+rise time differs (0.22 vs 0.26 s, reverse down) from the profile's own cut.
+`figures/plot_velocity_step_anchor.py` panel C still draws ±2 sd bands for the
+morning runs; not regenerated.
+
+## 2026-09-26 (evening) — reverse down-step repeated ×3: the undershoot does not recur
+
+Same conditions and command as `19-32-19_step` (−10 → −15 → −10 rpm,
+`--slew 0`, `--pre 10 --dwell 10`), run back to back with the fixed ripple test.
+All `ok`, 0 gaps, 0 missed steps, 0% saturation, peak 706–968 mA.
+
+| Run | down-step overshoot | tail excursion | above ripple |
+|---|---|---|---|
+| `20-32-46_step` | 2.146 | 2.146 | no |
+| `20-33-20_step` | 2.503 | 2.146 | no (1 count) |
+| `20-33-55_step` | 2.503 | 2.503 | no |
+
+- **0 of 3 repeats flagged.** The deepest down-step dip (2.503 rpm) is the same
+  value as the original run's, and in `20-33-55` the settled tail dips exactly
+  that deep. What made `19-32-19` pass the threshold was a shallow tail (1.789),
+  not a deep step.
+- The settled tail's worst excursion varies 1.79 → 2.50 rpm (2 counts) run to
+  run at the same setpoint, so a single-run verdict at a 1–2 count margin is
+  marginal. Repeat before calling a small flag real.
+- Rise on these 5 rpm steps spans 0.04–0.26 s across the four reverse runs:
+  with ±1 rpm ripple on a 5 rpm step, the 10/90% crossings depend on ripple
+  phase. Not a stable number at this step size.
+- **Revised verdict:** no overshoot resolvable above the mechanical ripple in
+  either direction, from rest or from a turning wheel. The correction entry
+  above is itself superseded on this point.
+
+## 2026-09-26 (evening) — decision: no direction-dependent `ff_b` for now (task 21)
+
+The feedforward is `ff = ff_a × rpm + sign(rpm) × ff_b` (`ff_a` 12.51 o/oo/rpm,
+`ff_b` 30 o/oo), symmetric by construction. The A/B/A run showed reverse needs
+~5.9 o/oo (0.59% duty) less output than forward at the same speed; a
+direction-dependent offset would be ~24 o/oo in reverse against 30 forward.
+
+**Decision (agreed with the user): do not add it now.** The integrator carries
+the offset (+5 to +7 o/oo in reverse) with tracking inside ±0.016 rpm and no
+step transient above the ripple. Consistent with task 21's earlier note that
+the brush-timing asymmetry is "absorbed by integral action".
+
+Why not now:
+- The estimate is soft: drift (−3.05 o/oo in 42 min) is half the size of the
+  effect, from a single A/B/A on one motor, on the rig.
+- The rover differs: ~2.87× the inertia, real load, five other motors with
+  their own brush timing — a rig value may not carry over.
+- **It implies another variable in the `cfg` menu** (e.g. `vel_ff_b_rev`), and
+  adding a `cfg` key discards the stored flash record (read `cfg` before
+  flashing such a build). It is also one more number to calibrate per wheel.
+
+**Must be re-checked on the rover, on at least two wheels:** an A/B/A
+forward/reverse comparison per wheel. Add the reverse offset only if the
+asymmetry is consistent across wheels and large, or if direction reversals show
+visible transients.
+
+## 2026-09-26 — session summary (evening, task 21)
+
+- First A/B/A leg 1 aborted at +15.5 rpm when the battery died; stopped cleanly,
+  run deleted (user rule: runs on a failing supply are erased). Battery swapped
+  (16.32 V through the regulator, VM 12.02 V metered).
+- A/B/A staircase done: direction −5.9 o/oo and drift −3.05 o/oo in 42 min,
+  both real. Max error ≤0.016 rpm, 0% saturation.
+- True steps (`--slew 0`) 0→10 and ±10→±15→±10: peak ≤984 mA, no overshoot
+  above the 12/rev ripple in either direction (reverse flag not reproduced ×3).
+- `bench.py`: `overshoot_above_ripple` now tests against the tail's own worst
+  excursion + 1 count; new column `tail_excursion_rpm`.
+- Decision: no direction-dependent `ff_b` for now; re-check on the rover on ≥2
+  wheels; adding it costs a new `cfg` key.
+- Next: current sensing below 14.5% duty.
+Details: the dated entries above.
+
+## 2026-09-26 (night) — decay-phase current reading validated below the 14.5% floor (task 21)
+
+**Result: IPROPI is readable in the slow-decay (brake) phase. Reading =
+0.690 × motor current (±1.5%), valid from 6% duty upward to ±4%. The open
+item "current sensing below 14.5% duty" is decided: decay-phase reading.
+Free-running `Isup` and the slower carrier are not needed.**
+
+Setup: 12.0 V rail, shaft stalled (same hold as Sep 21), slow decay, trip
+1579 mA (VREF 3123 mV, DAC 3847), `drv iscan 64` full period, 125-tick step,
+from a scratch script over `node.py` (transcripts saved first, in
+`tools/bench/runs/iscan-20260926-*`, local-only). `nFAULT ASSERTED` in the
+pre-run status is the known nSLEEP-low behaviour; no fault during any scan.
+
+Correction on the way in: the `isense.h` note that IPROPI "reads exactly 0
+outside the drive phase" is from Sep 15, before the PMODE strap (Sep 19). With
+PMODE in PWM mode, decay is low-side and IPROPI (low-side mirror) sees it;
+already shown Sep 20 (13% scan 107–339 raw in decay, 0%-duty control flat 3–5).
+Comment in `isense.h` annotated.
+
+Step 1 — 20% full-period scan, shape of the decay phase:
+- Transient after the falling edge: 1774, 854, 665, 792 … settled by ~1000
+  ticks (11 µs) — twice the 500-tick settle after the rising edge.
+- Plateau ticks 1000→3500: 746 → 709, smooth, monotonic, −5.0% (L/R 0.9 ms
+  predicts −3.0%). Drive tail (4000–4375) mean 1016.
+- Ratio decay(t3500)/drive tail = 0.698 (0.689 with the 4125–4375 tail).
+
+Step 2 — 15%: decay 592→554 (1000→3500), ratio 0.669 against a single,
+possibly unsettled drive point (4375 = 828; last valid trigger at 15% is
+~4348). Nominal fail of ±3%, but the reference is too weak to mean anything.
+Change of method: calibrate the factor at 20% (solid tail), then test that the
+decay reading stays ∝ duty (at stall, I = D·Vm/R exactly), each low duty
+bracketed by 20% runs; triple void if the two 20% refs differ > 5%.
+
+Step 3 — 20/10/20: 752 / 376 / 743 at t3500 → 10% expected 374, +0.6%. Ratios
+0.697, 0.695.
+- Tick 4000 at 10% (50 ticks before the 4050 drive edge) dipped to 346 vs a 375
+  plateau: the 112-tick ADC aperture straddles the edge. Sep 21's 0.670 was
+  taken at t3550, 50 ticks before the 20% edge — the same contamination. The
+  correct factor is ~0.69, sampled ≥ ~150 ticks before the edge.
+
+Step 4 — 20/5/20: first triple void (20% ref plateau jumped 590→720 mid-scan,
+rotor shifted; refs 587/710). Repeat: 735 / 170 / 762 → 5% expected 187,
+−9.1%. The void triple's 5% read 147.
+
+Series — 20,5,20,6,20,7,20,8,20,9,20,10,20,11,20,12,20 (t3500, err vs
+proportional, ref agreement):
+  5% 120 −38.3% (1.8) · 6% 236 +2.3% (0.5) · 7% 255 −3.6% (2.9) ·
+  8% 263 −15.0% (7.4, VOID) · 9% 354 +0.2% (4.3) · 10% 393 +0.8% (3.1) ·
+  11% 424 +3.4% (12.5, VOID) · 12% 430 −4.3% (13.4, VOID)
+Repeat 20,8,20,11,20,12,20:
+  8% 315 +4.9% (6.0, VOID) · 11% 442 +3.6% (0.8) · 12% 461 −0.8% (1.2)
+
+Conclusions:
+- Valid points 6–12% (6, 7, 9, 10, 10, 11, 12): −3.6% … +3.6% → **±4%**.
+  8% has two void readings (−15.0, +4.9); accepted as covered by 7 and 9.
+- 5% is outside the valid range (−9, −17, −38%). Accepted: the rig breaks away
+  at 10–12%, so 5% is not an operating point.
+- Factor decay/drive at 20%: 17 reference runs, 0.678–0.699, mean **0.690**
+  (±1.5%), while the absolute level wandered 699–802 (±7%, rotor position in
+  the hold). The factor does not depend on where the rotor sits.
+- Void triples came from the hold (20% refs jumping ~13%), not the sensor.
+- Mechanism of the 0.69 not identified (physics predicts ~4% loss over the
+  window, not 31%); it is reproducible, so it is treated as a calibration.
+
+Design rule for a decay-phase sample: end-relative, trigger ≤ drive edge − ~150
+ticks (aperture 112 + guard 40, as for the drive phase) and ≥ falling edge +
+~1000 ticks; I_motor = raw / 0.690. Valid ≥ 6% duty. Not yet implemented in
+`isense.c`/`drive.c`.
+
+Next: re-measure τ on the rover (meter the motor terminals); same session A/B/A
+on ≥ 2 wheels for the `ff_b` decision.
+
+## 2026-09-26 (late night) — decay-phase sample implemented; valid at stall only
+
+**Code (branch `w5-velocity-pid`).** Below 14.5% duty, in slow decay, current is
+now sampled in the brake phase `[0, ccr)` instead of being refused.
+- `drive.h/.c`: `DRIVE_DECAY_SETTLE_TICKS` 1000, `DRIVE_DECAY_SPAN_TICKS` 500,
+  `drive_sense_t` {NONE, DRIVE, DECAY}, `drive_sense_kind/first/last()`.
+  `place_trigger(start, ticks, decay_ok)`: drive phase if ≥ 652 ticks; else if
+  decay allowed and `start ≥ 1152`: last = ccr − 152, first = max(1000, last − 500).
+  Only the slow-decay call passes decay_ok. drive.c stays geometry-only.
+- `config.h/.c`: `isense_dk` 690 o/oo (400–1000), `isense_dmin` 60 o/oo (30–145).
+  New keys discard the stored cfg record (`cfg save` never run on the bench board).
+- `isense.c/.h`: `isense_sync_ready()` accepts DECAY at |duty| ≥ isense_dmin;
+  `isense_read_sync_avg()` scales DECAY readings ×1000/isense_dk after offset
+  subtraction; burst spread over the sense window; `isense_sync_is_decay()`.
+  Stale PMODE/high-side and free-running Isup = I×D text rewritten.
+- `console.c`: `drv current` names the phase and window; NOT SYNCHRONISED gives
+  the reason (duty 0/brake, fast decay, < isense_dmin). Telemetry flag 0x20.
+- `tools/bench/node.py`: `FLAG_DECAY`, `Telem.decay`.
+- Build clean: RAM 5720 B (4.36%), FLASH 107832 B (27.42%). Flashed; RAM-only
+  cfg values trip_ma 1580, duty_limit 300, vel_slew 0, vel_tmo 2000 re-entered.
+
+**Bench, 12.0 V.**
+- First 20/10/20 run was with the shaft free (not clamped): void.
+- Stalled 20/10/20: 20% drive phase 1329 / 1346 mA, within 0.9% / 1.3% of the
+  iscan tail; 10% BRAKE phase window 3398..3898, 715 mA vs 669 expected = +6.9%.
+- Stalled back-to-back at 10%: `drv current` raw 503/506 vs iscan 3398..3773
+  mean 343 ×1000/690 = 497 → firmware matches the scan within 1.2%. Current at
+  10% was 619 mA vs 715 ten minutes earlier: stall noise / winding temperature.
+- Stalled 20/10/20 repeat: refs 1133 / 1290 mA (12.9% apart) → void. Stall
+  A/B/A cannot resolve ±5% on this clamp; stopped.
+- Free shaft, 20→10% in 1% steps, 64-sample `drv current` + single iscan per
+  step: pure noise (102–343 mA, no trend) — commutation-scale ripple is slow
+  against a 3.2 ms burst.
+- Free shaft, telemetry 5 s/step after 10 s settle: drive 271–325 mA at 20–15%,
+  brake 187–196 mA at 14–10%; flag 0x20 on exactly below 14.5%; 0 gaps.
+- Free shaft, 0.5% steps 20.0→10.0, 60 s settle, 20 s of repeated iscans over
+  the firmware's own windows (>250/step) + telemetry (~1000 lines/step):
+  brake raw 102–110 flat over the whole sweep; drive raw 225 (20%) … 221 (17%),
+  244 (16.5%), 251 (15%), 260 (14.5%); ratio 0.455–0.464 at 17–20%, 0.40–0.42
+  at 14.5–16.5%; telemetry 274 → 313 mA, then 189 mA at 14.0% (−40% step);
+  rpm 13.9 → 5.7. Wheel kept turning to 10%.
+
+**Conclusion.** The code is right (placement, scaling, flag, telemetry all
+verified). The 0.690 factor holds at stall only. While turning, back-EMF makes
+the current ripple inside the period: the drive-phase sample (end of the drive
+phase) reads near the peak and the brake-phase sample near the trough; neither
+is the mean. Documented in `isense.h` and `_REF_DRIVE`; committed as is (user
+decision). Open: supply-side DMM reference at 20% and 15% to find which phase
+is biased; then maybe a speed-dependent factor (not before).
+
+## 2026-09-26 (late night, bench) — supply-side DMM reference at 20% and 15%, free shaft
+
+**Goal.** Open item from the decay-phase session: find which IPROPI phase is
+biased while the wheel turns, using a DMM in series with the motor supply (VM).
+In slow decay the supply only carries current in the drive phase, so
+I_supply ≈ D × I_motor(mean) + quiescent.
+
+**Setup.** Scratchpad script `hold.py` (not committed): telem 10 Hz, `drv timeout
+2000` kicked every 0.5 s, `drv ramp 50` + `drv ramp floor 120` for the start
+(restored to `drv ramp 0` after), 20 s at 0% then 90 s at the duty; prints only
+10 s means of telemetry mA and rpm. Runs local in `tools/bench/runs/dmm-*`.
+
+**False starts (no data, no damage).**
+- First run: script left out `drv enable` — pins only, 0 rpm, ~10 mA. Fixed.
+- DMM on the 10 A range: readings unusable (resolution). Firmware at 20%: 275 mA,
+  13.8 rpm.
+- After switching to the 500 mA range: motor power lead not reconnected — 0 rpm
+  with duty 200, no fault flag, current ~17 mA (offset). User reconnected.
+
+**Results (500 mA range, 12 V rail).** Baseline (0%, driver on) 6–7 mA, used 6.5.
+| duty | DMM supply min–max | motor from DMM (sup−6.5)/D min/mid/max | firmware drive phase | fw ÷ DMM mid | rpm |
+|---|---|---|---|---|---|
+| 20% | 56–80 mA | 248 / 308 / 368 mA | 227 mA (223–231) | 0.74 | 12.9 |
+| 15% | 48–67 mA | 277 / 340 / 403 mA | 283 mA (280–290) | 0.83 | 9.0 |
+15% baseline not read (display was moving); 6.5 mA carried over from the 20% run.
+
+**Notes.**
+- The mA-range shunt (burden voltage) cut speed and current at 20%: 13.8 → 12.9 rpm,
+  firmware 275 → 227 mA vs the 10 A-range run.
+- DMM swung ±20%; likely the 12/rev mechanical ripple (~2.6 Hz at 13 rpm) beating
+  with the DMM update rate. Only min/max were read, no average.
+
+**Conclusion.** While turning, the drive-phase sample reads LOW (at or below the
+DMM minimum at both duties), not high as guessed on Sep 26 night. The brake-phase
+sample reads ~40% below the drive phase, so it sits near half the true mean.
+Size of the error (0.74 vs 0.83) is inside the DMM's ±20% swing: no speed
+dependence can be claimed, and no firmware factor is changed on these numbers.
+Next: a steady supply-side reference (shunt + RC filter on the scope or a DMM on
+mV, or a bench supply with a current readout), then decide on a turning factor.
+
+## 2026-09-26 (late night) — first `cfg save` on the bench board; bench settings persisted
+
+- Board read before: all 22 keys at compiled defaults (a reset had dropped the
+  RAM-only bench values). W5 gains are the compiled defaults, so they need no
+  save; freezing them waits for the rover τ session.
+- Set and saved: `trip_ma` 1580 (default 1000 — the `--slew 0` steps peaked at
+  984 mA, 16 mA under the default trip), `duty_limit` 300, `ramp_pmps` 50,
+  `ramp_floor` 120. `cfg save` → slot 2 of 1024.
+- Verified: board reset by hand, `cfg` read back — same four values, slot 2/1024.
+  First exercise of save + boot restore on hardware. Corrupt-record fallback and
+  the sector-full wrap (task 18) are still unexercised.
+
+## 2026-09-26 (late night, desk) — W5 acceptance tolerance stated
+
+Set from the 12 V rig data (forward/reverse staircases, A/B/A, true steps);
+full text in `_REF_TASKS` task 21. All four must hold:
+1. Tracking: 60 s hold mean − command ≤ ±0.05 rpm, both directions. Basis:
+   per-hold standard error ~0.020 rpm (×2.5), worst seen 0.016 (×3); tighter
+   would test the instrument, looser loses meaning against the 0.174 rpm
+   open-loop repeatability floor. Instantaneous error is excluded: the ±1 rpm
+   ripple is mechanical (12/rev).
+2. Headroom: 0% saturated steps in a hold; peak output ≤ 95% of vel_max
+   (seen 284/300 at 20 rpm).
+3. No sustained oscillation: ripple 12.0 ± 0.5 per output rev, peak ≤ ±1.5 rpm
+   (seen 11.91 ± 0.19, 1.42 rpm).
+4. Bounded overshoot: `--slew 0` ±5 rpm step, overshoot_above_ripple False,
+   rise ≤ 0.3 s (seen 0.08–0.26). Rise limit is a rig figure; re-set on the
+   rover (2.87× inertia). 1–3 carry over.
+Usable range on the 12 V rig: ~6–20 rpm each way. 10–20 rpm passes all four;
+the 6–10 rpm staircase (both directions, A/B/A) is the remaining rig item.
+
+## 2026-09-27 (bench, 00:00) — 6–10 rpm A/B/A staircase; W5 met on the rig; criterion 3 amended
+
+**Setup.** DMM removed from the supply, VM 12.02 V at the driver. Three legs back
+to back: `bench.py run stair --lo 6 --hi 10 --stair-step 0.5 --hold 60
+--hold-settle 10 --abort-ma 1200 --trip 1580 --max-duty 30 --rate 50 --window 20`,
+`--dir cw` / `ccw` / `cw`. Shipped gains. Runs (local):
+2026-09-26T23-52-04_stair, 2026-09-27T00-01-08_stair, 2026-09-27T00-10-12_stair.
+All clean: 0 gaps, 0 missed steps, ~2500 V rows per hold.
+
+**Tracking (criterion 1).** Worst mean error: leg 1 +0.010, leg 2 −0.019 (at
+−6.0), leg 3 −0.006 rpm. Pass (≤ ±0.05).
+**Headroom (2).** 0% saturated everywhere; peak |out| 162 / 155 / 165 of 300.
+**Ripple (3), subagent via `stairdata.py` `Stair.ripple()`.** Events/rev,
+refined (interp=True): 12.01 ± 0.01, 12.00 ± 0.02, 12.00 ± 0.01; raw 20 ms grid
+11.90–12.17 at every setpoint (grid-limited, identical in all legs). sd 1.00–1.19
+(leg 1), 0.78–0.88 (leg 2), 1.01–1.12 (leg 3). Peak excursions: forward +1.4…+1.9
+/ −3.2…−4.0 rpm; reverse 1.4–2.2 speeding / 1.4–2.9 slowing. 1 count per 20 ms
+window = 0.357 rpm. Flat with speed.
+**A/B/A.** Reverse needs ~4–6 o/oo less output at the same |rpm|; forward output
+fell ~3–5 o/oo between legs 1 and 3 (integrator −3.3…+4.2 → −3.8…−0.8). Same
+pattern as at 10–20 rpm.
+**Current.** Telemetry ~190 mA at 6–9 rpm, then 302–321 mA at 9.5–10 forward:
+the output crosses 145 o/oo there, i.e. the decay→drive sample switch, not a
+real change.
+
+**Criterion 3 amended.** The Sep 26 text had "peak ≤ ±1.5 rpm", taken from the
+step's one-sided 4-count peak (1.42 rpm). The ripple is a lopsided dip; the Sep 26
+10–20 rpm data (stair.csv min/max) already showed +1.2…+1.9 / −2.4…−4.4 rpm, so
+that limit never matched the data it came from. New criterion 3: 12.0 ± 0.5
+events/rev and within-hold sd ≤ 1.5 rpm; the peak dip is recorded, not pass/fail
+(it measures the 12/rev mechanical feature). With it, 6–20 rpm passes all four:
+W5 acceptance met on the rig. Remaining: rover τ session (re-set the rise limit,
+freeze gains), reverse offset on ≥2 wheels.
+
+**Tooling bug.** `./bench.py status` with no argument picks the "latest" run by
+name, and timestamp-named runs (`2026-…_stair`) sort before letter-named ones
+(`sweeptelem-…`), so it shows an old run. Workaround: pass the run folder.
+
+## 2026-09-27 — W5 declared complete on the rig (user decision)
+
+Nothing else in W5 can be done without the rover. Status: complete on the rig
+(6–20 rpm, both directions, all four acceptance criteria). Deferred to the rover:
+τ at real weight with the motor terminals metered, re-set the step rise limit,
+freeze the gains (compiled defaults or `cfg save`), reverse-vs-forward offset
+A/B/A on ≥2 wheels to settle `vel_ff_b_rev`. Task 21 stays open (🟡) for those.

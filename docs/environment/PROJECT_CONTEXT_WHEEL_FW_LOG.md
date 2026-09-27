@@ -3280,3 +3280,31 @@ in both directions (0.02%), is the tyre: the wheel's rubber has 12 tread grooves
 for grip on rough ground. Identified by the user on inspection. Resolved; no
 firmware or cfg change. The W5 ripple criterion (12.0 ± 0.5/rev, sd ≤ 1.5 rpm)
 therefore measures the tyre on this rig, not the loop.
+
+## 2026-09-27 — Task 17: 0.5%-step stiction run, A/B/A (CW / CCW / CW)
+
+Loaded rig (1047 g), VM 12.02 V, `bench.py run sweep --dwell 6`, duty list
+8 → 13 → 8 % in 0.5% steps (ascending from rest, then descending without a
+stop). Saved cfg ramp 50 / floor 120 active; from rest the floor jump is capped
+at the command, so every point below 12% was applied as commanded.
+`bench.py` sweep changed to send `drv duty <n>p` (per-mille) instead of integer
+percent. Runs (local only): `2026-09-27T08-49-10_sweep` (CW),
+`2026-09-27T08-53-09_sweep` (CCW), `2026-09-27T09-14-08_sweep` (CW repeat;
+~21 min after the CCW leg).
+
+| | CW leg 1 | CCW | CW leg 3 |
+|---|---|---|---|
+| Breakaway (ascending) | 12.5–13.0% | 10.5–11.0% | 12.5–13.0% |
+| Dropout (descending) | 9.0–9.5% (9.0 stopped mid-dwell, 0.17 rpm) | 8.0–8.5% | 8.5–9.0% |
+| Last running point | 9.5% → 4.58 rpm | 8.5% → 4.30 rpm | 9.0% → 4.34 rpm |
+| Running current | 190–225 mA | 195–215 mA | 190–226 mA |
+
+- CW breakaway repeats exactly across the A/B/A, so the 2% CW/CCW breakaway
+  difference is direction, not drift or rest position (to the 0.5% step).
+- Dropout differs ~0.5–1% by direction; CW dropout moved one step between legs
+  (leg 1's 9.0% point was marginal).
+- Stiction band ≈ 3.5–4% CW, ≈ 2.5% CCW. Minimum sustained speed ≈ 4.3–4.9 rpm.
+- The old "breakaway 9–11%" (2% steps) was really the dropout end; 2% steps
+  never walked the ascending edge finely enough.
+- Stalled current (decay-phase sample): leg 1 rose 397 → 742 mA with duty;
+  leg 3 stayed flat 492–553 mA over the same duties. Not explained; noted only.

@@ -432,6 +432,11 @@
       **572 mA against the 1580 mA trip — 2.8×**. That is why the ramped entry
       never tripped where the un-ramped duty steps of Sep 23 did.
 
+      ✅ **Stiction run DONE Sep 27** (0.5% steps, A/B/A CW/CCW/CW, VM 12.02 V,
+      loaded rig, dwell 6 s): breakaway CW **12.5–13.0%** (both CW legs), CCW
+      **10.5–11.0%**; dropout CW **9.0–9.5% / 8.5–9.0%** (leg 1 / leg 3), CCW
+      **8.0–8.5%**; min sustained ~4.3–4.9 rpm. Full table in the LOG, Sep 27.
+      Original item, for the record:
       ⬜ **Still owed on the rig:** a **1%-step stiction run** across 8–13%,
       ascending then reversed, to separate breakaway from dropout — ✅
       **unblocked Sep 26** by `drv duty <n>p`, which commands per-mille directly

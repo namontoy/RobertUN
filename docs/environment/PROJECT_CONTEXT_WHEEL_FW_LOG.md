@@ -2859,3 +2859,46 @@ One line per entry. Full detail (exact numbers, register values, reasoning chain
       modules, which is how the rest of the file already worked. Recoverable
       from git history if a future board ever needs the same pad check.
 
+
+## 2026-09-26 (evening) — A/B/A staircase: direction and drift separated (task 21)
+
+Conditions: loaded rig 1047 g, shipped gains, `enc window 20`, 50 Hz telemetry,
+30% duty ceiling. Fresh battery (16.32 V at swap) through the regulator; VM
+metered at **12.02 V** (motor off) before leg 1. Each leg: `bench.py run stair
+--lo 10 --hi 20 --stair-step 0.5 --hold 60 --hold-settle 10 --abort-ma 1200`,
+21 points × 60 s, legs started back to back (gaps ~30 s and ~75 s).
+
+- A first leg 1 at 17:29 died at +15.5 rpm when the old battery ran out (the
+  wheel stopped, loop saturated at 100% into a dead rail). The runner's safe
+  stop ran cleanly. The run directory was **deleted at the user's request**:
+  a run on a failing supply has no meaning, not even its first half.
+- Leg 1 A (fwd) 18:10, leg 2 B (rev) 18:31, leg 3 A (fwd) 18:52.
+- Tracking: max |err| 0.008 / 0.016 / 0.011 rpm; 0% saturation in all three;
+  peak output 282 / 272 / 282 o/oo.
+- Leg 3 flagged suspect: one T and one V record lost at 152 s (+11.0 rpm
+  hold); `T,7542` truncated mid-line in `console.log` with `V,7539` missing
+  behind it. Board `tx_dropped 0`, `veloc_steps_missed 0` → ~50 bytes lost on
+  the host side only; the loop ran every step. 1 of ~2500 records in that
+  hold; leg used.
+
+Mean of (|out| − |ff|) across the 21 steps, o/oo:
+
+| Leg | mean |out|−|ff| | mean i | mean mA |
+|---|---|---|---|
+| A1 fwd | +1.62 | +1.20 | 286.0 |
+| B rev | −5.81 | +5.28 (sign-flipped: pushes toward zero) | 291.8 |
+| A2 fwd | −1.43 | −1.06 | 285.8 |
+
+- **Drift is real:** the forward legs moved −3.05 o/oo in 42 min under the same
+  conditions. Linear interpolation puts forward at ≈ +0.1 o/oo at B's midpoint.
+- **Direction is real too:** reverse needs ≈ **5.9 o/oo (0.59% duty) less**
+  than forward at the same speed, after removing drift. The drift is about half
+  the size of the direction effect, so the morning's 67-min-apart comparison
+  was partly confounded, but its sign was right.
+- Assumes linear drift over 63 min. Cause of the drift not identified (not
+  claimed: warm-up is a guess).
+- Current: forward legs agree to 0.2 mA mean. Reverse draws +5.8 mA mean
+  (~2%), concentrated above 14.5 rpm (+10–19 mA), against the morning's
+  "+8.1%". The morning's battery state was not recorded.
+- Integrator carries the whole difference in every leg; tracking meets the
+  staircase criterion in both directions without any ff change.

@@ -1,6 +1,6 @@
 # RobertUN — Wheel Controller Firmware Context
 
-**Last updated:** 2026-09-26 — Split into tiers (hot file + REF files + LOG). Latest bench result: reverse staircase; the direction asymmetry lands entirely in the integrator.
+**Last updated:** 2026-09-26 — A/B/A staircase: reverse needs ~5.9 o/oo less output than forward; drift −3.05 o/oo in 42 min, both real.
 **Budget:** 20 KB. Check with `wc -c` before every commit; trim if over.
 
 > **How to use this file.** This is the hot file for the wheel-firmware track:
@@ -72,8 +72,11 @@ from a step.
 - Done: the ±1 rpm ripple is mechanical — exactly 12.00 events per output rev.
 - Done: step metric fixed — anchors at the end of the ramp, compares overshoot
   with ripple. Verdict so far: no overshoot resolvable.
-- Open: the two staircases are 67 min apart, so direction is confounded with
-  drift. Don't act on a reverse `ff_b` until an A/B/A run separates them.
+- Done: A/B/A staircase (fwd/rev/fwd, back to back, VM 12.02 V): both effects
+  real. Direction: reverse needs ~5.9 o/oo less output; drift: forward moved
+  −3.05 o/oo in 42 min. Max error ≤0.016 rpm, 0% saturation. → LOG 09-26 evening
+- Open: decide whether a direction-dependent `ff_b` is worth adding; the
+  integrator already absorbs the 5.9 o/oo with no tracking penalty.
 - Open: a true step response needs `--slew 0`; not run yet.
 - Open: current sensing below 14.5% duty, where the rover creeps. Options:
   decay-phase reading (lead: a reproducible 0.670 factor, needs a scan across
@@ -81,7 +84,7 @@ from a step.
   tuning any current loop.
 - Open: re-measure τ on the rover before freezing gains; meter the motor
   terminals, not just VM.
-- **Next step:** A/B/A staircase (forward, reverse, forward; ~63 min, no rewiring).
+- **Next step:** step response with `--slew 0`.
 
 ## Next tasks (priority order)
 
@@ -101,6 +104,7 @@ from a step.
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 
+- **09-26** — A/B/A staircase at VM 12.02 V: direction ~5.9 o/oo and drift −3.05 o/oo/42 min, both real; error ≤0.016 rpm, 0% sat.
 - **09-26** — Reverse staircase: worst error 0.006 rpm, 0% saturation; direction asymmetry is entirely the integrator; ripple 12.00/rev both ways. A/B/A still owed.
 - **09-26** — Forward staircase 10→20 rpm, 21 min: error +0.0008 rpm, 0% saturation. Step metric was measuring `vel_slew`; fixed to anchor at the ramp's end.
 - **09-26** — W5 PID written (`velocity.c`), `V,` per-step telemetry and `bench.py run step`. `safe_stop()` now sends `vel off` first.
@@ -110,7 +114,6 @@ from a step.
 - **09-23** — 12 V free-wheel plant `rpm ≈ 0.83 d − 0.96`, linear 3–100% duty; breakaway 5–6%, dropout 2–3%.
 - **09-21** — Task 20 bench-verified: 1268 mA measured vs 1263 predicted (+0.4%).
 - **09-20** — Plateau sweep: DRV8874 trips at VREF/3 (`k = 3`); sampler fixes; measured VDDA and R_IPROPI applied; W4 closed.
-- **09-19** — Replacement MCU board; PMODE confirmed latched in PWM mode; ground return rebuilt; rail raised to 12.0 V.
 
 ## Key rules (full list with evidence in `_REF_LEARNINGS`)
 

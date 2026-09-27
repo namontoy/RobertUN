@@ -3155,3 +3155,43 @@ phase) reads near the peak and the brake-phase sample near the trough; neither
 is the mean. Documented in `isense.h` and `_REF_DRIVE`; committed as is (user
 decision). Open: supply-side DMM reference at 20% and 15% to find which phase
 is biased; then maybe a speed-dependent factor (not before).
+
+## 2026-09-26 (late night, bench) — supply-side DMM reference at 20% and 15%, free shaft
+
+**Goal.** Open item from the decay-phase session: find which IPROPI phase is
+biased while the wheel turns, using a DMM in series with the motor supply (VM).
+In slow decay the supply only carries current in the drive phase, so
+I_supply ≈ D × I_motor(mean) + quiescent.
+
+**Setup.** Scratchpad script `hold.py` (not committed): telem 10 Hz, `drv timeout
+2000` kicked every 0.5 s, `drv ramp 50` + `drv ramp floor 120` for the start
+(restored to `drv ramp 0` after), 20 s at 0% then 90 s at the duty; prints only
+10 s means of telemetry mA and rpm. Runs local in `tools/bench/runs/dmm-*`.
+
+**False starts (no data, no damage).**
+- First run: script left out `drv enable` — pins only, 0 rpm, ~10 mA. Fixed.
+- DMM on the 10 A range: readings unusable (resolution). Firmware at 20%: 275 mA,
+  13.8 rpm.
+- After switching to the 500 mA range: motor power lead not reconnected — 0 rpm
+  with duty 200, no fault flag, current ~17 mA (offset). User reconnected.
+
+**Results (500 mA range, 12 V rail).** Baseline (0%, driver on) 6–7 mA, used 6.5.
+| duty | DMM supply min–max | motor from DMM (sup−6.5)/D min/mid/max | firmware drive phase | fw ÷ DMM mid | rpm |
+|---|---|---|---|---|---|
+| 20% | 56–80 mA | 248 / 308 / 368 mA | 227 mA (223–231) | 0.74 | 12.9 |
+| 15% | 48–67 mA | 277 / 340 / 403 mA | 283 mA (280–290) | 0.83 | 9.0 |
+15% baseline not read (display was moving); 6.5 mA carried over from the 20% run.
+
+**Notes.**
+- The mA-range shunt (burden voltage) cut speed and current at 20%: 13.8 → 12.9 rpm,
+  firmware 275 → 227 mA vs the 10 A-range run.
+- DMM swung ±20%; likely the 12/rev mechanical ripple (~2.6 Hz at 13 rpm) beating
+  with the DMM update rate. Only min/max were read, no average.
+
+**Conclusion.** While turning, the drive-phase sample reads LOW (at or below the
+DMM minimum at both duties), not high as guessed on Sep 26 night. The brake-phase
+sample reads ~40% below the drive phase, so it sits near half the true mean.
+Size of the error (0.74 vs 0.83) is inside the DMM's ±20% swing: no speed
+dependence can be claimed, and no firmware factor is changed on these numbers.
+Next: a steady supply-side reference (shunt + RC filter on the scope or a DMM on
+mV, or a bench supply with a current readout), then decide on a turning factor.

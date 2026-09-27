@@ -1,6 +1,6 @@
 # RobertUN — Wheel Controller Firmware Context
 
-**Last updated:** 2026-09-26 — Decay-phase sample implemented below 14.5%; verified at stall, reads ~40% low vs drive phase while turning.
+**Last updated:** 2026-09-26 — DMM supply reference: while turning the drive-phase sample reads low (0.74 at 20%, 0.83 at 15%, ±20%).
 **Budget:** 20 KB. Check with `wc -c` before every commit; trim if over.
 
 > **How to use this file.** This is the hot file for the wheel-firmware track:
@@ -91,14 +91,17 @@ from a step.
 - Done: decay-phase sample in firmware (cfg `isense_dk` 690, `isense_dmin` 60,
   telem flag 0x20); matches iscan within 1.2%. Valid at stall only: turning,
   brake/drive = 0.40–0.46, −40% step at the 14.5% switch. → LOG 09-26 late night
-- Open: supply-side DMM reference at 20% and 15% (free shaft) to find which
-  phase is biased while turning; speed-dependent factor only after that.
+- Done: supply-side DMM (500 mA range), free shaft: drive-phase sample reads
+  LOW while turning — fw/DMM 0.74 at 20%, 0.83 at 15%, DMM swing ±20%. Brake
+  phase is lower still. No factor changed. → LOG 09-26 late night (DMM)
+- Open: steady supply reference (shunt + RC on scope, or PSU readout) before
+  any turning factor; the DMM min/max is too crude.
 - Open: re-measure τ on the rover before freezing gains; meter the motor
   terminals, not just VM. Same session: reverse-vs-forward offset on ≥2 wheels
   (A/B/A), to settle the `ff_b` decision.
 - Note: the ripple test's reference (tail worst excursion) varies ±2 counts run
   to run; repeat a run before calling a 1–2 count flag real.
-- **Next step:** supply-side DMM reference at 20%/15%, then the rover τ session.
+- **Next step:** the rover τ session; the steady current reference when convenient.
 
 ## Next tasks (priority order)
 
@@ -118,6 +121,7 @@ from a step.
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 
+- **09-26** — DMM supply reference, free shaft: drive-phase sample reads low while turning (0.74 at 20%, 0.83 at 15%, ±20%); no factor change.
 - **09-26** — Decay-phase sample implemented (flag 0x20, cfg isense_dk/dmin); exact vs iscan at stall; turning it reads ~40% below drive phase.
 - **09-26** — Decay-phase IPROPI validated: 0.690 × I (±1.5%), ±4% at 6–12% duty, 5% invalid; sample ≥150 ticks before the drive edge.
 - **09-26** — A/B/A: reverse −5.9 o/oo, drift −3.05/42 min; true steps within ripple both ways; ripple test fixed; no direction `ff_b` (rover, ≥2 wheels).
@@ -127,7 +131,6 @@ from a step.
 - **09-26** — Duty slew limiter in `drive.c` (off by default), verified on the rig: peak inrush 2.7× lower than an un-ramped step.
 - **09-25** — Loaded-rig plant `rpm = 0.7993 d − 2.420`; two-pole τ 0.219 s + 2.75 s, checked by two independent methods.
 - **09-25** — Bench tooling `tools/bench/` and `telem`; `drv timeout` watchdog; 12 V free-wheel plant re-taken, CCW +3.49%.
-- **09-23** — 12 V free-wheel plant `rpm ≈ 0.83 d − 0.96`, linear 3–100% duty; breakaway 5–6%, dropout 2–3%.
 
 ## Key rules (full list with evidence in `_REF_LEARNINGS`)
 

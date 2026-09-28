@@ -60,22 +60,23 @@
   *   2. Error counters read from a node whose transceiver is not connected and
   *      powered are meaningless. A floating CAN_RX produced three different
   *      fault signatures across three runs of identical firmware. See the
-  *      "floating CAN_RX lesson" in PROJECT_CONTEXT.md before trusting TEC,
+  *      "CAN error counters" section of PROJECT_CONTEXT_WHEEL_FW_REF_MCU.md
+  *      before trusting TEC,
   *      REC or LEC on an unwired bench setup.
   *
   *
-  * RX IS POLLED — AND THAT IS STILL AN OPEN DECISION
-  * -------------------------------------------------
-  * can_bus_receive() is called from the main loop. A load ramp to bus
-  * saturation (1,858 frames/s) showed zero FIFO overruns, which bounds the
-  * worst-case loop period under 1.6 ms — but that measures throughput only,
-  * not latency, and the margin is a property of a loop that is currently
-  * almost empty.
+  * RX IS INTERRUPT-DRIVEN, INTO A RING (task 6)
+  * --------------------------------------------
+  * The CAN1 RX0 interrupt (NVIC preemption priority 1, below the 1 kHz
+  * control tick) empties hardware FIFO0 into a CAN_RX_RING_SIZE-slot software
+  * ring and returns. The main loop drains the ring with can_bus_receive();
+  * all handling stays in main-loop context. A full ring drops the new frame
+  * and counts it in rx_ring_dropped — the ISR never blocks. Only the ISR
+  * touches the hardware FIFO and its overrun flags.
   *
-  * The API is deliberately context-agnostic: moving to interrupt-driven means
-  * enabling CAN1_RX0_IRQn in CubeMX and calling this same can_bus_receive()
-  * from HAL_CAN_RxFifo0MsgPendingCallback(). The function body does not
-  * change. See the OPEN question in PROJECT_CONTEXT.md; settle it before W6.
+  * The background and the decision record are in docs/environment
+  * PROJECT_CONTEXT_WHEEL_FW_REF_MCU.md ("polled vs interrupt-driven CAN RX")
+  * and the floating-CAN_RX lesson in the same file ("CAN error counters").
   *
   ******************************************************************************
   */
@@ -105,6 +106,9 @@ typedef struct
   bool     rtr;       /*!< true = remote request, carries no data            */
 } can_frame_t;
 
+/** @brief Slots in the software RX ring (power of two — indices are masked). */
+#define CAN_RX_RING_SIZE  32u
+
 typedef struct
 {
   uint32_t tx_frames;    /*!< frames handed to a mailbox                 */
@@ -114,6 +118,10 @@ typedef struct
                               nothing lost yet. Leading indicator.       */
   uint32_t rx_overruns;  /*!< overrun *events* — each means at least one
                               frame was lost. See can_bus_receive().     */
+  uint32_t rx_ring_dropped; /*!< frames discarded because the software
+                              ring was full (drop-and-count, never block) */
+  uint32_t rx_ring_hwm;  /*!< most frames ever waiting in the ring at
+                              once, 0..CAN_RX_RING_SIZE                  */
 } can_bus_stats_t;
 
 /**
@@ -146,14 +154,14 @@ bool can_bus_init(void);
 bool can_bus_send(uint32_t id, const void *data, uint8_t len);
 
 /**
-  * @brief  Pull one frame out of RX FIFO0.
+  * @brief  Pop one frame from the software RX ring.
   *
-  * Also samples and clears the FIFO depth flags, so calling it in a
-  * drain-until-false loop keeps the overrun counters honest even on the pass
-  * that finds the FIFO already empty.
+  * Main-loop context only (single consumer). The ring is filled by the CAN1
+  * RX0 interrupt, which also samples and clears the hardware FIFO0 depth
+  * flags; this function touches no hardware.
   *
   * @param  frame  destination; untouched when the function returns false
-  * @retval false when the FIFO is empty. Call in a while loop to drain.
+  * @retval false when the ring is empty. Call in a while loop to drain.
   */
 bool can_bus_receive(can_frame_t *frame);
 
@@ -210,9 +218,29 @@ void can_bus_get_timing(uint32_t *bitrate, uint32_t *ntq, uint32_t *brp,
  * software clears it. Read TEC's *trend* for "erroring right now", not LEC.
  */
 
-/** @brief Raw CAN_ESR. Note the accessors below each re-read the register, so
-  *        a raw value and a decoded field sampled separately can disagree
-  *        while counters are moving. */
+/** @brief CAN_ESR read once and decoded. Every field comes from the same
+  *        register value, so they cannot disagree while counters are moving. */
+typedef struct
+{
+  uint32_t esr;       /*!< raw CAN_ESR as read                       */
+  uint8_t  tec;       /*!< transmit error counter                    */
+  uint8_t  rec;       /*!< receive error counter                     */
+  uint8_t  lec;       /*!< raw LEC field, 0..7                       */
+  bool     warning;   /*!< a counter passed 96                       */
+  bool     passive;   /*!< a counter passed 127                      */
+  bool     bus_off;   /*!< TEC passed 255                            */
+} can_bus_err_t;
+
+/** @brief Snapshot CAN_ESR once. Use this whenever more than one field is
+  *        printed or transmitted together. */
+void can_bus_errors(can_bus_err_t *out);
+
+/** @brief LEC code as a word, e.g. 3 -> "ack". */
+const char *can_bus_lec_str(uint8_t lec);
+
+/** @brief Raw CAN_ESR. The single-field accessors below each re-read the
+  *        register, so a raw value and a decoded field sampled separately can
+  *        disagree while counters are moving; prefer can_bus_errors(). */
 uint32_t can_bus_esr(void);
 
 uint8_t     can_bus_tec(void);              /*!< transmit error counter       */
@@ -223,11 +251,13 @@ bool        can_bus_is_error_warning(void); /*!< a counter passed 96          */
 bool        can_bus_is_error_passive(void); /*!< a counter passed 127         */
 bool        can_bus_is_bus_off(void);       /*!< TEC passed 255               */
 
-/** @brief Borrowed pointer to the live software counters. TEC/REC are *not*
+/** @brief Copy of the software counters, taken with the CAN1 RX0 interrupt
+  *        masked so the fields are mutually consistent. TEC/REC are *not*
   *        here — those are hardware-maintained and cannot be written. */
-const can_bus_stats_t *can_bus_stats(void);
+void can_bus_stats_snapshot(can_bus_stats_t *out);
 
-/** @brief Zero the software counters only. Useful before a measured run. */
+/** @brief Zero the software counters only, with the CAN1 RX0 interrupt masked.
+  *        Useful before a measured run. */
 void can_bus_clear_stats(void);
 
 #ifdef __cplusplus

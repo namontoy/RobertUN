@@ -77,3 +77,25 @@ has not yet shown it can separate MCU-side latency from capture-side jitter.
 
 Raw captures: `firmware/RobertUN_ModuleNode/tools/bench/runs/can_latency/*.log`
 (local-only, git-ignored, per repo `.gitignore`).
+
+## Results — interrupt-driven RX (ISR-to-ring), same method
+
+Same method (heartbeat 0x500 inter-arrival, `cangen -g <ms> -I 100 -i`, no `-x`),
+firmware on branch `ISR-to-ring` (CAN1 RX0 ISR, 32-frame ring). Board run at
+module ID 0; ~12-30 s per run. Polled column is from the table above.
+
+| Date | cangen `-g` | Actual fps | Motor | n hb | mean interval (ms) | max \|dev\| (ms) | polled max \|dev\| (ms) | bus errors |
+|---|---|---|---|---|---|---|---|---|
+| 2026-09-28 | none (baseline) | 0 | off | 26 | 500.29 | 0.52 | 0.43 | 0 |
+| 2026-09-28 | 5 | ~192 | off | 38 | 500.29 | 0.46 | 0.58 | 0 |
+| 2026-09-28 | 2 | ~466 | 18% duty | 50 | 500.29 | 0.74 | 0.60 | 0 |
+| 2026-09-28 | 1 | ~908 | 18% duty | 46 | 500.29 | 0.74 | 0.70 | 0 |
+| 2026-09-28 | 0.45 | ~1912 | 18% duty | 62 | 500.29 | 0.72 | 0.72 | 0 |
+
+No heartbeat gap over 750 ms in any run; ring dropped 0, `rx_overruns` 0,
+`rx_fifo_full` 0, TEC/REC 0 throughout (92022 frames over the three loaded runs).
+The Sep 27 ISR run at `-g 0.45` read 1.28 ms (see LOG); the Sep 28 repeat read
+0.72 ms, equal to polled. Same caveat as above: this method cannot separate MCU
+latency from capture-host jitter, so the pass criterion for the change was the
+frame-loss steps (20000/20000 at saturation, overflow counted with 0 overruns),
+not these rows. Raw captures were not kept in the repo.

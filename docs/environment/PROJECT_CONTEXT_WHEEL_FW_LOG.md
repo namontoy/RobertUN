@@ -3341,3 +3341,86 @@ The "open: long hold at 11–12%" item above is withdrawn. Sep 25 and Sep 27 are
 both validated measurements, each stands with its own conditions (30 s vs 6 s
 dwell); no reconciliation task. Task 17 is done on the rig; motor-terminal
 metering goes with the rover session.
+
+## 2026-09-27 — Task 6: ISR-to-ring CAN RX bench, branch `ISR-to-ring` (NOT merged, no decision yet)
+
+Code (branch `ISR-to-ring`, commits `d879784`..`b13ea38`): CAN1 RX0 interrupt at
+NVIC priority 1 copies FIFO0 into a 32-slot SPSC ring; `can_bus_receive()` pops
+the ring; single ESR snapshot `can_bus_errors()`; volatile stats with IRQ-masked
+snapshot/clear; test-only `canhold <ms>` pauses the ring drain. FLASH 110,424 B,
+RAM 6,256 B. Plan: `docs/plans/ISR-to-ring.md`.
+
+Steps 1–6 (pass criteria) all met their expected values:
+- Saturation, `cangen -g 0.45 -n 20000` from orion, twice (motor off; 18% duty):
+  `rx_frames` 20000 = orion TX increase, 0 FIFO-full, 0 overrun events,
+  0 ring drops, ring high-water 1; TEC/REC 0, LEC none.
+- Overflow, `canhold 100` under the same load: ring high-water 32 of 32, 165
+  dropped (expected ~150), 0 FIFO-full, 0 overrun events, console live,
+  heartbeat sequence 0x14..0x9E consecutive across the hold, errors clean.
+  Orion TX 91563 -> 111564 = 20000 cangen + 1 cansend; `rx_frames` 20000.
+  (The 91563 "before" is the step-5 post-run reading, not a fresh one.)
+
+Step 7 — heartbeat inter-arrival, same method and host as the polled bench
+(daedalus, CANable, `candump -tz`, ID 500, max |interval - 500 ms|):
+
+| Condition | polled n | polled max dev (ms) | ISR n | ISR mean (ms) | ISR max dev (ms) |
+|---|---|---|---|---|---|
+| none | 24 | 0.43 | 21 | 500.30 | 0.48 |
+| `-g 5`, motor off | 36 | 0.58 | 92 | 500.29 | 0.55 |
+| `-g 2`, 18% duty | 48 | 0.60 | 103 | 500.29 | 0.64 |
+| `-g 1`, 18% duty | 43 | 0.70 | 89 | 500.29 | 0.75 |
+| `-g 0.45`, 18% duty | 59 | 0.72 | 74 | 500.29 | **1.28** |
+
+Actual `cangen` rates in the ISR runs: 193, 476, 937, 1964 f/s. Captures were
+longer than the polled ones and only partly under load in the first two.
+
+The 0.45 row is the only one clearly worse than polled. Only 2 of its 73
+intervals exceed 0.8 ms (1.28 ms at 16.5 s, 0.94 ms at 12.5 s; third-worst 0.68).
+Not repeated. The method cannot separate MCU latency from capture-host jitter,
+so this is not a pass criterion. Open: whether 1.28 ms recurs; the merge
+decision is the user's and has not been made. Raw captures are local-only in
+`tools/bench/runs/can_latency/isr_*.log`. Step 8 (record updates) waits for a
+merge decision.
+
+## 2026-09-28 — Task 6: ISR-to-ring re-run with the wheel-fw scripts, merge decided (accepted)
+
+Re-ran plan steps 1-7 (`docs/plans/ISR-to-ring.md`) on the flashed `ISR-to-ring`
+build (Debug, 107.8 KB flash / 6.1 KB RAM, 0 warnings), using `wheel-fw`
+build/flash/console.py plus host `candump`/`cansend`/`cangen` on can0 (250 kbit/s).
+Step 1's CubeMX regeneration checks were not repeated (already in the firmware).
+User decision after the re-run: **merge, accept the change — RX CAN works with
+interrupts.**
+
+- Step 1: clean tree; one `cansend` -> `rx_frames` 1.
+- Step 2: `errors` healthy: raw ESR 0, TEC 0, REC 0, lec none; heartbeat bytes
+  4-6 = 00 00 00, match.
+- Step 3: 10 x `cansend` -> `rx_frames` 10, 0 fifo-full, 0 overruns, 0 ring drops
+  (hwm 1, as expected with the ring present).
+- Step 4: one `can rx std 0x123 [4] DE AD BE EF` monitor line for one frame;
+  `rx_frames` 1, hwm 1. Loopback receive OK; re-arm after loopback off OK.
+  (The async monitor line was caught with a throwaway script reusing `Node`
+  from node.py; console.py cannot show asynchronous lines.)
+- Step 5: `cangen -g 0.45 -I 100 -L 8 -n 20000`: `rx_frames` 20000 = host TX delta
+  20000, 0 ring drops, 0 overruns, 0 fifo-full, hwm 1, TEC/REC 0, heartbeat
+  n=24 max|dev| 0.59 ms, no gap. Repeat with motor at 18% duty (Imotor ~354 mA):
+  same counters, heartbeat max|dev| 0.63 ms.
+- Step 6: `canhold 100` during the same stream (motor at 18%): ring 156 dropped,
+  hwm 32/32, 0 overruns; `canhold` round trip 0.16 s; heartbeat max|dev| 0.73 ms,
+  no gap; a `cansend` afterwards gave `rx_frames` 20001 (RX resumed).
+  **Not verified:** `rx_frames - dropped = delivered`. `stats` has no delivered
+  counter; counting `monitor` lines at low rate (400 frames, 45 dropped) gave 209
+  vs 355 expected — my script discarded lines sent before `canhold`, and the
+  firmware dropped 1302 UART TX bytes when the ring drained 32 frames at once.
+  Inconclusive, not a firmware failure; would need a delivered counter in `stats`.
+- Step 7 (heartbeat jitter, max|dev| from 500 ms; polled in brackets): none 0.52
+  (0.43), -g 5 motor off 0.46 (0.58), -g 2 at 18% 0.74 (0.60), -g 1 0.74 (0.70),
+  -g 0.45 0.72 (0.72); mean 500.29 ms in all; no gap > 750 ms; 92022 frames over
+  the loaded runs, 0 ring drops. The Sep 27 -g 0.45 reading of 1.28 ms did not
+  repeat. Rows added to `_REF_TASK6_CAN_LATENCY`.
+- Side finding: bxCAN `loopback on` still puts the frame on the wire (seen in
+  candump, reproduced with a second frame); the console text "off the wire" is
+  wrong. Silent mode is what isolates the pins (from memory of the RM, not checked).
+- Records updated: `_REF_MCU` (DECIDED section, ESR fixed, TIM3->TIM7 heartbeat,
+  priority list), `_REF_TASKS` task 6 closed, `_REF_TASK6_CAN_LATENCY` ISR rows,
+  hot file. Raw candump captures stay in the session scratchpad, not the repo.
+- Motor left stopped (duty 0), heartbeat off, monitor off.

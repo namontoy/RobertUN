@@ -25,7 +25,7 @@ PID ✅ on the rig (rover items pending); W6 and W7 follow (roadmap in `PROJECT_
 - **Toolchain:** CubeMX (CMake) + STM32CubeCLT 1.22.0 + VS Code Cortex-Debug on
   daedalus; WeAct STM32F446 Core Board V1.1. → `_REF_DEVENV`
 - **CAN (W2, Aug 10):** bxCAN 250 kbps, accept-all filter, zero error counters
-  against orion. Open: polled vs interrupt RX (task 6). → `_REF_MCU`
+  against orion. RX interrupt-driven, ISR-to-ring (task 6, Sep 28). → `_REF_MCU`
 - **Steering (W3, Aug 13):** SERVO42C to target angle, 1/10-microstep
   repeatability; every driver stays at `0xE0`; the driver echoes each request
   before replying. → `_REF_SERVO42C`
@@ -116,14 +116,14 @@ rise ≤ 0.3 s (rig). **Met on the rig, 6–20 rpm.** → `_REF_TASKS` task 21
 1. Task 21 open items above, in the order listed.
 2. Independent ammeter on the low-duty end: reverse draws +8.1% current, and the
    low-end U-shape sits near the 145 o/oo sense floor.
-3. Task 6: settle polled vs interrupt-driven CAN RX before W6; `cmd_errors`
-   reads CAN_ESR non-atomically.
-4. Task 18: exercise the corrupt-record fallback and the sector-full wrap at
+3. Task 18: exercise the corrupt-record fallback and the sector-full wrap at
    save 1025; `cfg rail_mv` once the motor terminals are metered.
-5. Task 20: one `drv iscan` with `from = 0` to exercise the tick-0 cosmetic fix.
+4. Task 20: one `drv iscan` with `from = 0` to exercise the tick-0 cosmetic fix.
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 
+- **09-28** — Task 6 closed: ISR-to-ring merged (decision: accept). Bench re-run steps 1–7 via wheel-fw scripts: 20000/20000 at saturation ±motor, overflow 156 dropped, 0 overruns; jitter ≤0.74 ms, no worse than polled (the 09-27 1.28 ms at -g 0.45 did not repeat: 0.72). Delivered-count invariant not verified. ESR snapshot fixed. → LOG.
+- **09-27** — Task 6 ISR-to-ring bench on branch `ISR-to-ring`: steps 1–6 pass (20000/20000, overflow 165 dropped, 0 overruns); -g 0.45 jitter 1.28 vs 0.72 ms polled.
 - **09-27** — Task 17 tidied: pre-Sep-20 figures marked invalid, stale boxes closed; only motor-terminal metering left (rover session).
 - **09-27** — Task 17 stiction A/B/A, 0.5% steps, 12.02 V: breakaway CW 12.5–13.0% (repeats), CCW 10.5–11.0%; dropout CW 8.5–9.5%, CCW 8.0–8.5%.
 - **09-27** — 12/rev ripple source identified: the tyre's 12 tread grooves. Resolved, no firmware change.

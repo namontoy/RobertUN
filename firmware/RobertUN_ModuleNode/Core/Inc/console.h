@@ -123,6 +123,12 @@ bool console_heartbeat_enabled(void);
   */
 bool console_monitor_enabled(void);
 
+/**
+  * @brief  TEST ONLY: whether `canhold <ms>` is currently pausing the CAN RX
+  *         ring drain in the main loop. False in normal operation.
+  */
+bool console_can_hold_active(void);
+
 #ifdef __cplusplus
 }
 #endif

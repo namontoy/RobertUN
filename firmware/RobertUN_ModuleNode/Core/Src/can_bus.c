@@ -13,9 +13,11 @@
   * call that connects the peripheral to the pins (HAL_CAN_Start), and readable
   * access to registers the debugger would otherwise be needed for.
   *
-  * Everything reads or writes hardware directly and returns; nothing here
-  * blocks, allocates, or keeps a queue of its own — the three TX mailboxes and
-  * the 3-deep RX FIFO are the only buffering, and both live in the peripheral.
+  * Nothing here blocks or allocates. TX goes straight to one of the three
+  * mailboxes. RX is interrupt-driven: the CAN1 RX0 ISR empties the 3-deep
+  * hardware FIFO0 into a 32-slot software ring (single producer: the ISR;
+  * single consumer: the main loop via can_bus_receive()). A full ring drops
+  * the frame and counts it — the ISR never waits.
   ******************************************************************************
   */
 #include "can_bus.h"
@@ -26,7 +28,57 @@
 
 extern CAN_HandleTypeDef hcan1;
 
-static can_bus_stats_t stats;
+/* Written from the CAN1 RX0 ISR once RX is interrupt-driven (rx_*), and from
+   the main loop (tx_*). One writer per field; read and cleared only through
+   can_bus_stats_snapshot() / can_bus_clear_stats(), which mask that IRQ. */
+static volatile can_bus_stats_t stats;
+
+/* Mask/restore the RX0 interrupt only — never __disable_irq(), which would
+   also hold off the 1 kHz control tick. Returns the previous enable state. */
+static uint32_t rx_irq_mask(void)
+{
+  uint32_t was_enabled = NVIC_GetEnableIRQ(CAN1_RX0_IRQn);
+
+  HAL_NVIC_DisableIRQ(CAN1_RX0_IRQn);
+  return was_enabled;
+}
+
+static void rx_irq_restore(uint32_t was_enabled)
+{
+  if (was_enabled != 0u)
+  {
+    HAL_NVIC_EnableIRQ(CAN1_RX0_IRQn);
+  }
+}
+
+static void stats_zero(void)
+{
+  stats = (can_bus_stats_t){0};
+}
+
+/* RX ring. Free-running indices; count = head - tail (unsigned wrap is fine
+   because CAN_RX_RING_SIZE divides 2^32). head is written only by the ISR,
+   tail only by the main loop. The slots are plain memory, so each side puts a
+   barrier between touching a slot and publishing its index. */
+#define RING_MASK  (CAN_RX_RING_SIZE - 1u)
+
+static can_frame_t          ring[CAN_RX_RING_SIZE];
+static volatile uint32_t    ring_head;
+static volatile uint32_t    ring_tail;
+
+/* Empty the ring. Call only while the RX0 interrupt is masked or not yet armed. */
+static void ring_reset(void)
+{
+  ring_head = 0u;
+  ring_tail = 0u;
+}
+
+/* Enable the "message pending" interrupt. HAL_CAN_Init() clears the enable
+   bits, so this must follow every HAL_CAN_Start(). */
+static bool rx_notify_arm(void)
+{
+  return (HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING) == HAL_OK);
+}
 
 /* -------------------------------------------------------------------------- */
 /* Init                                                                        */
@@ -64,22 +116,32 @@ static bool filter_accept_all(void)
 
 bool can_bus_init(void)
 {
-  memset(&stats, 0, sizeof(stats));
+  stats_zero();
 
   if (!filter_accept_all())
   {
     return false;
   }
 
+  ring_reset();
+
   /* Leaves initialization mode and connects the peripheral to the pins. */
-  return (HAL_CAN_Start(&hcan1) == HAL_OK);
+  if (HAL_CAN_Start(&hcan1) != HAL_OK)
+  {
+    return false;
+  }
+
+  return rx_notify_arm();
 }
 
 bool can_bus_set_loopback(bool enable)
 {
+  uint32_t irq = rx_irq_mask();
+  bool ok = false;
+
   if (HAL_CAN_Stop(&hcan1) != HAL_OK)
   {
-    return false;
+    goto done;
   }
 
   hcan1.Init.Mode = enable ? CAN_MODE_LOOPBACK : CAN_MODE_NORMAL;
@@ -88,15 +150,26 @@ bool can_bus_set_loopback(bool enable)
      pins and clocks configured by CubeMX are left alone. */
   if (HAL_CAN_Init(&hcan1) != HAL_OK)
   {
-    return false;
+    goto done;
   }
 
   if (!filter_accept_all())
   {
-    return false;
+    goto done;
   }
 
-  return (HAL_CAN_Start(&hcan1) == HAL_OK);
+  ring_reset();   /* no stale frames cross a mode change */
+
+  if (HAL_CAN_Start(&hcan1) != HAL_OK)
+  {
+    goto done;
+  }
+
+  ok = rx_notify_arm();
+
+done:
+  rx_irq_restore(irq);
+  return ok;
 }
 
 bool can_bus_is_loopback(void)
@@ -217,15 +290,15 @@ static void sample_fifo_flags(void)
   }
 }
 
-bool can_bus_receive(can_frame_t *frame)
+/**
+  * @brief  Pop one frame from hardware FIFO0. ISR context only — this is the
+  *         sole caller of sample_fifo_flags(), so the RF0R write-1-to-clear
+  *         cannot race a second reader.
+  */
+static bool fifo_pop(can_frame_t *frame)
 {
   CAN_RxHeaderTypeDef header;
   uint8_t data[8];
-
-  if (frame == NULL)
-  {
-    return false;
-  }
 
   sample_fifo_flags();
 
@@ -249,9 +322,98 @@ bool can_bus_receive(can_frame_t *frame)
   return true;
 }
 
+/**
+  * @brief  FIFO0 message-pending interrupt (weak override of the HAL stub;
+  *         USE_HAL_CAN_REGISTER_CALLBACKS is 0).
+  *
+  * One bounded job: empty FIFO0 into the ring and return. FIFO0 is only 3
+  * deep, so it drains to empty rather than trusting the interrupt to re-fire.
+  * A full ring drops the frame and counts it; the FIFO is still emptied so the
+  * hardware never backs up. Nothing here waits, prints or calls into the rest
+  * of the firmware.
+  */
+void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
+{
+  can_frame_t f;
+
+  (void)hcan;
+
+  while (fifo_pop(&f))
+  {
+    uint32_t head  = ring_head;
+    uint32_t count = head - ring_tail;
+
+    if (count >= CAN_RX_RING_SIZE)
+    {
+      stats.rx_ring_dropped++;
+      continue;
+    }
+
+    ring[head & RING_MASK] = f;
+    __DMB();                    /* slot written before head publishes it */
+    ring_head = head + 1u;
+
+    count++;
+    if (count > stats.rx_ring_hwm)
+    {
+      stats.rx_ring_hwm = count;
+    }
+  }
+}
+
+bool can_bus_receive(can_frame_t *frame)
+{
+  uint32_t tail;
+
+  if (frame == NULL)
+  {
+    return false;
+  }
+
+  tail = ring_tail;
+  if (ring_head == tail)
+  {
+    return false;
+  }
+
+  __DMB();                      /* head seen before the slot is read */
+  *frame = ring[tail & RING_MASK];
+  __DMB();                      /* slot copied out before tail frees it */
+  ring_tail = tail + 1u;
+  return true;
+}
+
 /* -------------------------------------------------------------------------- */
 /* Error state                                                                 */
 /* -------------------------------------------------------------------------- */
+
+/**
+  * @brief  One read of CAN_ESR, every field decoded from that single value.
+  *
+  * The single-field accessors below each re-read the register, so a raw value
+  * and a decoded field taken through them can disagree while TEC/REC are moving
+  * (seen Aug 10: raw REC 102 printed next to REC 103). Anything that prints
+  * more than one field must use this.
+  */
+void can_bus_errors(can_bus_err_t *out)
+{
+  uint32_t esr;
+
+  if (out == NULL)
+  {
+    return;
+  }
+
+  esr = CAN1->ESR;
+
+  out->esr     = esr;
+  out->tec     = (uint8_t)((esr & CAN_ESR_TEC_Msk) >> CAN_ESR_TEC_Pos);
+  out->rec     = (uint8_t)((esr & CAN_ESR_REC_Msk) >> CAN_ESR_REC_Pos);
+  out->lec     = (uint8_t)((esr & CAN_ESR_LEC_Msk) >> CAN_ESR_LEC_Pos);
+  out->warning = ((esr & CAN_ESR_EWGF_Msk) != 0u);
+  out->passive = ((esr & CAN_ESR_EPVF_Msk) != 0u);
+  out->bus_off = ((esr & CAN_ESR_BOFF_Msk) != 0u);
+}
 
 uint32_t can_bus_esr(void)
 {
@@ -281,14 +443,19 @@ uint8_t can_bus_last_error(void)
   * itself, so this means no other node is listening, rather than anything being
   * wrong with this node.
   */
-const char *can_bus_last_error_str(void)
+const char *can_bus_lec_str(uint8_t lec)
 {
   static const char *const names[8] =
   {
     "none", "stuff", "form", "ack", "bit-recessive", "bit-dominant", "crc", "sw"
   };
 
-  return names[can_bus_last_error() & 0x07u];
+  return names[lec & 0x07u];
+}
+
+const char *can_bus_last_error_str(void)
+{
+  return can_bus_lec_str(can_bus_last_error());
 }
 
 bool can_bus_is_error_warning(void)
@@ -306,14 +473,32 @@ bool can_bus_is_bus_off(void)
   return (CAN1->ESR & CAN_ESR_BOFF_Msk) != 0u;
 }
 
-const can_bus_stats_t *can_bus_stats(void)
+void can_bus_stats_snapshot(can_bus_stats_t *out)
 {
-  return &stats;
+  uint32_t irq;
+
+  if (out == NULL)
+  {
+    return;
+  }
+
+  irq = rx_irq_mask();
+  out->tx_frames       = stats.tx_frames;
+  out->tx_dropped      = stats.tx_dropped;
+  out->rx_frames       = stats.rx_frames;
+  out->rx_fifo_full    = stats.rx_fifo_full;
+  out->rx_overruns     = stats.rx_overruns;
+  out->rx_ring_dropped = stats.rx_ring_dropped;
+  out->rx_ring_hwm     = stats.rx_ring_hwm;
+  rx_irq_restore(irq);
 }
 
 /* Clears the software counters only. TEC and REC are maintained by the CAN
    fault-confinement state machine in hardware and cannot be written. */
 void can_bus_clear_stats(void)
 {
-  memset(&stats, 0, sizeof(stats));
+  uint32_t irq = rx_irq_mask();
+
+  stats_zero();
+  rx_irq_restore(irq);
 }

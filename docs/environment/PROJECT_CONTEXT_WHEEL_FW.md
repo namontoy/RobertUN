@@ -1,6 +1,6 @@
 # RobertUN — Wheel Controller Firmware Context
 
-**Last updated:** 2026-09-28 — W6 bus protocol drafted twice for comparison: plain CAN (`docs/can_cmds.md`) and CANopen (`docs/canopen_cmds.md`); choice open.
+**Last updated:** 2026-09-28 — Next tasks reordered: CAN vs CANopen decision is next session (task 1), then one corner node (task 2).
 **Budget:** 20 KB. Check with `wc -c` before every commit; trim if over.
 
 > **How to use this file.** This is the hot file for the wheel-firmware track:
@@ -111,20 +111,23 @@ rise ≤ 0.3 s (rig). **Met on the rig, 6–20 rpm.** → `_REF_TASKS` task 21
 - Done (09-27): 6–10 rpm A/B/A, VM 12.02 V: worst error −0.019 rpm, 0% sat,
   peak 165/300; 12.00 ± 0.02 events/rev; sd 0.78–1.19. Ripple is a one-sided
   dip (−3.2…−4.0 rpm fwd). → LOG 09-27
-- **Next step:** the rover τ session (re-set rise limit, then freeze gains).
+- **Next step (this task, now priority 3):** the rover τ session (re-set rise limit, then freeze gains).
 
 ## Next tasks (priority order)
 
-Tasks 6, 17, 18 and 20 were closed 09-28 and are in the LOG. Numbers 1–4 are new;
-the old ID is in brackets.
+Tasks 6, 17, 18 and 20 were closed 09-28 and are in the LOG. Renumbered 09-28;
+the previous number is in brackets.
 
-1. W5 velocity PID (was task 21): the open items above, in the order listed.
-2. Independent ammeter on the low-duty end: reverse draws +8.1% current, and the
-   low-end U-shape sits near the 145 o/oo sense floor.
-3. W6 open, priority not set: decide how absolute steering positioning works
-   (`FD` is a relative move; `33` counts UART-commanded pulses and can serve as feedback).
-4. W6 open, priority not set: integrate one full corner node — CAN command in,
-   steering (UART/MKS) and drive (PID) both respond.
+1. **Next session.** W6: decide plain CAN vs CANopen. Compare `docs/can_cmds.md`
+   and `docs/canopen_cmds.md` (Q1 in both); REST selected CANopen. Blocks task 2.
+2. **After task 1.** W6 (was 4): integrate one full corner node — CAN command in,
+   steering (UART/MKS) and drive (PID) both respond, on the chosen protocol.
+3. W5 velocity PID (was 1, task 21): the open items above, in the order listed.
+4. Independent ammeter on the low-duty end (was 2): reverse draws +8.1% current,
+   and the low-end U-shape sits near the 145 o/oo sense floor.
+5. W6 open, priority not set (was 3): decide how absolute steering positioning
+   works (`FD` is a relative move; `33` counts UART-commanded pulses and can
+   serve as feedback). Task 2's absolute steering target depends on it.
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 

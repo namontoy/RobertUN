@@ -4070,3 +4070,11 @@ Committed 9e709de, 42 657 bytes, 746 lines.
 - 21 open questions; key ones: Q1 plain vs CANopen, Q4 ros2_canopen multi-axis
   and CSV support not verified, Q6 stack cost unmeasured. Seven cfg defaults
   given by macro name (lookup blocked by a shell outage during drafting).
+
+## 2026-09-28 — Next tasks reordered (user)
+
+- New task 1, next session: decide plain CAN (`docs/can_cmds.md`) vs CANopen
+  (`docs/canopen_cmds.md`); REST selected CANopen. Blocks task 2.
+- Task 2 (was 4): one full corner node on the chosen protocol, right after task 1.
+- W5 PID (task 21) moves to 3, low-duty ammeter to 4, absolute steering
+  positioning to 5 (priority not set; task 2's absolute steer target depends on it).

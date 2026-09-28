@@ -1,6 +1,6 @@
 # RobertUN — Wheel Controller Firmware Context
 
-**Last updated:** 2026-09-28 — W6 CAN RX (task 6) closed, W6's absolute positioning and corner-node integration still open; W5 owes the rover τ session; W7 started.
+**Last updated:** 2026-09-28 — Tasks 17, 18, 20 closed and moved to the LOG; open list renumbered 1–4; W6 CAN RX closed, W6 positioning and corner node open; W7 started.
 **Budget:** 20 KB. Check with `wc -c` before every commit; trim if over.
 
 > **How to use this file.** This is the hot file for the wheel-firmware track:
@@ -41,7 +41,7 @@ absolute-positioning decision and one-corner-node integration are still open; W7
   → `_REF_DRIVE`, LOG 09-26 night
 - **config:** append-only log in flash sector 7, `cfg` command, int32 keys in
   milli-units. Saved on the bench board 09-26 (slot 2): trip_ma 1580,
-  duty_limit 300, ramp 50/120; survived a reset. Adding a key discards it. → `_REF_TASKS` task 18, `_REF_LEARNINGS`
+  duty_limit 300, ramp 50/120; survived a reset. Adding a key discards it. → `_REF_LEARNINGS`, LOG 09-28 (task 18)
 - **drive.c safety:** `drv timeout` command watchdog (coasts on expiry); duty
   slew limiter `drv ramp` / `drv ramp floor`, off by default (0); coast and
   brake are not ramped; `drv duty <n>p` sets per-mille. → `_REF_TASKS` task 21
@@ -55,7 +55,7 @@ absolute-positioning decision and one-corner-node integration are still open; W7
   dropout CW 8.5–9.5%, CCW 8.0–8.5%; min speed ~4.3 rpm (6 s dwell). The
   closed-loop staircase matches the open-loop inverse to 0.39% in 10–20 rpm.
   The rig is 2.87× light on inertia, so τ on the rover will be longer.
-  → `_REF_DRIVE`, `_REF_TASKS` task 17
+  → `_REF_DRIVE`, LOG 09-28 (task 17)
 
 ## Active work
 
@@ -115,23 +115,23 @@ rise ≤ 0.3 s (rig). **Met on the rig, 6–20 rpm.** → `_REF_TASKS` task 21
 
 ## Next tasks (priority order)
 
-1. Task 21 open items above, in the order listed.
+Tasks 17, 18 and 20 were closed 09-28 and are in the LOG. Numbers 1–4 are new;
+the old ID is in brackets.
+
+1. W5 velocity PID (was task 21): the open items above, in the order listed.
 2. Independent ammeter on the low-duty end: reverse draws +8.1% current, and the
    low-end U-shape sits near the 145 o/oo sense floor.
-3. Task 18: exercise the corrupt-record fallback and the sector-full wrap at
-   save 1025; `cfg rail_mv` once the motor terminals are metered.
-4. Task 20: one `drv iscan` with `from = 0` to exercise the tick-0 cosmetic fix.
-5. W6 open, priority not set: decide how absolute steering positioning works
+3. W6 open, priority not set: decide how absolute steering positioning works
    (`FD` is a relative move; `33` counts UART-commanded pulses and can serve as feedback).
-6. W6 open, priority not set: integrate one full corner node — CAN command in,
+4. W6 open, priority not set: integrate one full corner node — CAN command in,
    steering (UART/MKS) and drive (PID) both respond.
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 
+- **09-28** — Tasks 17, 18, 20 closed by the user (task 20: PMODE corrected); text moved to the LOG; open list renumbered 1–4.
 - **09-28** — W6 CAN RX (task 6) closed; W6's absolute-positioning decision and one-corner-node integration stay open (user); W5 owes the rover τ session; W7 started.
 - **09-28** — Task 6 closed: ISR-to-ring merged (decision: accept). Bench re-run steps 1–7 via wheel-fw scripts: 20000/20000 at saturation ±motor, overflow 156 dropped, 0 overruns; jitter ≤0.74 ms, no worse than polled (the 09-27 1.28 ms at -g 0.45 did not repeat: 0.72). Delivered-count invariant not verified. ESR snapshot fixed. → LOG.
 - **09-27** — Task 6 ISR-to-ring bench on branch `ISR-to-ring`: steps 1–6 pass (20000/20000, overflow 165 dropped, 0 overruns); -g 0.45 jitter 1.28 vs 0.72 ms polled.
-- **09-27** — Task 17 tidied: pre-Sep-20 figures marked invalid, stale boxes closed; only motor-terminal metering left (rover session).
 - **09-27** — Task 17 stiction A/B/A, 0.5% steps, 12.02 V: breakaway CW 12.5–13.0% (repeats), CCW 10.5–11.0%; dropout CW 8.5–9.5%, CCW 8.0–8.5%.
 - **09-27** — 12/rev ripple source identified: the tyre's 12 tread grooves. Resolved, no firmware change.
 - **09-27** — 6–10 rpm A/B/A passes: worst −0.019 rpm, 0% sat, 12.00/rev; ripple crit. amended to sd ≤ 1.5 rpm. W5 met on the rig.
@@ -165,8 +165,8 @@ All in `docs/environment/`, prefixed `PROJECT_CONTEXT_WHEEL_FW`:
 
 | Topic | File suffix |
 |---|---|
-| Full session history, closed tasks (6b, 19, …) | `_LOG.md` |
-| Open tasks, full text (6, 17, 18, 20, 21) | `_REF_TASKS.md` |
+| Full session history, closed tasks (6b, 17, 18, 19, 20, …) | `_LOG.md` |
+| Open tasks, full text (6, 21) | `_REF_TASKS.md` |
 | Motor, encoder, DRV8874, IPROPI, plant, loaded rig, bench tooling | `_REF_DRIVE.md` |
 | CAN bit timing, pin allocation, timers, firmware modules | `_REF_MCU.md` |
 | SERVO42C protocol, command set, echo/framing traps | `_REF_SERVO42C.md` |

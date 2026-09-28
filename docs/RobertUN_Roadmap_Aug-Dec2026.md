@@ -19,11 +19,12 @@ Orion (Jetson, ROS 2) --raw CAN bus (SocketCAN)--
 
 ---
 
-## STATUS — last updated Sep 11, 2026
+## STATUS — last updated Sep 28, 2026
 
 **Phase 1: W1 ✅ (Aug 6). W2 ✅ (Aug 10). W3 ✅ (Aug 13). W4 ✅ (Aug 26 for the
-acceptance criterion, harness work closed Sep 11). W5 is the open week and has
-not started — it is now the only thing standing between here and W6.**
+acceptance criterion, harness work closed Sep 11). W5 ✅ on the rig (Sep 27);
+its only open item is the τ session on the full rover. W6 ✅ (CAN RX, Sep 28).
+W7 started Sep 28.** *(The "Schedule position" text below is as of Sep 11.)*
 
 | Week | Status |
 |---|---|
@@ -31,8 +32,10 @@ not started — it is now the only thing standing between here and W6.**
 | W2 — STM32 CAN bring-up | ✅ **DONE** Aug 10 — STM32 heartbeat crossing a real 250 kbps bus to Orion, confirmed independently on the CANable, zero error counters on both ends |
 | W3 — MKS SERVO42C UART | ✅ **DONE** Aug 13 — STM32 commands the steering motor to a target angle, confirmed against the driver's own encoder |
 | W4 — encoder + drive | ✅ **DONE** — acceptance met Aug 26 (8394.9 counts/rev over ten hand turns, 0.1% from predicted). Plant characterised on a free shaft at rpm = 0.672·duty − 1.8, slow decay chosen, stop policy coast. Harness work closed Sep 11: all seven motors encoder-checked and re-crimped to NASA-STD-8739.4A |
-| W5 — encoder PID tuning | ⬜ **OPEN, not started.** Nominal window Aug 31–Sep 6 has passed. See the note below on why this is less alarming than the dates suggest |
-| W6–W9 | ⬜ not started |
+| W5 — encoder PID tuning | ✅ **DONE on the rig** Sep 27 — velocity PID met its acceptance on the loaded rig, 6–20 rpm each way. **Open:** re-measure τ on the full rover, then freeze the gains |
+| W6 — CAN RX | ✅ **DONE** Sep 28 — CAN RX is interrupt-driven into a 32-frame ring (ISR-to-ring, task 6), bench steps 1–7 passed |
+| W7 — six nodes wired | 🟡 **STARTED** Sep 28 |
+| W8–W9 | ⬜ not started |
 | HW1–HW2 — node PCB | 🟡 **delegated to a student since ~Aug 28**, in progress, expected slow. Off the firmware critical path |
 | HW3–HW4 — mill + batch | ⬜ not started. **Blocked on the ANT CNC parameters**, which are still not written down |
 

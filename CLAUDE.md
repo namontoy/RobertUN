@@ -35,6 +35,20 @@
   update the hot file (one line in Recent progress, Active work), commit.
   Then tell the user it's a good point to `/clear`.
 
+  ## CubeMX-generated files
+- Never edit `*.ioc` files. CubeMX owns them. When a change needs CubeMX
+  (pins, clocks, peripherals, interrupt enables, NVIC priorities, DMA), stop
+  and give the user a "CubeMX changes" block:
+    - where: the CubeMX path, e.g. Connectivity → CAN1 → NVIC Settings
+    - what: the exact setting and its new value
+    - expected result: which generated files should change after "Generate Code"
+  Then wait. After the user regenerates, check `git diff --stat` and that the
+  USER CODE blocks survived, before continuing.
+- In CubeMX-generated sources (any file with `USER CODE BEGIN` markers), edit
+  only between `USER CODE BEGIN` / `USER CODE END`. Code outside them is
+  overwritten at the next regeneration. If a change seems to need code outside
+  those markers, it is a CubeMX setting: use the block above.
+
 # Compact instructions
 When compacting, preserve: the current task and its goal, files changed,
 commands and bench runs done with their key numbers, decisions made, open

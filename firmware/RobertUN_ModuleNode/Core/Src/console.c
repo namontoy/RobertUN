@@ -258,12 +258,20 @@ static bool parse_on_off(const char *s, bool *out)
 }
 
 /** @brief CAN fault-confinement state as a word, worst condition first. */
+static const char *err_state_str(const can_bus_err_t *e)
+{
+  if (e->bus_off) { return "BUS-OFF"; }
+  if (e->passive) { return "error-passive"; }
+  if (e->warning) { return "error-warning"; }
+  return "error-active";
+}
+
 static const char *can_state_str(void)
 {
-  if (can_bus_is_bus_off())       { return "BUS-OFF"; }
-  if (can_bus_is_error_passive()) { return "error-passive"; }
-  if (can_bus_is_error_warning()) { return "error-warning"; }
-  return "error-active";
+  can_bus_err_t e;
+
+  can_bus_errors(&e);
+  return err_state_str(&e);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -336,16 +344,20 @@ static void cmd_stats(int argc, char **argv)
 
 static void cmd_errors(int argc, char **argv)
 {
+  can_bus_err_t e;
+
   (void)argc;
   (void)argv;
 
-  debug_uart_printf("CAN_ESR   : 0x%08lX\r\n", can_bus_esr());
-  debug_uart_printf("  TEC     : %u\r\n", can_bus_tec());
-  debug_uart_printf("  REC     : %u\r\n", can_bus_rec());
-  debug_uart_printf("  last err: %s\r\n", can_bus_last_error_str());
-  debug_uart_printf("  state   : %s\r\n", can_state_str());
+  can_bus_errors(&e);   /* one ESR read; every line below decodes this value */
 
-  if (can_bus_last_error() == 3u)
+  debug_uart_printf("CAN_ESR   : 0x%08lX\r\n", e.esr);
+  debug_uart_printf("  TEC     : %u\r\n", e.tec);
+  debug_uart_printf("  REC     : %u\r\n", e.rec);
+  debug_uart_printf("  last err: %s\r\n", can_bus_lec_str(e.lec));
+  debug_uart_printf("  state   : %s\r\n", err_state_str(&e));
+
+  if (e.lec == 3u)
   {
     debug_uart_puts("  note    : 'ack' means the frame went out but no other node\r\n"
                     "            acknowledged it - a transmitter cannot ACK itself.\r\n");

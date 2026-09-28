@@ -263,17 +263,20 @@ int main(void)
       {
         static uint32_t seq;
         uint8_t payload[8];
+        can_bus_err_t err;
+
+        can_bus_errors(&err);   /* one ESR read for the frame and the log line */
 
         payload[0] = (uint8_t)(seq >> 24);
         payload[1] = (uint8_t)(seq >> 16);
         payload[2] = (uint8_t)(seq >> 8);
         payload[3] = (uint8_t)seq;
-        payload[4] = can_bus_tec();
-        payload[5] = can_bus_rec();
-        payload[6] = can_bus_last_error();
-        payload[7] = (uint8_t)((can_bus_is_bus_off()        ? 0x04u : 0u) |
-                               (can_bus_is_error_passive()  ? 0x02u : 0u) |
-                               (can_bus_is_error_warning()  ? 0x01u : 0u));
+        payload[4] = err.tec;
+        payload[5] = err.rec;
+        payload[6] = err.lec;
+        payload[7] = (uint8_t)((err.bus_off ? 0x04u : 0u) |
+                               (err.passive ? 0x02u : 0u) |
+                               (err.warning ? 0x01u : 0u));
 
         /* Identity gates the transmit, not just the ID. A board with no
            switches fitted would otherwise heartbeat at the base address and
@@ -289,12 +292,12 @@ int main(void)
                           (unsigned long)seq,
                           sent ? "queued"
                                : (dipsw_valid() ? "NO MAILBOX" : "NO ID"),
-                          can_bus_tec(),
-                          can_bus_rec(),
-                          can_bus_last_error_str(),
-                          can_bus_is_error_warning() ? " WARN"    : "",
-                          can_bus_is_error_passive() ? " PASSIVE" : "",
-                          can_bus_is_bus_off()       ? " BUS-OFF" : "");
+                          err.tec,
+                          err.rec,
+                          can_bus_lec_str(err.lec),
+                          err.warning ? " WARN"    : "",
+                          err.passive ? " PASSIVE" : "",
+                          err.bus_off ? " BUS-OFF" : "");
       }
     }
 

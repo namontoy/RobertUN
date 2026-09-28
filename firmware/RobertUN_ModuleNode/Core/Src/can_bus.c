@@ -253,6 +253,34 @@ bool can_bus_receive(can_frame_t *frame)
 /* Error state                                                                 */
 /* -------------------------------------------------------------------------- */
 
+/**
+  * @brief  One read of CAN_ESR, every field decoded from that single value.
+  *
+  * The single-field accessors below each re-read the register, so a raw value
+  * and a decoded field taken through them can disagree while TEC/REC are moving
+  * (seen Aug 10: raw REC 102 printed next to REC 103). Anything that prints
+  * more than one field must use this.
+  */
+void can_bus_errors(can_bus_err_t *out)
+{
+  uint32_t esr;
+
+  if (out == NULL)
+  {
+    return;
+  }
+
+  esr = CAN1->ESR;
+
+  out->esr     = esr;
+  out->tec     = (uint8_t)((esr & CAN_ESR_TEC_Msk) >> CAN_ESR_TEC_Pos);
+  out->rec     = (uint8_t)((esr & CAN_ESR_REC_Msk) >> CAN_ESR_REC_Pos);
+  out->lec     = (uint8_t)((esr & CAN_ESR_LEC_Msk) >> CAN_ESR_LEC_Pos);
+  out->warning = ((esr & CAN_ESR_EWGF_Msk) != 0u);
+  out->passive = ((esr & CAN_ESR_EPVF_Msk) != 0u);
+  out->bus_off = ((esr & CAN_ESR_BOFF_Msk) != 0u);
+}
+
 uint32_t can_bus_esr(void)
 {
   return CAN1->ESR;
@@ -281,14 +309,19 @@ uint8_t can_bus_last_error(void)
   * itself, so this means no other node is listening, rather than anything being
   * wrong with this node.
   */
-const char *can_bus_last_error_str(void)
+const char *can_bus_lec_str(uint8_t lec)
 {
   static const char *const names[8] =
   {
     "none", "stuff", "form", "ack", "bit-recessive", "bit-dominant", "crc", "sw"
   };
 
-  return names[can_bus_last_error() & 0x07u];
+  return names[lec & 0x07u];
+}
+
+const char *can_bus_last_error_str(void)
+{
+  return can_bus_lec_str(can_bus_last_error());
 }
 
 bool can_bus_is_error_warning(void)

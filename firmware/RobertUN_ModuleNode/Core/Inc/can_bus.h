@@ -210,9 +210,29 @@ void can_bus_get_timing(uint32_t *bitrate, uint32_t *ntq, uint32_t *brp,
  * software clears it. Read TEC's *trend* for "erroring right now", not LEC.
  */
 
-/** @brief Raw CAN_ESR. Note the accessors below each re-read the register, so
-  *        a raw value and a decoded field sampled separately can disagree
-  *        while counters are moving. */
+/** @brief CAN_ESR read once and decoded. Every field comes from the same
+  *        register value, so they cannot disagree while counters are moving. */
+typedef struct
+{
+  uint32_t esr;       /*!< raw CAN_ESR as read                       */
+  uint8_t  tec;       /*!< transmit error counter                    */
+  uint8_t  rec;       /*!< receive error counter                     */
+  uint8_t  lec;       /*!< raw LEC field, 0..7                       */
+  bool     warning;   /*!< a counter passed 96                       */
+  bool     passive;   /*!< a counter passed 127                      */
+  bool     bus_off;   /*!< TEC passed 255                            */
+} can_bus_err_t;
+
+/** @brief Snapshot CAN_ESR once. Use this whenever more than one field is
+  *        printed or transmitted together. */
+void can_bus_errors(can_bus_err_t *out);
+
+/** @brief LEC code as a word, e.g. 3 -> "ack". */
+const char *can_bus_lec_str(uint8_t lec);
+
+/** @brief Raw CAN_ESR. The single-field accessors below each re-read the
+  *        register, so a raw value and a decoded field sampled separately can
+  *        disagree while counters are moving; prefer can_bus_errors(). */
 uint32_t can_bus_esr(void);
 
 uint8_t     can_bus_tec(void);              /*!< transmit error counter       */

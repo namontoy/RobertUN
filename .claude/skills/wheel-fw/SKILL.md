@@ -1,9 +1,9 @@
 ---
 name: wheel-fw
-description: Build and flash the RobertUN wheel-node firmware (STM32F446RE, CubeMX CMake project in firmware/RobertUN_ModuleNode) with scripts that print a short verdict instead of the full tool output. Use whenever the firmware needs to be compiled, checked for errors or warnings, measured for flash/RAM use, or written to the board over the ST-Link — instead of running cmake, ninja or STM32_Programmer_CLI directly.
+description: Build, flash and talk to the RobertUN wheel-node firmware (STM32F446RE, CubeMX CMake project in firmware/RobertUN_ModuleNode) with scripts that print a short verdict instead of the full tool output. Use whenever the firmware needs to be compiled, checked for errors or warnings, measured for flash/RAM use, written to the board over the ST-Link, or sent console commands over the serial port — instead of running cmake, ninja, STM32_Programmer_CLI or ad-hoc pyserial code directly.
 ---
 
-# Wheel firmware: build and flash
+# Wheel firmware: build, flash, console
 
 Both scripts live in this skill's `scripts/` folder and are run from anywhere
 inside the repo. They print a few lines; the full tool output goes to a log
@@ -39,6 +39,27 @@ file under `firmware/RobertUN_ModuleNode/build/`, which is git-ignored.
 - After flashing, give the board about a second to boot before talking to
   its console.
 
+## Console
+
+```bash
+.claude/skills/wheel-fw/scripts/console.py "cfg"
+.claude/skills/wheel-fw/scripts/console.py "vel off" "drv duty 0" "drv"
+.claude/skills/wheel-fw/scripts/console.py --wait 1 "cfg"     # right after flashing
+```
+
+- Sends each command in order and prints `> command` followed by its reply.
+  Telemetry records are not printed. Replies longer than 40 lines are cut;
+  raise `--max-lines` only when the whole reply is really needed.
+- Uses `tools/bench/node.py` for the serial port, echo handling and prompt
+  detection. Don't write new pyserial code for console access.
+- `--timeout` (default 2 s) is per command; raise it for slow commands.
+- Prints `CONSOLE ERROR: ...` and exits 1 if the port is missing or busy, or
+  a prompt never comes back. Only one program can hold the port: if the error
+  says it's busy, ask the user whether a terminal or bench run has it open.
+- Bench runs (profiles, telemetry capture) use `tools/bench/bench.py`
+  (`run`, `status`, `list`), not this script. Report a run from
+  `bench.py status`, never by printing its CSV or console log.
+
 ## Rules
 
 - Use these scripts, not raw `cmake`, `ninja` or `STM32_Programmer_CLI`
@@ -46,3 +67,7 @@ file under `firmware/RobertUN_ModuleNode/build/`, which is git-ignored.
   to the user rather than working around it.
 - Flashing changes what is running on the bench. If a motor could be powered,
   say so before flashing.
+- Don't send commands that move a motor (`drv duty`, `vel` setpoints) unless
+  the user asked for that motion. To stop, send `vel off` first, then
+  `drv duty 0`: with the velocity loop armed, a duty command alone is
+  overridden at its next step.

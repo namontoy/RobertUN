@@ -4026,3 +4026,14 @@ The user closed task 17 (motor rail 12 V and plant), task 18 (config module, inc
      silent). Not verified: the delivered-count invariant. Details in
      `_REF_MCU` "DECIDED — interrupt-driven CAN RX" and the LOG.
 
+
+## 2026-09-28 — W6 CAN command set spec drafted (`docs/can_cmds.md`, commit 6ae6203)
+
+Design only, no code. Plain CAN 2.0A, ID = (type << 3) | addr, addr 0-6 = DIP module ID, 7 = broadcast.
+Types placed in REST's priority groups: ESTOP 0x008+, STOP 0x010+, FAULT 0x018+, ARM 0x020+, SPEED 0x028+,
+STEER 0x030+, LIMITS 0x038+, RAMP 0x040+, CMD_RESULT 0x078+, STATUS_DRIVE 0x100+, STATUS_STEER 0x108+,
+heartbeat 0x500+ unchanged, CFG_REQ 0x520+, CFG_RESP 0x528+. Rolling counter on ARM/SPEED/STEER/LIMITS/RAMP
+(repeat rejected, does not kick vel_tmo); CRC-8/SAE-J1850 over ID + PROTO_VER + payload on those and CFG_REQ;
+stops act on ID alone. vel_tmo applies to CAN unchanged; bus-off acts as an immediate watchdog expiry;
+UART/CAN: stops always win, the source that armed owns motion. Bus load 37.4% at 6 nodes (50 Hz speed + status).
+18 open questions; Q1 is the conflict with REST's CANopen decision (CANopenNode / CiA 402 / ros2_canopen).

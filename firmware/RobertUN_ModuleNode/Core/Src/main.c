@@ -306,7 +306,7 @@ int main(void)
        reception once all three slots fill. */
     can_frame_t rx;
 
-    while (can_bus_receive(&rx))
+    while (!console_can_hold_active() && can_bus_receive(&rx))
     {
       if (console_monitor_enabled())
       {

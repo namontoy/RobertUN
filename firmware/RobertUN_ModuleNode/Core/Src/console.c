@@ -459,6 +459,35 @@ static void cmd_monitor(int argc, char **argv)
   debug_uart_printf("monitor %s\r\n", monitor_on ? "on" : "off");
 }
 
+/* TEST ONLY - `canhold <ms>` makes the main loop skip the CAN RX ring drain
+   until the deadline, so a bench run can fill the ring on purpose (task 6).
+   The ISR keeps running and the rest of the loop stays live. Console commands
+   run in the main loop, so plain statics are enough. */
+static uint32_t can_hold_until;
+static bool     can_hold_set;
+
+static void cmd_canhold(int argc, char **argv)
+{
+  long ms = 0;
+
+  if (argc < 2)
+  {
+    debug_uart_printf("canhold %s\r\n", console_can_hold_active() ? "active" : "idle");
+    return;
+  }
+
+  ms = strtol(argv[1], NULL, 10);
+  if ((ms < 0) || (ms > 5000))
+  {
+    debug_uart_puts("usage: canhold <0..5000 ms> - test only: pauses the RX ring drain\r\n");
+    return;
+  }
+
+  can_hold_until = HAL_GetTick() + (uint32_t)ms;
+  can_hold_set   = (ms > 0);
+  debug_uart_printf("canhold %ld ms\r\n", ms);
+}
+
 static void cmd_loopback(int argc, char **argv)
 {
   bool want = !can_bus_is_loopback();
@@ -2262,6 +2291,7 @@ static const command_t commands[] =
   { "send",      "<id> [hex]",   "transmit a CAN frame, e.g. send 123 DEADBEEF", cmd_send   },
   { "heartbeat", "[on|off]",     "periodic frame at this module's ID - off to silence the bus", cmd_heartbeat },
   { "monitor",   "[on|off]",     "print received CAN frames as they arrive",  cmd_monitor   },
+  { "canhold",   "<ms>",         "TEST: pause the CAN RX ring drain for <ms>", cmd_canhold  },
   { "loopback",  "[on|off]",     "CAN loopback - test with no bus attached",  cmd_loopback  },
   { "mks",       "<sub> [args]", "MKS SERVO42C on UART4 - 'mks' for subcommands", cmd_mks   },
   { "enc",       "[sub]",        "drive encoder - 'enc' for position and speed", cmd_enc   },
@@ -2625,4 +2655,15 @@ void console_report_telem(void)
 bool console_monitor_enabled(void)
 {
   return monitor_on;
+}
+
+bool console_can_hold_active(void)
+{
+  if (can_hold_set && ((int32_t)(HAL_GetTick() - can_hold_until) < 0))
+  {
+    return true;
+  }
+
+  can_hold_set = false;
+  return false;
 }

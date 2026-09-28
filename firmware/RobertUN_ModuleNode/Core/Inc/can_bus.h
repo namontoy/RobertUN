@@ -105,6 +105,9 @@ typedef struct
   bool     rtr;       /*!< true = remote request, carries no data            */
 } can_frame_t;
 
+/** @brief Slots in the software RX ring (power of two — indices are masked). */
+#define CAN_RX_RING_SIZE  32u
+
 typedef struct
 {
   uint32_t tx_frames;    /*!< frames handed to a mailbox                 */
@@ -114,6 +117,10 @@ typedef struct
                               nothing lost yet. Leading indicator.       */
   uint32_t rx_overruns;  /*!< overrun *events* — each means at least one
                               frame was lost. See can_bus_receive().     */
+  uint32_t rx_ring_dropped; /*!< frames discarded because the software
+                              ring was full (drop-and-count, never block) */
+  uint32_t rx_ring_hwm;  /*!< most frames ever waiting in the ring at
+                              once, 0..CAN_RX_RING_SIZE                  */
 } can_bus_stats_t;
 
 /**
@@ -243,11 +250,13 @@ bool        can_bus_is_error_warning(void); /*!< a counter passed 96          */
 bool        can_bus_is_error_passive(void); /*!< a counter passed 127         */
 bool        can_bus_is_bus_off(void);       /*!< TEC passed 255               */
 
-/** @brief Borrowed pointer to the live software counters. TEC/REC are *not*
+/** @brief Copy of the software counters, taken with the CAN1 RX0 interrupt
+  *        masked so the fields are mutually consistent. TEC/REC are *not*
   *        here — those are hardware-maintained and cannot be written. */
-const can_bus_stats_t *can_bus_stats(void);
+void can_bus_stats_snapshot(can_bus_stats_t *out);
 
-/** @brief Zero the software counters only. Useful before a measured run. */
+/** @brief Zero the software counters only, with the CAN1 RX0 interrupt masked.
+  *        Useful before a measured run. */
 void can_bus_clear_stats(void);
 
 #ifdef __cplusplus

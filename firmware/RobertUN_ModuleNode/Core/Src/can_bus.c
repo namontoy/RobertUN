@@ -26,7 +26,33 @@
 
 extern CAN_HandleTypeDef hcan1;
 
-static can_bus_stats_t stats;
+/* Written from the CAN1 RX0 ISR once RX is interrupt-driven (rx_*), and from
+   the main loop (tx_*). One writer per field; read and cleared only through
+   can_bus_stats_snapshot() / can_bus_clear_stats(), which mask that IRQ. */
+static volatile can_bus_stats_t stats;
+
+/* Mask/restore the RX0 interrupt only — never __disable_irq(), which would
+   also hold off the 1 kHz control tick. Returns the previous enable state. */
+static uint32_t rx_irq_mask(void)
+{
+  uint32_t was_enabled = NVIC_GetEnableIRQ(CAN1_RX0_IRQn);
+
+  HAL_NVIC_DisableIRQ(CAN1_RX0_IRQn);
+  return was_enabled;
+}
+
+static void rx_irq_restore(uint32_t was_enabled)
+{
+  if (was_enabled != 0u)
+  {
+    HAL_NVIC_EnableIRQ(CAN1_RX0_IRQn);
+  }
+}
+
+static void stats_zero(void)
+{
+  stats = (can_bus_stats_t){0};
+}
 
 /* -------------------------------------------------------------------------- */
 /* Init                                                                        */
@@ -64,7 +90,7 @@ static bool filter_accept_all(void)
 
 bool can_bus_init(void)
 {
-  memset(&stats, 0, sizeof(stats));
+  stats_zero();
 
   if (!filter_accept_all())
   {
@@ -339,14 +365,32 @@ bool can_bus_is_bus_off(void)
   return (CAN1->ESR & CAN_ESR_BOFF_Msk) != 0u;
 }
 
-const can_bus_stats_t *can_bus_stats(void)
+void can_bus_stats_snapshot(can_bus_stats_t *out)
 {
-  return &stats;
+  uint32_t irq;
+
+  if (out == NULL)
+  {
+    return;
+  }
+
+  irq = rx_irq_mask();
+  out->tx_frames       = stats.tx_frames;
+  out->tx_dropped      = stats.tx_dropped;
+  out->rx_frames       = stats.rx_frames;
+  out->rx_fifo_full    = stats.rx_fifo_full;
+  out->rx_overruns     = stats.rx_overruns;
+  out->rx_ring_dropped = stats.rx_ring_dropped;
+  out->rx_ring_hwm     = stats.rx_ring_hwm;
+  rx_irq_restore(irq);
 }
 
 /* Clears the software counters only. TEC and REC are maintained by the CAN
    fault-confinement state machine in hardware and cannot be written. */
 void can_bus_clear_stats(void)
 {
-  memset(&stats, 0, sizeof(stats));
+  uint32_t irq = rx_irq_mask();
+
+  stats_zero();
+  rx_irq_restore(irq);
 }

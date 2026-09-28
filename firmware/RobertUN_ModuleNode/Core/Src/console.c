@@ -317,10 +317,13 @@ static void cmd_info(int argc, char **argv)
 static void cmd_stats(int argc, char **argv)
 {
   const debug_uart_stats_t *u = debug_uart_stats();
-  const can_bus_stats_t    *c = can_bus_stats();
+  can_bus_stats_t           snap;
+  const can_bus_stats_t    *c = &snap;
 
   (void)argc;
   (void)argv;
+
+  can_bus_stats_snapshot(&snap);
 
   debug_uart_printf("uart tx   : %lu bytes, %lu dropped\r\n", u->tx_bytes, u->tx_dropped);
   debug_uart_printf("uart rx   : %lu bytes, high-water %lu, %lu overruns, %lu errors\r\n",
@@ -329,6 +332,14 @@ static void cmd_stats(int argc, char **argv)
                     c->tx_frames, c->tx_dropped);
   debug_uart_printf("can  rx   : %lu frames, %lu FIFO-full, %lu overrun events\r\n",
                     c->rx_frames, c->rx_fifo_full, c->rx_overruns);
+  debug_uart_printf("can  ring : %lu dropped, high-water %lu of %lu\r\n",
+                    c->rx_ring_dropped, c->rx_ring_hwm, (unsigned long)CAN_RX_RING_SIZE);
+
+  if (c->rx_ring_dropped != 0u)
+  {
+    debug_uart_puts("  warning : the RX ring was full - frames were discarded (counted,\r\n"
+                    "            never blocked). The main loop is not draining fast enough.\r\n");
+  }
 
   if (c->rx_overruns != 0u)
   {

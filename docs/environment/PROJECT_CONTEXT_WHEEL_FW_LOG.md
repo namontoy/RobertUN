@@ -3424,3 +3424,10 @@ interrupts.**
   priority list), `_REF_TASKS` task 6 closed, `_REF_TASK6_CAN_LATENCY` ISR rows,
   hot file. Raw candump captures stay in the session scratchpad, not the repo.
 - Motor left stopped (duty 0), heartbeat off, monitor off.
+
+## 2026-09-28 — W6 recorded as done
+
+The user stated that W6 (integrate one full corner node: CAN command in -> steering + drive both respond) is done.
+Commits since Sep 20 were checked: none mentions W6 or corner-node integration, and the log has no W6 entry.
+The hot file records W6 as done on the user's word only; no acceptance numbers are on file. W7 is next
+(six nodes wired, DIP IDs, same binary). The roadmap file's status table still lists W6-W9 as not started.

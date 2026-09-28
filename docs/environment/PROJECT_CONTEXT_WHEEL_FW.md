@@ -1,6 +1,6 @@
 # RobertUN — Wheel Controller Firmware Context
 
-**Last updated:** 2026-09-27 — Task 17 done on the rig (stiction A/B/A, pre-Sep-20 marked invalid); motor-terminal metering goes with the rover session.
+**Last updated:** 2026-09-28 — W6 recorded as done (user-stated; no commit or log entry carries its evidence); Task 6 closed; W7 is next.
 **Budget:** 20 KB. Check with `wc -c` before every commit; trim if over.
 
 > **How to use this file.** This is the hot file for the wheel-firmware track:
@@ -18,7 +18,8 @@ binary for all six (module ID from a 3-bit DIP switch), talking to orion over
 CAN at 250 kbps. Each module drives a steering servo (MKS SERVO42C over UART)
 and a brushed drive motor with encoder (DRV8874). Hard deadline: December 10
 demo. Roadmap: W2 CAN ✅, W3 steering ✅, W4 drive + encoder ✅, W5 velocity
-PID ✅ on the rig (rover items pending); W6 and W7 follow (roadmap in `PROJECT_CONTEXT_REST.md`).
+PID ✅ on the rig (rover items pending), W6 corner-node integration ✅ (stated by the user 09-28); W7
+(six nodes wired, DIP IDs, same binary) is next. Roadmap: `docs/RobertUN_Roadmap_Aug-Dec2026.md`.
 
 ## Current state
 
@@ -122,6 +123,7 @@ rise ≤ 0.3 s (rig). **Met on the rig, 6–20 rpm.** → `_REF_TASKS` task 21
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 
+- **09-28** — W6 (one full corner node: CAN in → steering + drive) recorded as done, on the user's word; no acceptance numbers on file. W7 next.
 - **09-28** — Task 6 closed: ISR-to-ring merged (decision: accept). Bench re-run steps 1–7 via wheel-fw scripts: 20000/20000 at saturation ±motor, overflow 156 dropped, 0 overruns; jitter ≤0.74 ms, no worse than polled (the 09-27 1.28 ms at -g 0.45 did not repeat: 0.72). Delivered-count invariant not verified. ESR snapshot fixed. → LOG.
 - **09-27** — Task 6 ISR-to-ring bench on branch `ISR-to-ring`: steps 1–6 pass (20000/20000, overflow 165 dropped, 0 overruns); -g 0.45 jitter 1.28 vs 0.72 ms polled.
 - **09-27** — Task 17 tidied: pre-Sep-20 figures marked invalid, stale boxes closed; only motor-terminal metering left (rover session).
@@ -133,7 +135,6 @@ rise ≤ 0.3 s (rig). **Met on the rig, 6–20 rpm.** → `_REF_TASKS` task 21
 - **09-26** — DMM supply reference, free shaft: drive-phase sample reads low while turning (0.74 at 20%, 0.83 at 15%, ±20%); no factor change.
 - **09-26** — Decay-phase sample implemented (flag 0x20, cfg isense_dk/dmin); exact vs iscan at stall; turning it reads ~40% below drive phase.
 - **09-26** — Decay-phase IPROPI validated: 0.690 × I (±1.5%), ±4% at 6–12% duty, 5% invalid; sample ≥150 ticks before the drive edge.
-- **09-26** — A/B/A: reverse −5.9 o/oo, drift −3.05/42 min; true steps within ripple both ways; ripple test fixed; no direction `ff_b` (rover, ≥2 wheels).
 
 ## Key rules (full list with evidence in `_REF_LEARNINGS`)
 

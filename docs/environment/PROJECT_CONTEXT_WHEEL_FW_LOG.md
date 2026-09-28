@@ -4008,3 +4008,21 @@ The user closed task 17 (motor rail 12 V and plant), task 18 (config module, inc
     - ⬜ **Not exercised yet:** the tick-0 `--` cosmetic fix. Every bench `iscan`
       started at 3550; it needs one scan with `from = 0`.
 
+
+## 2026-09-28 — Task 6 closed; full text moved here verbatim from `_REF_TASKS`
+
+### Task 6 — CAN bus — STM32 firmware (W2 done; RX interrupt-driven, closed Sep 28)
+
+6. **CAN Bus — STM32 firmware:** ✅ **COMPLETED August 10, 2026** (roadmap W2).
+   250 kbps bxCAN, accept-all filter on bank 0, DMA console, loopback self-test,
+   termination measured 59.79R, three-way verification against Orion `candump`
+   and the CANable with zero error counters. Full detail in the LOG file.
+   - ✅ `cmd_errors` ESR snapshot fixed Sep 28 (`can_bus_errors()`, one read of
+     `CAN1->ESR`).
+   - ✅ **RX decision closed Sep 28, 2026: interrupt-driven, ISR-to-ring**
+     (`CAN1_RX0` at preemption 1, 32-frame ring), merged from branch
+     `ISR-to-ring`. Bench steps 1-7 in the plan `docs/plans/ISR-to-ring.md`
+     passed (20000/20000 at saturation, 0 overruns; overflow counted, not
+     silent). Not verified: the delivered-count invariant. Details in
+     `_REF_MCU` "DECIDED — interrupt-driven CAN RX" and the LOG.
+

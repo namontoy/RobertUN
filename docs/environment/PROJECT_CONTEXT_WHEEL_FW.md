@@ -115,7 +115,7 @@ rise ≤ 0.3 s (rig). **Met on the rig, 6–20 rpm.** → `_REF_TASKS` task 21
 
 ## Next tasks (priority order)
 
-Tasks 17, 18 and 20 were closed 09-28 and are in the LOG. Numbers 1–4 are new;
+Tasks 6, 17, 18 and 20 were closed 09-28 and are in the LOG. Numbers 1–4 are new;
 the old ID is in brackets.
 
 1. W5 velocity PID (was task 21): the open items above, in the order listed.
@@ -128,7 +128,7 @@ the old ID is in brackets.
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 
-- **09-28** — Tasks 17, 18, 20 closed by the user (task 20: PMODE corrected); text moved to the LOG; open list renumbered 1–4.
+- **09-28** — Tasks 6, 17, 18, 20 closed (task 20: PMODE corrected); text moved to the LOG; open list renumbered 1–4.
 - **09-28** — W6 CAN RX (task 6) closed; W6's absolute-positioning decision and one-corner-node integration stay open (user); W5 owes the rover τ session; W7 started.
 - **09-28** — Task 6 closed: ISR-to-ring merged (decision: accept). Bench re-run steps 1–7 via wheel-fw scripts: 20000/20000 at saturation ±motor, overflow 156 dropped, 0 overruns; jitter ≤0.74 ms, no worse than polled (the 09-27 1.28 ms at -g 0.45 did not repeat: 0.72). Delivered-count invariant not verified. ESR snapshot fixed. → LOG.
 - **09-27** — Task 6 ISR-to-ring bench on branch `ISR-to-ring`: steps 1–6 pass (20000/20000, overflow 165 dropped, 0 overruns); -g 0.45 jitter 1.28 vs 0.72 ms polled.
@@ -165,8 +165,8 @@ All in `docs/environment/`, prefixed `PROJECT_CONTEXT_WHEEL_FW`:
 
 | Topic | File suffix |
 |---|---|
-| Full session history, closed tasks (6b, 17, 18, 19, 20, …) | `_LOG.md` |
-| Open tasks, full text (6, 21) | `_REF_TASKS.md` |
+| Full session history, closed tasks (6, 6b, 17, 18, 19, 20, …) | `_LOG.md` |
+| Open tasks, full text (21) | `_REF_TASKS.md` |
 | Motor, encoder, DRV8874, IPROPI, plant, loaded rig, bench tooling | `_REF_DRIVE.md` |
 | CAN bit timing, pin allocation, timers, firmware modules | `_REF_MCU.md` |
 | SERVO42C protocol, command set, echo/framing traps | `_REF_SERVO42C.md` |

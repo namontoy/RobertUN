@@ -8,24 +8,9 @@
 
 (Original numbering preserved for cross-reference with PROJECT_CONTEXT_REST.md)
 
-Tasks 17, 18 and 20 were closed on 2026-09-28; their full text is in the LOG
-(heading "Tasks 17, 18 and 20 closed by the user"). References to them in the
-other files point there.
-
-### Task 6 — CAN bus — STM32 firmware (W2 done; RX interrupt-driven, closed Sep 28)
-
-6. **CAN Bus — STM32 firmware:** ✅ **COMPLETED August 10, 2026** (roadmap W2).
-   250 kbps bxCAN, accept-all filter on bank 0, DMA console, loopback self-test,
-   termination measured 59.79R, three-way verification against Orion `candump`
-   and the CANable with zero error counters. Full detail in the LOG file.
-   - ✅ `cmd_errors` ESR snapshot fixed Sep 28 (`can_bus_errors()`, one read of
-     `CAN1->ESR`).
-   - ✅ **RX decision closed Sep 28, 2026: interrupt-driven, ISR-to-ring**
-     (`CAN1_RX0` at preemption 1, 32-frame ring), merged from branch
-     `ISR-to-ring`. Bench steps 1-7 in the plan `docs/plans/ISR-to-ring.md`
-     passed (20000/20000 at saturation, 0 overruns; overflow counted, not
-     silent). Not verified: the delivered-count invariant. Details in
-     `_REF_MCU` "DECIDED — interrupt-driven CAN RX" and the LOG.
+Tasks 6, 17, 18 and 20 were closed on 2026-09-28; their full text is in the LOG
+(headings "Task 6 closed" and "Tasks 17, 18 and 20 closed by the user").
+References to them in the other files point there.
 
 ### Task 21 — W5 — velocity PID (COMPLETE ON THE RIG Sep 27; rover items pending)
 

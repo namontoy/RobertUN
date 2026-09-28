@@ -3431,3 +3431,11 @@ The user stated that W6 (integrate one full corner node: CAN command in -> steer
 Commits since Sep 20 were checked: none mentions W6 or corner-node integration, and the log has no W6 entry.
 The hot file records W6 as done on the user's word only; no acceptance numbers are on file. W7 is next
 (six nodes wired, DIP IDs, same binary). The roadmap file's status table still lists W6-W9 as not started.
+
+## 2026-09-28 — correction: W6 is the CAN RX work
+
+The entry above is wrong about what W6 is. I read W6 as the roadmap row's "one full corner node" integration.
+The user meant W6 = CAN RX (polled vs interrupt, task 6), which is closed: ISR-to-ring merged Sep 28.
+Also from the user: W5's only remaining item is the rover tau session (full rover); W7 has started.
+Not covered by any record in the repo: the roadmap W6 row's other items (absolute-positioning decision,
+full corner-node integration). Nothing was claimed about them.

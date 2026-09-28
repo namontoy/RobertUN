@@ -1,6 +1,6 @@
 # RobertUN — Wheel Controller Firmware Context
 
-**Last updated:** 2026-09-28 — W6 recorded as done (user-stated; no commit or log entry carries its evidence); Task 6 closed; W7 is next.
+**Last updated:** 2026-09-28 — W6 (CAN RX, task 6) closed; W5's only open item is the rover τ session; W7 started.
 **Budget:** 20 KB. Check with `wc -c` before every commit; trim if over.
 
 > **How to use this file.** This is the hot file for the wheel-firmware track:
@@ -18,8 +18,8 @@ binary for all six (module ID from a 3-bit DIP switch), talking to orion over
 CAN at 250 kbps. Each module drives a steering servo (MKS SERVO42C over UART)
 and a brushed drive motor with encoder (DRV8874). Hard deadline: December 10
 demo. Roadmap: W2 CAN ✅, W3 steering ✅, W4 drive + encoder ✅, W5 velocity
-PID ✅ on the rig (rover items pending), W6 corner-node integration ✅ (stated by the user 09-28); W7
-(six nodes wired, DIP IDs, same binary) is next. Roadmap: `docs/RobertUN_Roadmap_Aug-Dec2026.md`.
+PID ✅ on the rig (only the rover τ session left), W6 CAN RX ✅ (task 6, ISR-to-ring, Sep 28); W7
+(six nodes wired, DIP IDs, same binary) started 09-28. Roadmap: `docs/RobertUN_Roadmap_Aug-Dec2026.md`.
 
 ## Current state
 
@@ -123,7 +123,7 @@ rise ≤ 0.3 s (rig). **Met on the rig, 6–20 rpm.** → `_REF_TASKS` task 21
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 
-- **09-28** — W6 (one full corner node: CAN in → steering + drive) recorded as done, on the user's word; no acceptance numbers on file. W7 next.
+- **09-28** — W6 closed (user: W6 is the CAN RX work, task 6); W5's only open item is the rover τ session; W7 started. Roadmap statuses updated.
 - **09-28** — Task 6 closed: ISR-to-ring merged (decision: accept). Bench re-run steps 1–7 via wheel-fw scripts: 20000/20000 at saturation ±motor, overflow 156 dropped, 0 overruns; jitter ≤0.74 ms, no worse than polled (the 09-27 1.28 ms at -g 0.45 did not repeat: 0.72). Delivered-count invariant not verified. ESR snapshot fixed. → LOG.
 - **09-27** — Task 6 ISR-to-ring bench on branch `ISR-to-ring`: steps 1–6 pass (20000/20000, overflow 165 dropped, 0 overruns); -g 0.45 jitter 1.28 vs 0.72 ms polled.
 - **09-27** — Task 17 tidied: pre-Sep-20 figures marked invalid, stale boxes closed; only motor-terminal metering left (rover session).

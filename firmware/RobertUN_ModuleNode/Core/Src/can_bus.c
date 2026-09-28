@@ -13,9 +13,11 @@
   * call that connects the peripheral to the pins (HAL_CAN_Start), and readable
   * access to registers the debugger would otherwise be needed for.
   *
-  * Everything reads or writes hardware directly and returns; nothing here
-  * blocks, allocates, or keeps a queue of its own — the three TX mailboxes and
-  * the 3-deep RX FIFO are the only buffering, and both live in the peripheral.
+  * Nothing here blocks or allocates. TX goes straight to one of the three
+  * mailboxes. RX is interrupt-driven: the CAN1 RX0 ISR empties the 3-deep
+  * hardware FIFO0 into a 32-slot software ring (single producer: the ISR;
+  * single consumer: the main loop via can_bus_receive()). A full ring drops
+  * the frame and counts it — the ISR never waits.
   ******************************************************************************
   */
 #include "can_bus.h"
@@ -52,6 +54,30 @@ static void rx_irq_restore(uint32_t was_enabled)
 static void stats_zero(void)
 {
   stats = (can_bus_stats_t){0};
+}
+
+/* RX ring. Free-running indices; count = head - tail (unsigned wrap is fine
+   because CAN_RX_RING_SIZE divides 2^32). head is written only by the ISR,
+   tail only by the main loop. The slots are plain memory, so each side puts a
+   barrier between touching a slot and publishing its index. */
+#define RING_MASK  (CAN_RX_RING_SIZE - 1u)
+
+static can_frame_t          ring[CAN_RX_RING_SIZE];
+static volatile uint32_t    ring_head;
+static volatile uint32_t    ring_tail;
+
+/* Empty the ring. Call only while the RX0 interrupt is masked or not yet armed. */
+static void ring_reset(void)
+{
+  ring_head = 0u;
+  ring_tail = 0u;
+}
+
+/* Enable the "message pending" interrupt. HAL_CAN_Init() clears the enable
+   bits, so this must follow every HAL_CAN_Start(). */
+static bool rx_notify_arm(void)
+{
+  return (HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING) == HAL_OK);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -97,15 +123,25 @@ bool can_bus_init(void)
     return false;
   }
 
+  ring_reset();
+
   /* Leaves initialization mode and connects the peripheral to the pins. */
-  return (HAL_CAN_Start(&hcan1) == HAL_OK);
+  if (HAL_CAN_Start(&hcan1) != HAL_OK)
+  {
+    return false;
+  }
+
+  return rx_notify_arm();
 }
 
 bool can_bus_set_loopback(bool enable)
 {
+  uint32_t irq = rx_irq_mask();
+  bool ok = false;
+
   if (HAL_CAN_Stop(&hcan1) != HAL_OK)
   {
-    return false;
+    goto done;
   }
 
   hcan1.Init.Mode = enable ? CAN_MODE_LOOPBACK : CAN_MODE_NORMAL;
@@ -114,15 +150,26 @@ bool can_bus_set_loopback(bool enable)
      pins and clocks configured by CubeMX are left alone. */
   if (HAL_CAN_Init(&hcan1) != HAL_OK)
   {
-    return false;
+    goto done;
   }
 
   if (!filter_accept_all())
   {
-    return false;
+    goto done;
   }
 
-  return (HAL_CAN_Start(&hcan1) == HAL_OK);
+  ring_reset();   /* no stale frames cross a mode change */
+
+  if (HAL_CAN_Start(&hcan1) != HAL_OK)
+  {
+    goto done;
+  }
+
+  ok = rx_notify_arm();
+
+done:
+  rx_irq_restore(irq);
+  return ok;
 }
 
 bool can_bus_is_loopback(void)
@@ -243,15 +290,15 @@ static void sample_fifo_flags(void)
   }
 }
 
-bool can_bus_receive(can_frame_t *frame)
+/**
+  * @brief  Pop one frame from hardware FIFO0. ISR context only — this is the
+  *         sole caller of sample_fifo_flags(), so the RF0R write-1-to-clear
+  *         cannot race a second reader.
+  */
+static bool fifo_pop(can_frame_t *frame)
 {
   CAN_RxHeaderTypeDef header;
   uint8_t data[8];
-
-  if (frame == NULL)
-  {
-    return false;
-  }
 
   sample_fifo_flags();
 
@@ -272,6 +319,67 @@ bool can_bus_receive(can_frame_t *frame)
   memcpy(frame->data, data, sizeof(frame->data));
 
   stats.rx_frames++;
+  return true;
+}
+
+/**
+  * @brief  FIFO0 message-pending interrupt (weak override of the HAL stub;
+  *         USE_HAL_CAN_REGISTER_CALLBACKS is 0).
+  *
+  * One bounded job: empty FIFO0 into the ring and return. FIFO0 is only 3
+  * deep, so it drains to empty rather than trusting the interrupt to re-fire.
+  * A full ring drops the frame and counts it; the FIFO is still emptied so the
+  * hardware never backs up. Nothing here waits, prints or calls into the rest
+  * of the firmware.
+  */
+void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
+{
+  can_frame_t f;
+
+  (void)hcan;
+
+  while (fifo_pop(&f))
+  {
+    uint32_t head  = ring_head;
+    uint32_t count = head - ring_tail;
+
+    if (count >= CAN_RX_RING_SIZE)
+    {
+      stats.rx_ring_dropped++;
+      continue;
+    }
+
+    ring[head & RING_MASK] = f;
+    __DMB();                    /* slot written before head publishes it */
+    ring_head = head + 1u;
+
+    count++;
+    if (count > stats.rx_ring_hwm)
+    {
+      stats.rx_ring_hwm = count;
+    }
+  }
+}
+
+bool can_bus_receive(can_frame_t *frame)
+{
+  uint32_t tail;
+
+  if (frame == NULL)
+  {
+    return false;
+  }
+
+  tail = ring_tail;
+  if (ring_head == tail)
+  {
+    return false;
+  }
+
+  __DMB();                      /* head seen before the slot is read */
+  *frame = ring[tail & RING_MASK];
+  __DMB();                      /* slot copied out before tail frees it */
+  ring_tail = tail + 1u;
   return true;
 }
 

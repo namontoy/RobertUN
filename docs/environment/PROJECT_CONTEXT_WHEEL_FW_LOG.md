@@ -3439,3 +3439,10 @@ The user meant W6 = CAN RX (polled vs interrupt, task 6), which is closed: ISR-t
 Also from the user: W5's only remaining item is the rover tau session (full rover); W7 has started.
 Not covered by any record in the repo: the roadmap W6 row's other items (absolute-positioning decision,
 full corner-node integration). Nothing was claimed about them.
+
+## 2026-09-28 — W6 open items confirmed by the user
+
+W6's CAN RX part (task 6) is closed. The user confirmed the other two W6 items are still open:
+the absolute-positioning decision (FD is a relative move; 33 counts UART-commanded pulses and can be the feedback)
+and the integration of one full corner node (CAN in -> steering + drive both respond). Added to Next tasks as 5 and 6,
+priority not set. The roadmap W6 row is now marked partial.

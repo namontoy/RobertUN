@@ -233,16 +233,18 @@ can_bus_get_timing                       can_bus_stats/clear_stats
   silicon's own view, not what the source asked for. This catches a CubeMX
   regeneration silently resetting a field, which would otherwise surface as
   intermittent bus errors.
-- RX is polled from the main loop **for now — see the OPEN question below.**
-  The API is deliberately context-agnostic: moving to interrupt-driven means
-  enabling `CAN1_RX0_IRQn` in CubeMX and calling the same `can_bus_receive()`
-  from `HAL_CAN_RxFifo0MsgPendingCallback` — the function body does not change.
-- `stats` reports two receive-pressure counters: `rx_fifo_full` (FIFO0 reached
-  its 3-message depth — margin gone, nothing lost) and `rx_overruns` (a frame
-  was lost). The latter counts **events, not frames**: `FOVR0` is sticky rc_w1,
-  so the hardware cannot say how many were lost, only that some were.
+- RX is **interrupt-driven, ISR-to-ring (decided Sep 28, 2026 — see the
+  DECIDED section below).** `CAN1_RX0_IRQn` (preemption 1) drains FIFO0 into a
+  32-frame software ring; `can_bus_receive()` pops the ring from the main loop.
+- `stats` reports the receive-pressure counters: `rx_fifo_full` (FIFO0 reached
+  its 3-message depth — the ISR was held off ~3 frame-times, nothing lost),
+  `rx_overruns` (a frame was lost in hardware — with the ISR draining, a design
+  failure), `rx_ring_dropped` (ring full, frames discarded, counted) and
+  `rx_ring_hwm` (ring high-water mark). `rx_overruns` counts **events, not
+  frames**: `FOVR0` is sticky rc_w1, so the hardware cannot say how many were
+  lost, only that some were.
 - Heartbeat on **ID 0x500** (the 0x500-0x5FF telemetry/heartbeat group) at the
-  TIM3 rate, so the LED blink and the CAN frame share a cadence. Payload is
+  TIM7 rate, so the LED blink and the CAN frame share a cadence. Payload is
   self-describing in `candump`: bytes 0-3 big-endian sequence, then TEC, REC,
   LEC, and a status bitfield (bit0 warning, bit1 passive, bit2 bus-off).
   **Now `0x500 + module_id` (Sep 14, 2026)** — the DIP switch supplies it, and
@@ -312,9 +314,16 @@ covers Send-String-style terminals; the >1 byte guard is what keeps interactive
 typing from executing a character at a time. Set Enter Key Emulation to `CR`
 anyway rather than depending on the fallback.
 
-### Known issue — `cmd_errors` reads CAN_ESR non-atomically
+### Fixed (Sep 28, 2026) — `cmd_errors` read CAN_ESR non-atomically
 
-`console.c`'s `errors` command calls `can_bus_esr()`, then `can_bus_tec()`, then
+**Fixed on branch `ISR-to-ring`:** `can_bus_errors()` reads `CAN1->ESR` once and
+decodes raw, TEC, REC, LEC and the warning/passive/bus-off bits from that one
+snapshot; `errors` and the heartbeat payload both use it. Bench-checked on a
+healthy bus only (raw 0, TEC/REC 0, heartbeat bytes 4-6 match `errors`); not
+re-observed during bus-off recovery, where the original disagreement appeared.
+The original report follows.
+
+`console.c`'s `errors` command called `can_bus_esr()`, then `can_bus_tec()`, then
 `can_bus_rec()` — each performing its own read of `CAN1->ESR`. The register can
 change between them, so the printed raw value and the decoded fields may
 disagree. Observed Aug 10, 2026: raw `0x66000055` (REC 102) printed alongside
@@ -407,11 +416,27 @@ not **coupling** (the result is a property of a nearly empty main loop). It is
 not evidence that polling is the right architecture — see the open item below.
 Method and the full step table are in `PROJECT_CONTEXT_WHEEL_FW_LOG.md`.
 
-### OPEN — polled vs interrupt-driven CAN RX
+### DECIDED (Sep 28, 2026) — interrupt-driven CAN RX, ISR-to-ring
 
-**Status: undecided as of Aug 11, 2026.** The ramp above does not settle it.
+**Decision: the hybrid, merged from branch `ISR-to-ring`.** `CAN1_RX0_IRQn` at
+preemption 1 (every other application IRQ stays at 0, so TIM6's 1 kHz control
+tick preempts it and is unaffected by bus load) drains FIFO0 into a 32-frame
+ring; the main loop pops it. Plan: `docs/plans/ISR-to-ring.md`. Bench
+(Sep 27-28): 20000/20000 frames at saturation (~1860 f/s), with and without the
+motor at 18% duty; 0 overruns, 0 FIFO-full, ring hwm 1, TEC/REC 0; forced
+overflow (`canhold 100`) gave hwm 32 and ~150 dropped, 0 overruns, console and
+heartbeat unaffected, RX resumed. Heartbeat jitter max |dev| 0.46-0.74 ms across
+the five load conditions, no worse than polled beyond run-to-run spread.
+Not verified: the `rx_frames - dropped = delivered` invariant (no delivered
+counter in `stats`; `monitor` lines drop bytes on a 32-frame burst). Note the
+STM32 bxCAN `loopback` mode still drives the TX pin (a frame sent in loopback
+appeared on the wire), despite the console's "off the wire" label.
 
-**Leading candidate: the hybrid.** An interrupt-driven FIFO drain that pushes
+The Aug 11 analysis below is kept as the record of why.
+
+**Status when open: undecided as of Aug 11, 2026.** The ramp above does not settle it.
+
+**Leading candidate (adopted): the hybrid.** An interrupt-driven FIFO drain that pushes
 frames into a software ring, consumed by the main loop. The ISR does one bounded
 thing — pull from FIFO0, push to ring, return — and all application logic stays
 in main-loop context where it can be single-stepped.
@@ -440,8 +465,8 @@ misbehaves in the field.
 
 **For polling:**
 - No shared state between ISR and main loop, no critical sections on the frame
-  path, no interrupt-priority reasoning (TIM3, USART1 and both DMA streams
-  currently all sit at priority 0).
+  path, no interrupt-priority reasoning (at the time TIM6, TIM7, USART1, UART4
+  and the DMA streams all sat at priority 0; CAN1 RX0 now sits at 1).
 - Every frame is handled in one context that can be single-stepped.
 - Measured to work with margin at bus saturation.
 

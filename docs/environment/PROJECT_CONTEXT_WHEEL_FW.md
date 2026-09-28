@@ -164,6 +164,7 @@ All in `docs/environment/`, prefixed `PROJECT_CONTEXT_WHEEL_FW`:
 | Motor, encoder, DRV8874, IPROPI, plant, loaded rig, bench tooling | `_REF_DRIVE.md` |
 | CAN bit timing, pin allocation, timers, firmware modules | `_REF_MCU.md` |
 | SERVO42C protocol, command set, echo/framing traps | `_REF_SERVO42C.md` |
+| Task 6 CAN RX latency/jitter bench procedure + results | `_REF_TASK6_CAN_LATENCY.md` |
 | Toolchain, board, DIP switch, debug probes, `launch.json` | `_REF_DEVENV.md` |
 | Every lesson with its evidence | `_REF_LEARNINGS.md` |
 

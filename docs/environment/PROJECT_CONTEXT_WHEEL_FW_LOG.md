@@ -3341,3 +3341,43 @@ The "open: long hold at 11–12%" item above is withdrawn. Sep 25 and Sep 27 are
 both validated measurements, each stands with its own conditions (30 s vs 6 s
 dwell); no reconciliation task. Task 17 is done on the rig; motor-terminal
 metering goes with the rover session.
+
+## 2026-09-27 — Task 6: ISR-to-ring CAN RX bench, branch `ISR-to-ring` (NOT merged, no decision yet)
+
+Code (branch `ISR-to-ring`, commits `d879784`..`b13ea38`): CAN1 RX0 interrupt at
+NVIC priority 1 copies FIFO0 into a 32-slot SPSC ring; `can_bus_receive()` pops
+the ring; single ESR snapshot `can_bus_errors()`; volatile stats with IRQ-masked
+snapshot/clear; test-only `canhold <ms>` pauses the ring drain. FLASH 110,424 B,
+RAM 6,256 B. Plan: `docs/plans/ISR-to-ring.md`.
+
+Steps 1–6 (pass criteria) all met their expected values:
+- Saturation, `cangen -g 0.45 -n 20000` from orion, twice (motor off; 18% duty):
+  `rx_frames` 20000 = orion TX increase, 0 FIFO-full, 0 overrun events,
+  0 ring drops, ring high-water 1; TEC/REC 0, LEC none.
+- Overflow, `canhold 100` under the same load: ring high-water 32 of 32, 165
+  dropped (expected ~150), 0 FIFO-full, 0 overrun events, console live,
+  heartbeat sequence 0x14..0x9E consecutive across the hold, errors clean.
+  Orion TX 91563 -> 111564 = 20000 cangen + 1 cansend; `rx_frames` 20000.
+  (The 91563 "before" is the step-5 post-run reading, not a fresh one.)
+
+Step 7 — heartbeat inter-arrival, same method and host as the polled bench
+(daedalus, CANable, `candump -tz`, ID 500, max |interval - 500 ms|):
+
+| Condition | polled n | polled max dev (ms) | ISR n | ISR mean (ms) | ISR max dev (ms) |
+|---|---|---|---|---|---|
+| none | 24 | 0.43 | 21 | 500.30 | 0.48 |
+| `-g 5`, motor off | 36 | 0.58 | 92 | 500.29 | 0.55 |
+| `-g 2`, 18% duty | 48 | 0.60 | 103 | 500.29 | 0.64 |
+| `-g 1`, 18% duty | 43 | 0.70 | 89 | 500.29 | 0.75 |
+| `-g 0.45`, 18% duty | 59 | 0.72 | 74 | 500.29 | **1.28** |
+
+Actual `cangen` rates in the ISR runs: 193, 476, 937, 1964 f/s. Captures were
+longer than the polled ones and only partly under load in the first two.
+
+The 0.45 row is the only one clearly worse than polled. Only 2 of its 73
+intervals exceed 0.8 ms (1.28 ms at 16.5 s, 0.94 ms at 12.5 s; third-worst 0.68).
+Not repeated. The method cannot separate MCU latency from capture-host jitter,
+so this is not a pass criterion. Open: whether 1.28 ms recurs; the merge
+decision is the user's and has not been made. Raw captures are local-only in
+`tools/bench/runs/can_latency/isr_*.log`. Step 8 (record updates) waits for a
+merge decision.

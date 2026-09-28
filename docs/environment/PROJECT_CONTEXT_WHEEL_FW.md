@@ -124,6 +124,7 @@ rise ≤ 0.3 s (rig). **Met on the rig, 6–20 rpm.** → `_REF_TASKS` task 21
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 
+- **09-27** — Task 6 ISR-to-ring on branch `ISR-to-ring` (pushed, not merged): bench steps 1–6 pass (20000/20000 at saturation, overflow 165 dropped, 0 overruns); heartbeat jitter equal to polled except -g 0.45: 1.28 vs 0.72 ms. No merge decision yet → LOG.
 - **09-27** — Task 17 tidied: pre-Sep-20 figures marked invalid, stale boxes closed; only motor-terminal metering left (rover session).
 - **09-27** — Task 17 stiction A/B/A, 0.5% steps, 12.02 V: breakaway CW 12.5–13.0% (repeats), CCW 10.5–11.0%; dropout CW 8.5–9.5%, CCW 8.0–8.5%.
 - **09-27** — 12/rev ripple source identified: the tyre's 12 tread grooves. Resolved, no firmware change.

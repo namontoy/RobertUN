@@ -4037,3 +4037,36 @@ heartbeat 0x500+ unchanged, CFG_REQ 0x520+, CFG_RESP 0x528+. Rolling counter on 
 stops act on ID alone. vel_tmo applies to CAN unchanged; bus-off acts as an immediate watchdog expiry;
 UART/CAN: stops always win, the source that armed owns motion. Bus load 37.4% at 6 nodes (50 Hz speed + status).
 18 open questions; Q1 is the conflict with REST's CANopen decision (CANopenNode / CiA 402 / ros2_canopen).
+
+## 2026-09-28 — W6 CANopen interface spec (docs/canopen_cmds.md), draft
+
+User asked for a CANopen version of the W6 command spec to compare against the
+plain-CAN `docs/can_cmds.md` (Q1 there: REST selects CANopen). No code changed.
+Committed 9e709de, 42 657 bytes, 746 lines.
+
+- Profile: CiA 402 drive axis in CSV (mode 9), following REST; steering as
+  manufacturer objects 0x2100-0x2105 on the same node-ID, gated by the drive
+  axis being in operation enabled. Options A-D compared (402 two-axis, 402 +
+  mfr, two node-IDs, mfr only).
+- Node-ID = DIP + 1 (1-7); DIP 7 silent. Orion master assumed 0x7F.
+  Predefined connection set, no deviation. E-stop = NMT Stop to node 0 (ID 0x000).
+- OD: 0x1000 0x00020192, 0x1017 100 ms, 0x1016 master 250 ms, 0x1029 comm
+  error -> pre-op, 0x6007 = 1 (fault). cfg keys at 0x2000 + key index (I32,
+  rejected not clamped); save 0x1010 "save", defaults 0x1011 "load" (applied
+  live, deviation from 301 noted), revert 0x2F00.
+- PDOs: RPDO1 controlword/mode/target velocity/counter (sync, 100 ms deadline);
+  RPDO2 steering (event); TPDO1 status 50 Hz, TPDO2 position/current/output
+  10 Hz, TPDO3 steering 10 Hz, TPDO4 CAN diag 1 Hz (replaces the old 0x500+ID
+  heartbeat payload). Load at 6 nodes: 42.6 % at 50 Hz SYNC, 24.2 % at 25 Hz.
+- Integrity: app counter yes (only thing catching a frozen orion application
+  behind a live lely master); app CRC no (layout mismatch covered by 0x1018
+  revision check); SYNC counter no. vel_tmo unchanged, kicked by accepted
+  RPDO1 only.
+- Stack: recommends CANopenNode v4 core with its own CO_driver port over the
+  ISR-to-ring path. CanOpenSTM32 (named by REST) brings its own RX path
+  (callbacks in ISR context, owns TX and filter) and would replace task 6's
+  merged work. Flash/RAM figures are estimates (+15-25 KB / +2-4 KB).
+- EDS as single source (CANopenEditor), with a build check against config.c.
+- 21 open questions; key ones: Q1 plain vs CANopen, Q4 ros2_canopen multi-axis
+  and CSV support not verified, Q6 stack cost unmeasured. Seven cfg defaults
+  given by macro name (lookup blocked by a shell outage during drafting).

@@ -1,6 +1,6 @@
 # RobertUN — Wheel Controller Firmware Context
 
-**Last updated:** 2026-09-28 — Tasks 17, 18, 20 closed and moved to the LOG; open list renumbered 1–4; W6 CAN RX closed, W6 positioning and corner node open; W7 started.
+**Last updated:** 2026-09-28 — W6 bus protocol drafted twice for comparison: plain CAN (`docs/can_cmds.md`) and CANopen (`docs/canopen_cmds.md`); choice open.
 **Budget:** 20 KB. Check with `wc -c` before every commit; trim if over.
 
 > **How to use this file.** This is the hot file for the wheel-firmware track:
@@ -128,6 +128,7 @@ the old ID is in brackets.
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 
+- **09-28** — W6 CANopen alternative spec: `docs/canopen_cmds.md` (402 CSV drive + mfr steering, 42.6% load at 50 Hz). Plain CAN vs CANopen undecided.
 - **09-28** — W6 CAN command set spec drafted: `docs/can_cmds.md` (no code). Q1 open: plain CAN vs REST's CANopen decision.
 - **09-28** — Tasks 6, 17, 18, 20 closed (task 20: PMODE corrected); text moved to the LOG; open list renumbered 1–4.
 - **09-28** — W6 CAN RX (task 6) closed; W6's absolute-positioning decision and one-corner-node integration stay open (user); W5 owes the rover τ session; W7 started.
@@ -139,7 +140,6 @@ the old ID is in brackets.
 - **09-26** — W5 tolerance stated: 60 s mean ≤ ±0.05 rpm, 0% sat, ripple 12/rev ≤ ±1.5 rpm, step within ripple; 10–20 rpm passes, 6–10 owed.
 - **09-26** — First `cfg save` on the bench board: trip_ma 1580, duty_limit 300, ramp 50/120; survived a reset. Gains stay compiled defaults.
 - **09-26** — DMM supply reference, free shaft: drive-phase sample reads low while turning (0.74 at 20%, 0.83 at 15%, ±20%); no factor change.
-- **09-26** — Decay-phase sample implemented (flag 0x20, cfg isense_dk/dmin); exact vs iscan at stall; turning it reads ~40% below drive phase.
 
 ## Key rules (full list with evidence in `_REF_LEARNINGS`)
 

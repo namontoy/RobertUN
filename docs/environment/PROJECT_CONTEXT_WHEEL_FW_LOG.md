@@ -4531,3 +4531,47 @@ can only be the bus-off path; restored to 1000 after):
 Spec `can_cmds.md` §7.2: bus-off row says CAN-owned loop only and
 `velocity_expire_now()`; note that a FAULT with no free mailbox is held.
 Next: phase 7 (corner-node integration, SPEED 50 Hz + STEER 10 Hz, bus load, ring drops).
+
+## 2026-10-04 — W6 phase 7: corner-node integration (SPEED 50 Hz + STEER 10 Hz)
+
+No firmware change; build at phase 6 (122 164 B). Node 2 (corner), bench
+board, 12 V, loaded rig. Node rebooted first for clean counters (stats: 0
+dropped everywhere, ring hwm 0/32).
+
+Host: new `cancmd.py corner` mode — SPEED at `--rate` (50 Hz) and STEER at
+`--steer-rate` (10 Hz) in one loop. STEER follows a ±15° triangle, 8 s period,
+sent only on change (§4.5: on change, ≤10 Hz) — every 100 ms tick changes
+target, so this is the spec's worst case. Counts every frame on the bus (sent +
+received) with worst-case stuffed bits (47 + 8n + (34+8n−1)/4; 135 at DLC 8)
+for the load. Ends with STOP coast so vel_tmo does not trip. `--arm` sends
+ARM 1 immediately before the stream.
+
+Run 1 (separate `arm` + `steeron` invocations, then `corner`): every SPEED
+→ NOT_ARMED, flags `wd`. Cause: vel_tmo (1000 ms) runs from the ARM, and the
+`corner` call started seconds later — expired watchdog needs ARM 1 (§7.1,
+can_cmd.c SPEED check). Test fault, not firmware. STEER in the same run:
+300/300 OK, |target−pos| max 2.25 mean 1.19°, final −14.25 = −14.25.
+
+Run 2 (`corner 2 10 --arm --duration 30`):
+- SPEED 10 rpm x1500 at 50.0 Hz, all accepted (no CMD_RESULT on success);
+  STEER x300 at 10.0 Hz, 300 OK; STOP OK; no FAULT frames.
+- STATUS_DRIVE 1755 frames, 50.0 Hz, max gap 23.7 ms; last-2 s rpm mean 9.61
+  (min 7.14 = the 12/rev tread dip), out 146 o/oo, 470 mA.
+- STATUS_STEER 351 frames, 10.0 Hz; final target −14.25 pos −14.25; moving
+  294/301 frames; |target−pos| max 22.50 (the opening jump from −14.25 while
+  the triangle rose), mean 2.65°.
+- Bus: 3908 frames, 130 f/s, 6.9 % load. Per node = SPEED 50 + STEER 10 +
+  CMD_RESULT(STEER) 10 + STATUS_DRIVE 50 + STATUS_STEER 10.
+- Node `stats`: uart tx 0 dropped; can tx 0 dropped (no free mailbox); can rx
+  0 FIFO-full, 0 overruns; ring 0 dropped, high-water 2 of 32.
+
+Findings against spec §6.3 (spec updated):
+- STEER's CMD_RESULT (replied always) was missing from the load table: +40 f/s
+  for 4 corner nodes → 732 f/s, 39.5 % (was 692, 37.4 %); 25 Hz STATUS 31.4 %.
+- HEARTBEAT is muted at boot (`console.c` heartbeat_on = false), so 0 frames
+  seen; §6.3 counts it at 2 Hz. Default left as is — open for the user.
+
+Docs: `can_cmds.md` §5.2 now has the CFG_REQ CRC input order (bytes 0–2 then
+4–7) and check value 0x4B; §6.3 table + measured figure; Q13, Q17, Q18
+marked resolved (Q3 was already). `_REF_MCU` gained a can_cmd/motion/steer
+section. W6 plan phases 1–7 done; next-task 1 closed.

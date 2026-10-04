@@ -1,6 +1,6 @@
 # RobertUN — Wheel Controller Firmware Context
 
-**Last updated:** 2026-10-04 — W6 phase 6 done: bus-off coasts a CAN loop at once; ERROR_PASSIVE and DRV_FAULT FAULTs verified; held FAULTs no longer inflate tx dropped.
+**Last updated:** 2026-10-04 — W6 done (phase 7): SPEED 50 Hz + STEER 10 Hz on one corner node, 6.9 % load, zero drops; spec §6.3 corrected to 39.5 % for six nodes.
 **Budget:** 20 KB. Check with `wc -c` before every commit; trim if over.
 
 > **How to use this file.** This is the hot file for the wheel-firmware track:
@@ -19,7 +19,7 @@ CAN at 250 kbps. Each module drives a steering servo (MKS SERVO42C over UART)
 and a brushed drive motor with encoder (DRV8874). Hard deadline: December 10
 demo. Roadmap: W2 CAN ✅, W3 steering ✅, W4 drive + encoder ✅, W5 velocity
 PID ✅ on the rig (only the rover τ session left), W6 CAN RX ✅ (task 6, ISR-to-ring, Sep 28); W6 protocol
-= plain CAN (10-04, `docs/can_cmds.md`); absolute positioning and one-corner-node integration open; W7
+= plain CAN (10-04, `docs/can_cmds.md`), one corner node integrated ✅ 10-04; W7
 (six nodes wired, DIP IDs, same binary) started 09-28. Roadmap: `docs/RobertUN_Roadmap_Aug-Dec2026.md`.
 
 ## Current state
@@ -118,20 +118,19 @@ rise ≤ 0.3 s (rig). **Met on the rig, 6–20 rpm.** → `_REF_TASKS` task 21
 Tasks 6, 17, 18 and 20 were closed 09-28 and are in the LOG. Old task 1 (CAN vs
 CANopen) closed 10-04. Renumbered 10-04; the previous number is in brackets.
 
-1. **Next session.** W6 (was 2): integrate one full corner node on plain CAN per
-   `docs/can_cmds.md`. Plan: `docs/plans/w6-can-cmds.md` (7 phases, branch
-   `w6-can-cmds`); phases 1–6 done 10-04; next phase 7 (SPEED 50 Hz +
-   STEER 10 Hz together, bus load, ring drops). No bus shorts with the only
-   CANable (gs_usb wedges, no restart-ms). Servo link needs the external 5.1 kΩ PA1→3V3 pull-up (fitted, node 2).
-   Host tool `tools/bench/cancmd.py` (kernel SocketCAN, no python-can).
-   Decided 10-04: steer pos = sum of commanded pulses (Q3), §7.3 ownership (Q13),
-   console `estop clear` (Q18).
+1. **Next session.** W6 closed 10-04 (plan phases 1–7, branch `w6-can-cmds`,
+   not yet merged): merge to main via PR, then W7 (six nodes). Open: HEARTBEAT
+   is muted at boot but §6.3 counts it at 2 Hz — keep or default on?
+   Host tool `tools/bench/cancmd.py` (`corner 2 10 --arm` = integration run;
+   ARM in the same run, vel_tmo runs from the ARM). No bus shorts with the only
+   CANable. Servo link needs the external 5.1 kΩ PA1→3V3 pull-up (node 2). → `_REF_MCU` can_cmd
 2. W5 velocity PID (was 3, task 21): the open items above, in the order listed.
 3. Independent ammeter on the low-duty end (was 4): reverse draws +8.1% current,
    and the low-end U-shape sits near the 145 o/oo sense floor.
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 
+- **10-04** — W6 phase 7: SPEED 10 rpm 50 Hz + STEER ±15° triangle 10 Hz, 30 s: 1500/300 accepted, no FAULT, STATUS 50.0/10.0 Hz, 130 f/s = 6.9 % load, ring hwm 2/32, 0 drops. → LOG
 - **10-04** — W6 phase 6: bus-off (H–L short) coasts a CAN-armed loop at once, latch, ARM 1 recovers; FAULT ERROR_PASSIVE, DRV_FAULT received; RX_RING_DROPPED unreachable (hwm 1/32). 122 164 B. → LOG
 - **10-04** — W6 phase 5: STEER +15/−15/0 and deferred +15→−10 match 0x33 exactly (±0 p), 64/64 servo txns clean; RANGE/CRC/STALE/REPEAT and ESTOP mid-move (pos lost) pass. PA1 needed 5.1 kΩ pull-up (was 7/60 lost). 121.5 KB. → LOG
 - **10-04** — W6 phase 4: CFG GET/SET/INFO match `cfg`, RANGE not clamped; LIMITS/RAMP RANGE/BAD_ACTION/REPEAT/UART_OWNS; SAVE armed → BUSY. 118 056 B. Revert/default now re-apply every key (was trip+limit only). → LOG
@@ -141,8 +140,6 @@ CANopen) closed 10-04. Renumbered 10-04; the previous number is in brackets.
 - **10-04** — W6 protocol = plain CAN (simplicity, time). `can_cmds.md`: `ID = type<<4 | addr`, 0 = broadcast, ESTOP bcast 0x000, CMD_RESULT 0x08x. → LOG
 - **10-04** — 4-bit DIP ID on PB12–PB15 (1–4 corner, 5–6 center, 7–14 reserved; 0/15 refused); nFAULT → PB0. Verified on bench. Branch `dipsw-4bit`. → LOG
 
-- **09-28** — W6 CANopen alternative spec: `docs/canopen_cmds.md` (402 CSV drive + mfr steering, 42.6% load at 50 Hz). Plain CAN vs CANopen undecided.
-- **09-28** — W6 CAN command set spec drafted: `docs/can_cmds.md` (no code). Q1 open: plain CAN vs REST's CANopen decision.
 - **09-28** — Tasks 6, 17, 18, 20 closed (task 20: PMODE corrected); text moved to the LOG; open list renumbered 1–4.
 
 ## Key rules (full list with evidence in `_REF_LEARNINGS`)

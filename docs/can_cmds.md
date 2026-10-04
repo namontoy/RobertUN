@@ -463,7 +463,12 @@ Definition: CRC-8/SAE-J1850 (poly 0x1D, init 0xFF, xorout 0xFF, no
 reflection). Input, in order:
 1. the 11-bit ID as u16 little-endian (2 bytes);
 2. `PROTO_VER` (1 byte);
-3. the payload bytes, excluding the CRC byte.
+3. the payload bytes, excluding the CRC byte, in payload order. For the
+   frames with the CRC in byte 7 that is bytes 0–6; for CFG_REQ (CRC in
+   byte 3) it is bytes 0–2 then 4–7.
+
+Check value: CRC-8/SAE-J1850 of ASCII `"123456789"` is **0x4B**. The console
+`can crc` prints it; `tools/bench/canproto.py` asserts it.
 
 On mismatch: reject with `CRC`; nothing applied, no watchdog kick, counter not
 advanced.
@@ -508,13 +513,19 @@ figure.
 |---|---|---|---|
 | SPEED (O→N) | 6 | 50 Hz | 300 |
 | STEER (O→N), worst case | 4 | 10 Hz | 40 |
+| CMD_RESULT for STEER (replied always, §4.5) | 4 | 10 Hz | 40 |
 | STATUS_DRIVE | 6 | 50 Hz | 300 |
 | STATUS_STEER | 4 | 10 Hz | 40 |
 | HEARTBEAT | 6 | 2 Hz | 12 |
-| **Total** | | | **692 f/s → 37.4 %** |
-| With STATUS_DRIVE at 25 Hz | | | 542 f/s → 29.3 % |
+| **Total** | | | **732 f/s → 39.5 %** |
+| With STATUS_DRIVE at 25 Hz | | | 582 f/s → 31.4 % |
 
-CMD_RESULT, FAULT and CFG frames are sporadic and not included, and neither is
+Measured 2026-10-04 (W6 phase 7), one corner node, SPEED 50 Hz + STEER
+10 Hz worst case for 30 s: 130 f/s, 6.9 % (the five per-node rows above:
+50 + 10 + 10 + 50 + 10). RX ring high-water 2 of 32, no drops anywhere.
+HEARTBEAT is muted at boot (`heartbeat on` enables it), so it was absent.
+
+Other CMD_RESULT, FAULT and CFG frames are sporadic and not included, and neither is
 traffic from non-wheel nodes (Q9).
 
 ## 7. Safety behaviour
@@ -595,8 +606,9 @@ is held, not dropped, and goes out when a mailbox frees.
     may be long for a moving rover at 50 Hz commands.
 12. **`enc window` and status rate.** STATUS_DRIVE is locked to the control
     step. Changing `enc window` over UART changes the CAN rate. 50 Hz or 25 Hz?
-13. **Ownership rule (§7.3).** This is a new behaviour for the console, which
-    today accepts everything. Confirm before implementation.
+13. **Ownership rule (§7.3) — resolved 2026-10-04 (W6).** Adopted as written:
+    a CAN-armed node refuses console motion commands; console stops release
+    ownership; a console-armed node answers SPEED/STEER with `UART_OWNS`.
 14. **Stop policy.** ESTOP and STOP mode 1 coast, following the W4 stop policy.
     Braking may be needed on slopes. Undecided.
 15. **CENTER nodes (IDs 5–6) have no steering**, following `dipsw.h`. Confirm
@@ -604,8 +616,6 @@ is held, not dropped, and goes out when a mailbox frees.
 16. **Broadcast ESTOP arbitration — resolved 2026-10-04.** Broadcast is
     addr 0, the lowest ID in its type, so broadcast ESTOP (0x000) wins against
     every frame on the bus.
-17. **CRC polynomial.** SAE-J1850 was chosen. Any 8-bit polynomial with a
-    documented check value would do.
-18. **ESTOP latch and the console.** The console refuses motion while the latch
-    is set, but there is no console command to clear it. Add one, or keep it
-    CAN and reset only?
+17. **CRC polynomial — resolved.** CRC-8/SAE-J1850, check value 0x4B (§5.2).
+18. **ESTOP latch and the console — resolved 2026-10-04 (W6).** Console
+    `estop clear` clears the latch, as ARM 3 (CLEAR_ESTOP) does over CAN.

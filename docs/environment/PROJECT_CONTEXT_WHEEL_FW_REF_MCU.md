@@ -315,6 +315,38 @@ covers Send-String-style terminals; the >1 byte guard is what keeps interactive
 typing from executing a character at a time. Set Enter Key Emulation to `CR`
 anyway rather than depending on the fallback.
 
+### `can_cmd`, `motion`, `steer` — W6 plain-CAN command set (Oct 4, 2026)
+
+Implements `docs/can_cmds.md` (plan `docs/plans/w6-can-cmds.md`, branch
+`w6-can-cmds`, phases 1–7). Everything runs in main-loop context; no new
+interrupt (bus errors come from one ESR read per pass, no SCE IRQ).
+
+- **`can_cmd.c`** — `can_cmd_init()` after `can_bus_init`; `can_cmd_handle(f)`
+  from the RX-ring drain loop in `main.c`; `can_cmd_poll()` once per pass
+  (STATUS_DRIVE per control step, STATUS_STEER every 100 ms, FAULT edges with
+  at most one frame per code per 100 ms, ESR bus-off/passive edges, steering
+  completion). Per frame: type → addr (own or 0) → DLC → CRC-8 → counter
+  (§5.1) → role/latch/ownership → action → CMD_RESULT. CRC-8/SAE-J1850,
+  check value 0x4B (console `can crc`). SPEED replies only on rejection;
+  STEER always replies.
+- **`motion.c`** — ESTOP latch and motion owner (NONE/UART/CAN).
+  `motion_estop()` = `velocity_disable` → `drive_coast` → MKS stop, then latch.
+  Console motion commands call `motion_claim(UART)` and are refused while
+  latched or CAN-owned; stops release. Console `estop clear` = ARM 3.
+- **`steer.c`** — CORNER only. Position = sum of commanded pulses, zeroed at
+  STEER_ENABLE (ARM 4); 0.01° units. A STEER during a move is kept as
+  `pending` (latest wins) and starts when the move completes. A console
+  `mks` move invalidates the position (`steer_external`).
+- **Shared cfg path** — `config_apply_live(key)` in `config.c`, used by the
+  console `cfg` and by CFG_REQ.
+- **Bench host tool** — `tools/bench/cancmd.py` (+ `canproto.py`), kernel
+  SocketCAN. `corner 2 10 --arm --duration 30` = phase-7 integration run
+  (SPEED 50 Hz + STEER triangle at 10 Hz, measured bus load, STOP coast).
+  ARM must be sent in the same run: vel_tmo (1 s) runs from the ARM.
+- **Load, measured (phase 7)**: one corner node 130 f/s = 6.9 % at 250 kbps;
+  RX ring high-water 2/32; zero drops. Six nodes by table: 732 f/s, 39.5 %.
+- Flash 122 164 B after phase 6 (base before W6 110 568 B).
+
 ### Fixed (Sep 28, 2026) — `cmd_errors` read CAN_ESR non-atomically
 
 **Fixed on branch `ISR-to-ring`:** `can_bus_errors()` reads `CAN1->ESR` once and

@@ -1,6 +1,6 @@
 # RobertUN — Wheel Controller Firmware Context
 
-**Last updated:** 2026-10-04 — W6 phase 3 done: UART/CAN ownership of motion (§7.3); console refuses while CAN owns, CAN gets UART_OWNS; bench pass on node 2.
+**Last updated:** 2026-10-04 — W6 phase 4 done: config_apply_live refactor (cfg byte-identical), LIMITS, RAMP, CFG_REQ/RESP; bench pass on node 2.
 **Budget:** 20 KB. Check with `wc -c` before every commit; trim if over.
 
 > **How to use this file.** This is the hot file for the wheel-firmware track:
@@ -120,7 +120,9 @@ CANopen) closed 10-04. Renumbered 10-04; the previous number is in brackets.
 
 1. **Next session.** W6 (was 2): integrate one full corner node on plain CAN per
    `docs/can_cmds.md`. Plan: `docs/plans/w6-can-cmds.md` (7 phases, branch
-   `w6-can-cmds`); phases 1–3 done 10-04; next phase 4 (`config_apply_live` refactor, then LIMITS, RAMP, CFG_REQ/RESP).
+   `w6-can-cmds`); phases 1–4 done 10-04; next phase 5 (STEER + STATUS_STEER).
+   Open (user): revert/default re-apply only trip+limit — vel_*/ramp keys stay
+   stale in the running modules (pre-existing; LOG 10-04 phase 4).
    Host tool `tools/bench/cancmd.py` (kernel SocketCAN, no python-can).
    Decided 10-04: steer pos = sum of commanded pulses (Q3), §7.3 ownership (Q13),
    console `estop clear` (Q18).
@@ -133,6 +135,7 @@ CANopen) closed 10-04. Renumbered 10-04; the previous number is in brackets.
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 
+- **10-04** — W6 phase 4: CFG GET/SET/INFO match `cfg`, RANGE not clamped; LIMITS/RAMP RANGE/BAD_ACTION/REPEAT/UART_OWNS; SAVE armed → BUSY. 118 056 B. → LOG
 - **10-04** — W6 phase 3: ownership — CAN-armed node refuses console `drv duty`/`vel target`; `vel off`/`vel stop` release; console-armed node answers SPEED with UART_OWNS. +584 B. → LOG
 - **10-04** — W6 phase 2: SPEED 10 rpm at 50 Hz, STATUS 50.0 Hz, ctr echo lag 0; REPEAT x149 not kicking vel_tmo (FAULT +1002 ms); CRC/STALE/NOT_ARMED pass. +1 944 B. → LOG
 - **10-04** — W6 phase 1: ESTOP (bcast 0x000) coasts a 15%-duty run, latches, CMD_RESULT + FAULT 0.6 ms; STOP modes, addr filter, `estop clear` pass. +3 032 B flash. → LOG

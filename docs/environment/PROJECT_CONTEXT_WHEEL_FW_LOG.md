@@ -4313,3 +4313,60 @@ Bench (node 2):
 - Not tested on the bench: CAN ARM 1 while the UART owns (same check as SPEED).
 Phase 3 bench checks all pass. Next: phase 4 (config_apply_live refactor,
 then LIMITS, RAMP, CFG_REQ/RESP).
+
+## 2026-10-04 — W6 phase 4: config_apply_live refactor, LIMITS, RAMP, CFG_REQ/CFG_RESP (branch `w6-can-cmds`)
+
+Commits: `0ade71b` (refactor), `7791a2f` (CAN). Bench on node 2, 12 V rail, bridge disabled except the two armed checks.
+
+**Refactor.** The per-key live apply moved from `cmd_cfg` (console.c) into
+`config_apply_live(key)` in config.c; `cfg_apply_live()` became
+`config_apply_limits()` (trip + duty_limit only). The console keeps only the
+"applied now" prints, read back from the modules. Check: a 32-command `cfg`
+transcript (all 22 keys set to their current values, get, out of range,
+unknown key, `default vel_kd`, `default trip_ma`, revert, `default`, revert,
+`drv disable`, save, `cfg`) taken on the phase-3 image and again on the
+refactor image: `diff` identical (137 lines). The first capture had `cfg save`
+refused because the bridge was enabled — state, not code — so `drv disable`
+was added before save in both.
+
+**CAN.** LIMITS and RAMP share one handler: DLC → CRC → counter, then mask
+(0 or unknown bits → BAD_ACTION), range on every masked field (RANGE, detail =
+mask bit, whole frame rejected, never clamped), ownership (UART_OWNS; no ESTOP
+latch check, same as the console's `owner_gate` for drv limit/trip/ramp), then
+apply; the counter commits only on OK. LIMITS ranges: duty 0..config_max
+(1000), trip isense_trip_min_ma..max_ma (101..1580 here). RAMP: config min/max
+of ramp_pmps / ramp_floor. CFG_REQ: no counter, tag echoed, CRC over bytes 0–2
+and 4–7; DLC < 8 is answered with status CRC (the spec has no BAD_DLC for
+CFG_RESP). SET → config_set + config_apply_live; REVERT/DEFAULT →
+config_apply_limits; SAVE BUSY if velocity_enabled() or (in config_save) the
+bridge is enabled; INFO packs version, key count, slots used (clamped 255),
+dirty. Writes are printed on the console, reads are not. Broadcast allowed;
+needs a valid DIP ID. Image: text 117 544 + data 512 = 118 056 B flash, bss
+5 968 B, 0 warnings.
+
+**Bench results (node 2).**
+- CFG: INFO (own and broadcast) v2, 22 keys, slot 2; GET trip_ma 1580,
+  duty_limit 300, vel_ff_a 12510; MIN trip_ma 0, MAX vel_tmo 60000, DEF
+  duty_limit 1000 — all match `cfg`. Key 22 → UNKNOWN_KEY; flipped CRC → CRC.
+- SET duty_limit 250 → OK, `drv limit` 25%; SET 1001 → RANGE, value 250 (not
+  clamped); SET vel_kp 2500 → `vel gains` kp 2500; REVERT → OK, limit 30%.
+- LIMITS duty 1001 → RANGE d1; trip 50 → RANGE d2; mask 0 → BAD_ACTION;
+  duty 250 + trip 1200 → OK, live limit 25%, trip 1199 mA (DAC step), `cfg
+  duty_limit` still 300; bad CRC → CRC; ctr 3 again → REPEAT detail 3.
+  RAMP pmps 10001 → RANGE d1; floor 301 → RANGE d2; 100/80 → OK, live.
+  Restored to 300 / 1580 (reads 1579) / 50 / 120.
+- SAVE while CAN-armed (ARM 1 at 0 rpm) → BUSY value 1; slot still 2.
+- Console `drv enable` + `vel on` (owner UART): CAN LIMITS and RAMP →
+  UART_OWNS, live values unchanged (30%, 50); SAVE → BUSY; `vel off` → owner
+  none. Note: the first attempt ran `vel on` with the bridge disabled, which
+  refuses, so nobody owned and LIMITS/RAMP were (correctly) OK — redone with
+  `drv enable` first. Bridge disabled at the end.
+
+**Found (pre-existing, not changed).** Revert and default re-apply only trip
+and duty_limit (old `cfg_apply_live` behaviour, kept byte-identical). After
+CFG SET vel_kp 2500 then REVERT, `cfg vel_kp` read 3000 while `vel gains` ran
+2500; ramp keys behave the same. Open for the user: re-apply every key on
+revert/default.
+Also noted: a CFG SET of vel_tmo re-arms the setpoint countdown (same as the
+console), so repeated SETs could keep a loop alive without SPEED. Spec note,
+no code change proposed.

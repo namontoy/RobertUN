@@ -4450,3 +4450,31 @@ BAD_DLC status. The "Open (user)" item from the phase 4 entry is closed.
 
 **Spec:** `can_cmds.md` §4.5 (tracked position, deferral, NOT_ARMED after a
 lost position) and Q3 marked resolved.
+
+## 2026-10-04 — W6 phase 5, extra CAN checks (node 2): rejections, ESTOP mid-move
+
+**Rejections (no motion; STATUS_STEER stayed 0/0, 0x33 stayed 0):**
+- ±95° → RANGE detail 2; speed 200 → RANGE detail 1; bad CRC → CRC.
+- Counters: after ARM steeron, the first valid STEER (ctr 5) was accepted.
+  That is per spec §4.4: an accepted ARM resets the STEER window. Then ctr 4
+  → STALE detail 5, and ctr 5 again → REPEAT detail 5.
+
+**ESTOP mid-move:**
+- STEER +15 (ctr 6), then broadcast ESTOP 0.5 s later. Both replied OK;
+  FAULT ESTOP came +1 ms after the ESTOP. The moving flag cleared 0.52 s
+  after the STEER.
+- Flags became `enabled` only: position lost, nothing queued, target still
+  shows +15. The servo stays energised and holding (F7 stop).
+- 0x33 = −498 p (+5.90°). The aborted FD was not counted as an error (73/74
+  ok, 0 fails) and gave no FAULT MKS_ERROR.
+- STEER while latched → ESTOP_LATCHED, with no motion and the STATUS ctr
+  unchanged.
+
+**Recovery without hand re-alignment** (0x33 knows where the wheel is):
+- `estop clear`, then steeron. This time 0x33 did **not** reset (stayed
+  −498). The first enable reset it 5 → 0, but then the motor had been off
+  before the F3. So F3 01 seems to reset 0x33 only from the disabled state —
+  inferred from two enables, not confirmed.
+- STEER −5.90 → −498 p, settled 0.58 s, 0x33 = 0.
+- steeron again: pos 0 at the hand-set zero.
+- Link: 82 requests, 81 ok (the aborted one), 0 errors.

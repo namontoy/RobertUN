@@ -131,7 +131,7 @@ CANopen) closed 10-04. Renumbered 10-04; the previous number is in brackets.
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 
-- **10-04** — W6 phase 5: STEER +15/−15/0 and deferred +15→−10 match 0x33 exactly (±0 p), 64/64 servo txns clean. PA1 needed 5.1 kΩ pull-up (was 7/60 lost). 121.5 KB. → LOG
+- **10-04** — W6 phase 5: STEER +15/−15/0 and deferred +15→−10 match 0x33 exactly (±0 p), 64/64 servo txns clean; RANGE/CRC/STALE/REPEAT and ESTOP mid-move (pos lost) pass. PA1 needed 5.1 kΩ pull-up (was 7/60 lost). 121.5 KB. → LOG
 - **10-04** — W6 phase 4: CFG GET/SET/INFO match `cfg`, RANGE not clamped; LIMITS/RAMP RANGE/BAD_ACTION/REPEAT/UART_OWNS; SAVE armed → BUSY. 118 056 B. Revert/default now re-apply every key (was trip+limit only). → LOG
 - **10-04** — W6 phase 3: ownership — CAN-armed node refuses console `drv duty`/`vel target`; `vel off`/`vel stop` release; console-armed node answers SPEED with UART_OWNS. +584 B. → LOG
 - **10-04** — W6 phase 2: SPEED 10 rpm at 50 Hz, STATUS 50.0 Hz, ctr echo lag 0; REPEAT x149 not kicking vel_tmo (FAULT +1002 ms); CRC/STALE/NOT_ARMED pass. +1 944 B. → LOG

@@ -59,16 +59,18 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define DRV_nFAULT_Pin GPIO_PIN_0
+#define DRV_nFAULT_GPIO_Port GPIOB
 #define LED_BLINKY_Pin GPIO_PIN_2
 #define LED_BLINKY_GPIO_Port GPIOB
-#define DRV_nFAULT_Pin GPIO_PIN_12
-#define DRV_nFAULT_GPIO_Port GPIOB
-#define DIP_SW_0_Pin GPIO_PIN_13
+#define DIP_SW_0_Pin GPIO_PIN_12
 #define DIP_SW_0_GPIO_Port GPIOB
-#define DIP_SW_1_Pin GPIO_PIN_14
+#define DIP_SW_1_Pin GPIO_PIN_13
 #define DIP_SW_1_GPIO_Port GPIOB
-#define DIP_SW_2_Pin GPIO_PIN_15
+#define DIP_SW_2_Pin GPIO_PIN_14
 #define DIP_SW_2_GPIO_Port GPIOB
+#define DIP_SW_3_Pin GPIO_PIN_15
+#define DIP_SW_3_GPIO_Port GPIOB
 #define DRV_nSLEEP_Pin GPIO_PIN_5
 #define DRV_nSLEEP_GPIO_Port GPIOB
 

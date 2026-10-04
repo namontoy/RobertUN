@@ -14,7 +14,7 @@
   *     PB6  TIM4_CH1  ->  IN1 (+ IN3, paralleled)
   *     PB7  TIM4_CH2  ->  IN2 (+ IN4, paralleled)
   *     PB5  GPIO out  ->  nSLEEP     low = bridge disabled
-  *     PB12 GPIO in   ->  nFAULT     open-drain, active low
+  *     PB0  GPIO in   ->  nFAULT     open-drain, active low
   *
   *
   * DRIVER-AGNOSTIC BY DESIGN

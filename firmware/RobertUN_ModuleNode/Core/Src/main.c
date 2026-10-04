@@ -196,12 +196,13 @@ int main(void)
                     (unsigned)dipsw_id(), dipsw_role_str(dipsw_role()));
 
   /* The one boot line that decides whether this board is allowed on the bus.
-     0b111 is what an unfitted switch block reads, so this fires on a bare
-     bench board - which is the design working, not a fault. */
+     0b1111 is what an unfitted switch block reads, so this fires on a bare
+     bench board - which is the design working, not a fault. The role text
+     above already says which invalid code it is (unconfigured or broadcast). */
   if (!dipsw_valid())
   {
     debug_uart_puts("WARNING: no module identity - CAN transmit is disabled."
-                    " Ground DIP_SW_0/1/2 (PB13/PB14/PB15) to select an ID.\r\n");
+                    " Set DIP_SW_0..3 (PB12..PB15) to an ID 1-14.\r\n");
   }
   else
   {
@@ -799,17 +800,19 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, LED_BLINKY_Pin|DRV_nSLEEP_Pin, GPIO_PIN_RESET);
 
+  /*Configure GPIO pins : DRV_nFAULT_Pin DIP_SW_0_Pin DIP_SW_1_Pin DIP_SW_2_Pin
+                           DIP_SW_3_Pin */
+  GPIO_InitStruct.Pin = DRV_nFAULT_Pin|DIP_SW_0_Pin|DIP_SW_1_Pin|DIP_SW_2_Pin
+                          |DIP_SW_3_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
   /*Configure GPIO pins : LED_BLINKY_Pin DRV_nSLEEP_Pin */
   GPIO_InitStruct.Pin = LED_BLINKY_Pin|DRV_nSLEEP_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : DRV_nFAULT_Pin DIP_SW_0_Pin DIP_SW_1_Pin DIP_SW_2_Pin */
-  GPIO_InitStruct.Pin = DRV_nFAULT_Pin|DIP_SW_0_Pin|DIP_SW_1_Pin|DIP_SW_2_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-  GPIO_InitStruct.Pull = GPIO_PULLUP;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /*Configure GPIO pin : PA8 */

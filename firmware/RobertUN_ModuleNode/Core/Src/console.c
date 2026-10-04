@@ -1992,8 +1992,9 @@ static void cmd_id(int argc, char **argv)
   uint8_t latched = dipsw_code();
   uint8_t live    = dipsw_read_live();
 
-  debug_uart_printf("module ID : %u  (0b%u%u%u, SW2 SW1 SW0)\r\n",
+  debug_uart_printf("module ID : %u  (0b%u%u%u%u, SW3 SW2 SW1 SW0)\r\n",
                     (unsigned)latched,
+                    (unsigned)((latched >> 3) & 1u),
                     (unsigned)((latched >> 2) & 1u),
                     (unsigned)((latched >> 1) & 1u),
                     (unsigned)(latched & 1u));
@@ -2006,9 +2007,10 @@ static void cmd_id(int argc, char **argv)
   else
   {
     debug_uart_puts("CAN node  : none - transmit disabled\r\n");
-    debug_uart_puts("            0b111 is what an unfitted switch block reads."
-                    " Ground PB13/PB14/PB15\r\n"
-                    "            to select an ID; closed = 0, open = 1.\r\n");
+    debug_uart_puts("            0b1111 is what an unfitted switch block reads;"
+                    " 0 is the broadcast\r\n"
+                    "            address. Set PB12..PB15 (SW0..SW3) to an ID"
+                    " 1-14; closed = 0, open = 1.\r\n");
   }
 
   if (live != latched)

@@ -4456,7 +4456,7 @@ lost position) and Q3 marked resolved.
 **Rejections (no motion; STATUS_STEER stayed 0/0, 0x33 stayed 0):**
 - ±95° → RANGE detail 2; speed 200 → RANGE detail 1; bad CRC → CRC.
 - Counters: after ARM steeron, the first valid STEER (ctr 5) was accepted.
-  That is per spec §4.4: an accepted ARM resets the STEER window. Then ctr 4
+  That is per spec §4.3: an accepted ARM resets the STEER window. Then ctr 4
   → STALE detail 5, and ctr 5 again → REPEAT detail 5.
 
 **ESTOP mid-move:**

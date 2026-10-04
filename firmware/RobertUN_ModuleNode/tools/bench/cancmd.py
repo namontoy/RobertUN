@@ -11,6 +11,8 @@
     cancmd.py arm 2 steeron               STEER_ENABLE: energise, zero the position
     cancmd.py steer 2 30                  STEER to +30.00 deg, follow until it stops
     cancmd.py steer 2 -30 --speed 3 --then 0 --gap 1   second target 1 s later
+    cancmd.py corner 2 10 --arm --duration 30  SPEED 50 Hz + STEER triangle at 10 Hz,
+                                          bus load, then STOP coast
     cancmd.py limits 2 --duty 300 --trip 1580   LIMITS (fields given set the mask)
     cancmd.py ramp 2 --pmps 50 --floor 120      RAMP
     cancmd.py cfg 2 get vel_kp            CFG_REQ get|set|save|revert|default|
@@ -379,6 +381,131 @@ def cmd_steer(s, a):
         print("still moving (or no status) after --follow %.0f s" % a.follow)
 
 
+def frame_bits(dlc):
+    """Worst-case bits of a standard data frame, stuffing included (135 at
+    DLC 8, the figure §6.3 uses)."""
+    return 47 + 8 * dlc + (34 + 8 * dlc - 1) // 4
+
+
+def steer_triangle(t, amp, period):
+    """Triangle wave, 0 at t=0, peaks +amp at period/4, -amp at 3*period/4."""
+    ph = (t / period) % 1.0
+    if ph < 0.25:
+        return amp * ph * 4
+    if ph < 0.75:
+        return amp * (2 - ph * 4)
+    return amp * (ph * 4 - 4)
+
+
+def cmd_corner(s, a):
+    """Corner-node integration (W6 phase 7): SPEED at --rate and STEER at
+    --steer-rate together. STEER follows a triangle and is sent only when the
+    target changes (spec §4.4: on change, at most 10 Hz). Counts every frame on
+    the bus to give the measured load, then stops the drive with STOP coast."""
+    mrpm = int(round(a.rpm * 1000))
+    lis = Listener(a.node)
+    bus = collections.Counter()   # type -> frames
+    bits = 0
+
+    def feed(t, cid, data):
+        nonlocal bits
+        lis.feed(t, cid, data)
+        bus[cp.split_id(cid)[0]] += 1
+        bits += frame_bits(len(data))
+
+    def drain(deadline):
+        for t, cid, data in rx_until(s, deadline):
+            feed(t, cid, data)
+
+    def send(cid, data):
+        nonlocal bits
+        ok = tx(s, cid, data)
+        if ok:
+            bus[cp.split_id(cid)[0]] += 1
+            bits += frame_bits(len(data))
+        return ok
+
+    # ARM 1 right before the stream: vel_tmo runs from the ARM, so a separate
+    # `arm` invocation seconds earlier has already expired (§7.1).
+    if a.arm:
+        send(*cp.arm_frame(a.addr, next_ctr(cp.T_ARM, a.addr), cp.ARM_ACTIONS["arm"]))
+        drain(time.monotonic() + 0.1)
+        if lis.results.get(("ARM", "OK")) != 1:
+            print("ARM not accepted: " + ", ".join(
+                "%s %s" % k for k in lis.results))
+            return
+        lis.results.clear()
+        lis.result_lines.clear()
+        save_ctr(cp.T_SPEED, a.addr, 255)
+        save_ctr(cp.T_STEER, a.addr, 255)
+
+    sp_period = 1.0 / a.rate
+    st_period = 1.0 / a.steer_rate
+    sp_ctr = next_ctr(cp.T_SPEED, a.addr)
+    st_ctr = None
+    sp_sent = st_sent = refused = 0
+    last_cdeg = None
+    t_start = time.monotonic()
+    t_end = t_start + a.duration
+    t_sp = t_st = t_start
+    while True:
+        now = time.monotonic()
+        if now >= t_end:
+            break
+        if now >= t_sp:
+            if sp_sent:
+                sp_ctr = (sp_ctr + 1) & 0xFF
+            if send(*cp.speed_frame(a.addr, sp_ctr, mrpm)):
+                sp_sent += 1
+            else:
+                refused += 1
+            t_sp += sp_period
+        if a.steer_amp and now >= t_st:
+            cdeg = int(round(steer_triangle(now - t_start, a.steer_amp, a.steer_period) * 100))
+            if cdeg != last_cdeg:
+                st_ctr = next_ctr(cp.T_STEER, a.addr) if st_ctr is None else (st_ctr + 1) & 0xFF
+                if send(*cp.steer_frame(a.addr, st_ctr, cdeg, a.speed)):
+                    st_sent += 1
+                else:
+                    refused += 1
+                last_cdeg = cdeg
+            t_st += st_period
+        drain(min(t_sp, t_st if a.steer_amp else t_sp, t_end))
+    t_stop = time.monotonic()
+    save_ctr(cp.T_SPEED, a.addr, sp_ctr)
+    if st_ctr is not None:
+        save_ctr(cp.T_STEER, a.addr, st_ctr)
+    span = t_stop - t_start
+    load_bits = bits
+    load_frames = sum(bus.values())
+
+    # Stop the drive cleanly (a lapsed SPEED stream would trip vel_tmo), then
+    # let the last STEER finish.
+    if not a.no_stop:
+        ctr = next_ctr(cp.T_STOP, a.addr)
+        send(*cp.stop_frame(a.addr, ctr, cp.STOP_MODES["coast"]))
+    drain(time.monotonic() + a.tail)
+
+    print("CORNER %.2f s: SPEED %.3f rpm x%d (%.1f Hz), STEER +/-%.2f deg x%d (%.1f Hz)"
+          % (span, a.rpm, sp_sent, sp_sent / span, a.steer_amp, st_sent, st_sent / span))
+    if refused:
+        print("  tx refused (ENOBUFS): %d frames" % refused)
+    print("  bus: %d frames, %.0f f/s, load %.1f %% (worst-case stuffing, 250 kbps)"
+          % (load_frames, load_frames / span, 100.0 * load_bits / span / 250000))
+    print("  by type: " + ", ".join("%s %d" % (cp.TYPE_NAMES.get(k, hex(k)), n)
+                                    for k, n in sorted(bus.items())))
+    lis.print_status(window=(max(t_start, t_stop - 2.0), t_stop))
+    lis.print_steer()
+    if lis.steer:
+        moving = sum(1 for t, d in lis.steer if t <= t_stop and d["flags"] & 0x02)
+        during = sum(1 for t, d in lis.steer if t <= t_stop)
+        err = [abs(d["target"] - d["pos"]) for t, d in lis.steer if t <= t_stop]
+        print("  during run: moving %d/%d frames, |target-pos| max %.2f mean %.2f deg"
+              % (moving, during, max(err), statistics.mean(err)))
+    lis.print_results()
+    lis.print_faults(t_stop, "end of run")
+
+
 def cmd_watch(s, a):
     lis = Listener(a.node)
     lis.drain(s, time.monotonic() + a.duration)
@@ -452,6 +579,23 @@ def main():
     sr.add_argument("--ctr", type=int, help="force this counter value")
     sr.add_argument("--bad-crc", action="store_true")
 
+    co = sub.add_parser("corner")
+    co.add_argument("addr", type=int)
+    co.add_argument("rpm", type=float)
+    co.add_argument("--rate", type=float, default=50.0, help="SPEED rate, Hz")
+    co.add_argument("--steer-rate", type=float, default=10.0, help="STEER rate cap, Hz")
+    co.add_argument("--steer-amp", type=float, default=15.0,
+                    help="triangle amplitude, deg (0 = SPEED only)")
+    co.add_argument("--steer-period", type=float, default=8.0, help="triangle period, s")
+    co.add_argument("--speed", type=int, default=0, help="MKS speed code, 0 = node default 2")
+    co.add_argument("--duration", type=float, default=30.0)
+    co.add_argument("--tail", type=float, default=5.0,
+                    help="seconds to listen after the run (last STEER settles)")
+    co.add_argument("--arm", action="store_true",
+                    help="send ARM 1 just before the stream (vel_tmo runs from the ARM)")
+    co.add_argument("--no-stop", action="store_true",
+                    help="skip the closing STOP coast (vel_tmo will trip)")
+
     w = sub.add_parser("watch")
     w.add_argument("addr", type=int)
     w.add_argument("--duration", type=float, default=3.0)
@@ -462,7 +606,8 @@ def main():
     s = open_bus(a.iface)
     {"estop": cmd_estop, "stop": cmd_stop, "arm": cmd_arm,
      "speed": cmd_speed, "watch": cmd_watch, "limits": cmd_limits,
-     "ramp": cmd_ramp, "cfg": cmd_cfg, "steer": cmd_steer}[a.cmd](s, a)
+     "ramp": cmd_ramp, "cfg": cmd_cfg, "steer": cmd_steer,
+     "corner": cmd_corner}[a.cmd](s, a)
     return 0
 
 

@@ -4132,3 +4132,38 @@ earlier regeneration.
 **Open.** `docs/can_cmds.md` still uses a 3-bit address with 7 = broadcast.
 Under the new rule it needs a 4-bit address with 0 = broadcast. Settle it with the CAN
 vs CANopen decision (task 1). The REST track needs to know the module numbers shifted.
+
+## 2026-10-04 — W6 protocol decided: plain CAN; `can_cmds.md` moved to 4-bit addresses
+
+Decision (user): W6 uses **plain CAN**, not CANopen. Reason: simplicity and
+lack of time before the Dec 10 demo. `docs/canopen_cmds.md` is marked "not
+selected, kept for reference"; `PROJECT_CONTEXT_REST.md` KEY DECISIONS gets a
+one-line "superseded for the wheel nodes" note under the CANopen entry (REST
+task 7, the CANopen stack, is now stale for the wheel nodes — REST track to
+revise).
+
+`docs/can_cmds.md` updated to the 4-bit DIP ID (PB12–PB15, `dipsw.h`):
+- Address: 1–14 nodes, **0 = broadcast** (`DIPSW_ADDR_BROADCAST`), 15 never
+  owned (unfitted). Roles: 1–4 CORNER, 5–6 CENTER, 7–14 RESERVED, 0/15 INVALID.
+  Software acceptance: own address or 0.
+- ID formula `ID = (type << 4) | addr` (7-bit type, 4-bit addr); was
+  `(type << 3) | addr` with 7 = broadcast.
+- Layout choices (user, this session):
+  - ESTOP = type 0x00, so broadcast ESTOP is **0x000**, top priority on the
+    bus. The 09-28 draft kept 0x000 free for CANopen NMT; no longer relevant.
+  - With 16 IDs per type the control group (0x010–0x07F) fits only 7 types;
+    CMD_RESULT moved to type 0x08 (0x081–0x08E, REST's "sensor setpoints"
+    range, otherwise unused by wheel frames) so the draft's priority order is
+    kept. Alternatives rejected: CMD_RESULT in diagnostics (drops below
+    STATUS), or SPEED/STEER into 0x080 (LIMITS/RAMP/CMD_RESULT would outrank
+    SPEED).
+- New table: ESTOP 0x000–0x00E, STOP 0x010–0x01E, FAULT 0x021–0x02E, ARM
+  0x030–0x03E, SPEED 0x041–0x04E, STEER 0x051–0x054, LIMITS 0x060–0x06E, RAMP
+  0x070–0x07E, CMD_RESULT 0x081–0x08E, STATUS_DRIVE 0x101–0x10E, STATUS_STEER
+  0x111–0x114, HEARTBEAT 0x501–0x50E (existing `0x500 + id`, unchanged),
+  CFG_REQ 0x520–0x52E, CFG_RESP 0x531–0x53E.
+- Broadcast is now the lowest ID within each type, so it wins arbitration
+  (spec Q16 resolved; the old ≤0.54 ms ESTOP penalty is gone).
+- Q1 resolved (plain CAN); Q5 role text → RESERVED 7–14 / INVALID 0, 15;
+  Q15 CENTER IDs 5–6. §6.3 bus load unchanged (6 nodes, 37.4 %).
+- Docs only, no firmware change. Next: one full corner node on this spec.

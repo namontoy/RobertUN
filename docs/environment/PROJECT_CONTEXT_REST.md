@@ -1698,6 +1698,8 @@ transmitter is the proof the ACK arrived.
   firmware (preferred over slcan) when it arrives.
 - **CANopen with CANopenNode as application-layer protocol:** Selected over
   plain CAN and OpenCyphal (Cyphal/UAVCAN v1) for the following reasons:
+  - **Superseded for the wheel nodes, 2026-10-04 (wheel track):** W6 uses
+    plain CAN, `docs/can_cmds.md` (simplicity, time to the Dec 10 demo).
   - CiA 402 motor control profile provides a standardized state machine,
     controlword/statusword, and cyclic synchronous velocity mode — exactly
     what 6-wheel rover motor control requires, without designing it from scratch

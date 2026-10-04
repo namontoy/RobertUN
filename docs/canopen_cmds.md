@@ -1,8 +1,7 @@
 # Wheel node — W6 CANopen interface (specification)
 
-Status: **draft, 2026-09-28.** No code implements this. It is the CANopen
-alternative to the plain-CAN spec `docs/can_cmds.md`; the choice between them
-is open (§10 Q1). Open questions are in §10.
+Status: **not selected (2026-10-04).** W6 uses plain CAN, `docs/can_cmds.md`.
+Kept for reference. Draft of 2026-09-28; no code implements this.
 
 Sources:
 - `PROJECT_CONTEXT_REST.md`: "Physical bus", "Message ID design principles",

@@ -1,6 +1,6 @@
 # RobertUN — Wheel Controller Firmware Context
 
-**Last updated:** 2026-10-04 — Module ID widened to 4 bits on PB12–PB15 (0 = broadcast, 15 = unfitted); nFAULT moved to PB0; bench-verified.
+**Last updated:** 2026-10-04 — W6 protocol decided: plain CAN; `can_cmds.md` moved to 4-bit addresses, `ID = type<<4 | addr`, 0 = broadcast.
 **Budget:** 20 KB. Check with `wc -c` before every commit; trim if over.
 
 > **How to use this file.** This is the hot file for the wheel-firmware track:
@@ -18,8 +18,8 @@ binary for all six (module ID from a 4-bit DIP switch), talking to orion over
 CAN at 250 kbps. Each module drives a steering servo (MKS SERVO42C over UART)
 and a brushed drive motor with encoder (DRV8874). Hard deadline: December 10
 demo. Roadmap: W2 CAN ✅, W3 steering ✅, W4 drive + encoder ✅, W5 velocity
-PID ✅ on the rig (only the rover τ session left), W6 CAN RX ✅ (task 6, ISR-to-ring, Sep 28), but W6's
-absolute-positioning decision and one-corner-node integration are still open; W7
+PID ✅ on the rig (only the rover τ session left), W6 CAN RX ✅ (task 6, ISR-to-ring, Sep 28); W6 protocol
+= plain CAN (10-04, `docs/can_cmds.md`); absolute positioning and one-corner-node integration open; W7
 (six nodes wired, DIP IDs, same binary) started 09-28. Roadmap: `docs/RobertUN_Roadmap_Aug-Dec2026.md`.
 
 ## Current state
@@ -111,27 +111,26 @@ rise ≤ 0.3 s (rig). **Met on the rig, 6–20 rpm.** → `_REF_TASKS` task 21
 - Done (09-27): 6–10 rpm A/B/A, VM 12.02 V: worst error −0.019 rpm, 0% sat,
   peak 165/300; 12.00 ± 0.02 events/rev; sd 0.78–1.19. Ripple is a one-sided
   dip (−3.2…−4.0 rpm fwd). → LOG 09-27
-- **Next step (this task, now priority 3):** the rover τ session (re-set rise limit, then freeze gains).
+- **Next step (this task, now priority 2):** the rover τ session (re-set rise limit, then freeze gains).
 
 ## Next tasks (priority order)
 
-Tasks 6, 17, 18 and 20 were closed 09-28 and are in the LOG. Renumbered 09-28;
-the previous number is in brackets.
+Tasks 6, 17, 18 and 20 were closed 09-28 and are in the LOG. Old task 1 (CAN vs
+CANopen) closed 10-04. Renumbered 10-04; the previous number is in brackets.
 
-1. **Next session.** W6: decide plain CAN vs CANopen. Compare `docs/can_cmds.md`
-   and `docs/canopen_cmds.md` (Q1 in both); REST selected CANopen. Blocks task 2.
-   Since 10-04 the address is 4 bits, with 0 = broadcast; `can_cmds.md` still says 3 bits / 7.
-2. **After task 1.** W6 (was 4): integrate one full corner node — CAN command in,
-   steering (UART/MKS) and drive (PID) both respond, on the chosen protocol.
-3. W5 velocity PID (was 1, task 21): the open items above, in the order listed.
-4. Independent ammeter on the low-duty end (was 2): reverse draws +8.1% current,
+1. **Next session.** W6 (was 2): integrate one full corner node on plain CAN per
+   `docs/can_cmds.md` — CAN command in, steering (UART/MKS) and drive (PID) both
+   respond. Spec open questions in its §8 (Q2–Q18) to settle as they block.
+2. W5 velocity PID (was 3, task 21): the open items above, in the order listed.
+3. Independent ammeter on the low-duty end (was 4): reverse draws +8.1% current,
    and the low-end U-shape sits near the 145 o/oo sense floor.
-5. W6 open, priority not set (was 3): decide how absolute steering positioning
+4. W6 open, priority not set (was 5): decide how absolute steering positioning
    works (`FD` is a relative move; `33` counts UART-commanded pulses and can
-   serve as feedback). Task 2's absolute steering target depends on it.
+   serve as feedback). Task 1's absolute steering target depends on it.
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 
+- **10-04** — W6 protocol = plain CAN (simplicity, time). `can_cmds.md`: `ID = type<<4 | addr`, 0 = broadcast, ESTOP bcast 0x000, CMD_RESULT 0x08x. → LOG
 - **10-04** — 4-bit DIP ID on PB12–PB15 (1–4 corner, 5–6 center, 7–14 reserved; 0/15 refused); nFAULT → PB0. Verified on bench. Branch `dipsw-4bit`. → LOG
 
 - **09-28** — W6 CANopen alternative spec: `docs/canopen_cmds.md` (402 CSV drive + mfr steering, 42.6% load at 50 Hz). Plain CAN vs CANopen undecided.
@@ -144,7 +143,6 @@ the previous number is in brackets.
 - **09-27** — 12/rev ripple source identified: the tyre's 12 tread grooves. Resolved, no firmware change.
 - **09-27** — 6–10 rpm A/B/A passes: worst −0.019 rpm, 0% sat, 12.00/rev; ripple crit. amended to sd ≤ 1.5 rpm. W5 met on the rig.
 - **09-26** — W5 tolerance stated: 60 s mean ≤ ±0.05 rpm, 0% sat, ripple 12/rev ≤ ±1.5 rpm, step within ripple; 10–20 rpm passes, 6–10 owed.
-- **09-26** — First `cfg save` on the bench board: trip_ma 1580, duty_limit 300, ramp 50/120; survived a reset. Gains stay compiled defaults.
 
 ## Key rules (full list with evidence in `_REF_LEARNINGS`)
 

@@ -20,9 +20,10 @@
   * A node without a valid DIP identity transmits nothing and acts only on
   * broadcast ESTOP and STOP.
   *
-  * Implemented so far (W6 phases 1-3): ESTOP, STOP, ARM (actions 0-3), SPEED,
- * CMD_RESULT, STATUS_DRIVE, FAULT ESTOP / VEL_WD_EXPIRED / SKIPPED_CTR, and
- * UART/CAN ownership of motion (§7.3, motion.h).
+  * Implemented so far (W6 phases 1-4): ESTOP, STOP, ARM (actions 0-3), SPEED,
+ * LIMITS, RAMP, CFG_REQ/CFG_RESP, CMD_RESULT, STATUS_DRIVE, FAULT ESTOP /
+ * VEL_WD_EXPIRED / SKIPPED_CTR, and UART/CAN ownership of motion (§7.3,
+ * motion.h).
   ******************************************************************************
   */
 
@@ -88,6 +89,30 @@ typedef enum
   CAN_FAULT_MKS_ERROR         = 7,
   CAN_FAULT_SKIPPED_CTR       = 8
 } can_fault_t;
+
+/* CFG_REQ byte 0 (§4.8). */
+#define CFG_OP_GET          0u
+#define CFG_OP_SET          1u
+#define CFG_OP_SAVE         2u
+#define CFG_OP_REVERT       3u
+#define CFG_OP_DEFAULT_KEY  4u
+#define CFG_OP_DEFAULT_ALL  5u
+#define CFG_OP_INFO         6u
+#define CFG_OP_GET_MIN      7u
+#define CFG_OP_GET_MAX      8u
+#define CFG_OP_GET_DEFAULT  9u
+
+/* CFG_RESP byte 3 (§4.9). */
+typedef enum
+{
+  CFG_ST_OK          = 0,
+  CFG_ST_UNKNOWN_KEY = 1,
+  CFG_ST_RANGE       = 2,
+  CFG_ST_BUSY        = 3,
+  CFG_ST_FLASH_ERROR = 4,
+  CFG_ST_BAD_OP      = 5,
+  CFG_ST_CRC         = 6
+} cfg_status_t;
 
 /* STOP byte 1 (§4.2). */
 #define CAN_STOP_MODE_MASK  0x03u

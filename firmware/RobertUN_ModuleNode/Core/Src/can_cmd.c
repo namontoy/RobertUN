@@ -8,6 +8,7 @@
 #include "can_cmd.h"
 
 #include "main.h"          /* HAL_GetTick */
+#include "config.h"
 #include "debug_uart.h"
 #include "dipsw.h"
 #include "drive.h"
@@ -499,6 +500,238 @@ static void handle_speed(const can_frame_t *f)
   /* No reply on success: ctr comes back in STATUS_DRIVE (§4.4). */
 }
 
+static uint16_t le16(const uint8_t *p)
+{
+  return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
+}
+
+/* LIMITS (§4.6) and RAMP (§4.7) share a layout: ctr, mask, two u16 fields.
+   Every field in the mask is checked before anything is applied: an
+   out-of-range value rejects the whole frame (RANGE, detail = its mask bit),
+   and is never clamped - unlike the console's `drv limit`. Ownership only,
+   no latch check, the same gate as the console's limit commands. */
+static void handle_limits_ramp(const can_frame_t *f, uint8_t type, bool bcast)
+{
+  ctr_window_t *win;
+  uint8_t       ctr    = f->data[0];
+  uint8_t       mask   = f->data[1];
+  uint16_t      a      = le16(&f->data[2]);
+  uint16_t      b      = le16(&f->data[4]);
+  bool          limits = (type == CAN_T_LIMITS);
+  can_result_t  res    = CAN_RES_OK;
+  uint8_t       detail = 0u;
+
+  if (!frame_checks(f, type, bcast, &win))
+  {
+    return;
+  }
+
+  /* a: duty_limit / ramp_pmps; b: trip_ma / ramp_floor. */
+  int32_t a_max = config_max(limits ? CFG_DUTY_LIMIT : CFG_RAMP_PMPS);
+  int32_t b_min = limits ? (int32_t)isense_trip_min_ma() : config_min(CFG_RAMP_FLOOR);
+  int32_t b_max = limits ? (int32_t)isense_trip_max_ma() : config_max(CFG_RAMP_FLOOR);
+
+  if ((mask == 0u) || ((mask & (uint8_t)~0x03u) != 0u))
+  {
+    res = CAN_RES_BAD_ACTION;
+  }
+  else if (((mask & 0x01u) != 0u) && ((int32_t)a > a_max))
+  {
+    res    = CAN_RES_RANGE;
+    detail = 0x01u;
+  }
+  else if (((mask & 0x02u) != 0u) && (((int32_t)b < b_min) || ((int32_t)b > b_max)))
+  {
+    res    = CAN_RES_RANGE;
+    detail = 0x02u;
+  }
+  else if (!motion_may(MOTION_SRC_CAN))
+  {
+    res = CAN_RES_UART_OWNS;
+  }
+  else if (limits)
+  {
+    if ((mask & 0x01u) != 0u) { drive_set_limit(a); }
+    if ((mask & 0x02u) != 0u) { (void)isense_set_trip_ma(b); }
+  }
+  else
+  {
+    if ((mask & 0x01u) != 0u) { drive_set_ramp(a); }
+    if ((mask & 0x02u) != 0u) { drive_set_ramp_floor(b); }
+  }
+
+  if (res == CAN_RES_OK)
+  {
+    ctr_commit(win, ctr);
+  }
+
+  reply(type, ctr, res, detail);
+
+  if (limits)
+  {
+    debug_uart_printf("can: LIMITS mask %u ctr %u -> %u (limit %u o/oo, trip"
+                      " %lu mA)\r\n", (unsigned)mask, (unsigned)ctr,
+                      (unsigned)res, (unsigned)drive_limit(),
+                      (unsigned long)isense_trip_ma());
+  }
+  else
+  {
+    debug_uart_printf("can: RAMP mask %u ctr %u -> %u (ramp %u o/oo/s, floor"
+                      " %u o/oo)\r\n", (unsigned)mask, (unsigned)ctr,
+                      (unsigned)res, (unsigned)drive_ramp(),
+                      (unsigned)drive_ramp_floor());
+  }
+}
+
+/* --- CFG_REQ / CFG_RESP (§4.8, §4.9) ------------------------------------ */
+
+static void cfg_resp(uint8_t op, uint8_t key, uint8_t tag, cfg_status_t st,
+                     uint32_t value)
+{
+  const uint8_t d[8] = { op, key, tag, (uint8_t)st,
+                         (uint8_t)(value & 0xFFu),
+                         (uint8_t)((value >> 8) & 0xFFu),
+                         (uint8_t)((value >> 16) & 0xFFu),
+                         (uint8_t)(value >> 24) };
+
+  if (st != CFG_ST_OK)
+  {
+    stats.rejected++;
+  }
+
+  (void)send(CAN_T_CFG_RESP, d, sizeof(d));
+}
+
+static bool cfg_op_takes_key(uint8_t op)
+{
+  return (op == CFG_OP_GET) || (op == CFG_OP_SET) || (op == CFG_OP_DEFAULT_KEY) ||
+         (op == CFG_OP_GET_MIN) || (op == CFG_OP_GET_MAX) ||
+         (op == CFG_OP_GET_DEFAULT);
+}
+
+static void handle_cfg(const can_frame_t *f)
+{
+  uint8_t      op   = (f->dlc >= 1u) ? f->data[0] : 0u;
+  uint8_t      key  = (f->dlc >= 2u) ? f->data[1] : 0u;
+  uint8_t      tag  = (f->dlc >= 3u) ? f->data[2] : 0u;
+  config_key_t k    = (config_key_t)key;
+  cfg_status_t st   = CFG_ST_OK;
+  uint32_t     out  = 0u;
+
+  /* No counter (§5.1): `tag` pairs request and response. A short frame
+     cannot carry a checkable CRC, so it is answered as one that failed it. */
+  if (f->dlc < 8u)
+  {
+    stats.crc_errors++;
+    cfg_resp(op, key, tag, CFG_ST_CRC, 0u);
+    return;
+  }
+
+  /* The CRC sits in byte 3, so the input skips it: bytes 0-2, then 4-7. */
+  const uint8_t body[7] = { f->data[0], f->data[1], f->data[2],
+                            f->data[4], f->data[5], f->data[6], f->data[7] };
+
+  if (f->data[3] != can_cmd_frame_crc((uint16_t)f->id, body, sizeof(body)))
+  {
+    stats.crc_errors++;
+    cfg_resp(op, key, tag, CFG_ST_CRC, 0u);
+    return;
+  }
+
+  int32_t value = (int32_t)((uint32_t)f->data[4]         |
+                            ((uint32_t)f->data[5] << 8)  |
+                            ((uint32_t)f->data[6] << 16) |
+                            ((uint32_t)f->data[7] << 24));
+
+  if (op > CFG_OP_GET_DEFAULT)
+  {
+    cfg_resp(op, key, tag, CFG_ST_BAD_OP, 0u);
+    return;
+  }
+
+  if (cfg_op_takes_key(op) && (key >= (uint8_t)CFG_KEY_COUNT))
+  {
+    cfg_resp(op, key, tag, CFG_ST_UNKNOWN_KEY, 0u);
+    return;
+  }
+
+  switch (op)
+  {
+    case CFG_OP_GET:
+      out = (uint32_t)config_get(k);
+      break;
+
+    case CFG_OP_SET:
+      /* Rejected, not clamped (config_set()); the reply carries the value
+         still in RAM either way. Applied live through the console's path. */
+      if (config_set(k, value))
+      {
+        config_apply_live(k);
+      }
+      else
+      {
+        st = CFG_ST_RANGE;
+      }
+      out = (uint32_t)config_get(k);
+      break;
+
+    case CFG_OP_SAVE:
+    {
+      /* config_save() refuses with the bridge enabled; an armed loop is
+         refused here as well, in case the two ever come apart (§4.8). */
+      config_save_t r = velocity_enabled() ? CONFIG_SAVE_BUSY : config_save();
+
+      st  = (r == CONFIG_SAVE_BUSY)        ? CFG_ST_BUSY
+          : (r == CONFIG_SAVE_FLASH_ERROR) ? CFG_ST_FLASH_ERROR
+          :                                  CFG_ST_OK;
+      out = (uint32_t)r;
+      break;
+    }
+
+    case CFG_OP_REVERT:
+      out = (uint32_t)config_revert();
+      config_apply_limits();
+      break;
+
+    case CFG_OP_DEFAULT_KEY:
+      config_reset_key(k);
+      config_apply_limits();
+      out = (uint32_t)config_get(k);
+      break;
+
+    case CFG_OP_DEFAULT_ALL:
+      config_reset_all();
+      config_apply_limits();
+      break;
+
+    case CFG_OP_INFO:
+    {
+      uint16_t used, total;
+      config_usage(&used, &total);
+
+      out = (uint32_t)CONFIG_VERSION                          |
+            ((uint32_t)CFG_KEY_COUNT << 8)                    |
+            ((uint32_t)((used > 255u) ? 255u : used) << 16)   |
+            ((uint32_t)(config_dirty() ? 1u : 0u) << 24);
+      break;
+    }
+
+    case CFG_OP_GET_MIN:     out = (uint32_t)config_min(k);     break;
+    case CFG_OP_GET_MAX:     out = (uint32_t)config_max(k);     break;
+    default:                 out = (uint32_t)config_default(k); break;
+  }
+
+  cfg_resp(op, key, tag, st, out);
+
+  /* Writes are announced on the console; reads are not, so a host polling
+     config does not flood it. */
+  if ((op >= CFG_OP_SET) && (op <= CFG_OP_DEFAULT_ALL))
+  {
+    debug_uart_printf("can: CFG op %u key %u -> %u (value %ld)\r\n",
+                      (unsigned)op, (unsigned)key, (unsigned)st, (long)(int32_t)out);
+  }
+}
+
 /* --- dispatch ------------------------------------------------------------ */
 
 static bool is_o2n(uint8_t type)
@@ -587,8 +820,27 @@ void can_cmd_handle(const can_frame_t *f)
       handle_speed(f);
       break;
 
+    case CAN_T_LIMITS:
+    case CAN_T_RAMP:
+    case CAN_T_CFG_REQ:
+      if (!dipsw_valid())
+      {
+        stats.ignored++;
+        break;
+      }
+      stats.handled++;
+      if (type == CAN_T_CFG_REQ)
+      {
+        handle_cfg(f);   /* broadcast: every node answers with its own ID */
+      }
+      else
+      {
+        handle_limits_ramp(f, type, bcast);
+      }
+      break;
+
     default:
-      /* STEER, LIMITS, RAMP, CFG_REQ: W6 phases 4-5. */
+      /* STEER: W6 phase 5. */
       stats.ignored++;
       break;
   }

@@ -8,6 +8,11 @@
     cancmd.py speed 2 10 --duration 5     SPEED 10 rpm at 50 Hz, then listen
     cancmd.py speed 2 10 --repeat         ctr frozen after the first frame
     cancmd.py watch 2 --duration 3        STATUS_DRIVE / FAULT summary only
+    cancmd.py limits 2 --duty 300 --trip 1580   LIMITS (fields given set the mask)
+    cancmd.py ramp 2 --pmps 50 --floor 120      RAMP
+    cancmd.py cfg 2 get vel_kp            CFG_REQ get|set|save|revert|default|
+    cancmd.py cfg 2 set duty_limit 250      default_all|info|min|max|def
+    cancmd.py cfg 0 info                  broadcast: one CFG_RESP per node
 
 Counters (§5.1) are kept per (type, addr) in runs/.cancmd_ctr.json, so
 successive invocations continue the sequence the node expects. Uses the
@@ -254,6 +259,60 @@ def cmd_speed(s, a):
     lis.print_faults(ref_t, ref_name)
 
 
+def _send_masked(s, a, ftype, build, f0, f1):
+    """LIMITS and RAMP: the mask is the fields given, unless --mask forces it."""
+    mask = a.mask if a.mask is not None else (
+        (1 if f0 is not None else 0) | (2 if f1 is not None else 0))
+    ctr = next_ctr(ftype, a.addr, a.ctr)
+    cid, data = build(a.addr, ctr, mask, f0 or 0, f1 or 0)
+    if a.bad_crc:
+        data = data[:7] + bytes([data[7] ^ 0xFF])
+    lis = Listener(a.node)
+    tx(s, cid, data)
+    lis.drain(s, time.monotonic() + a.listen)
+    lis.print_results()
+    lis.print_faults()
+
+
+def cmd_limits(s, a):
+    _send_masked(s, a, cp.T_LIMITS, cp.limits_frame, a.duty, a.trip)
+
+
+def cmd_ramp(s, a):
+    _send_masked(s, a, cp.T_RAMP, cp.ramp_frame, a.pmps, a.floor)
+
+
+def cmd_cfg(s, a):
+    op = cp.CFG_OP_NAMES.index(a.op)
+    key = 0
+    if a.key is not None:
+        key = int(a.key) if a.key.isdigit() else cp.CFG_KEYS.index(a.key)
+    tag = a.tag if a.tag is not None else int(time.time() * 1000) & 0xFF
+    cid, data = cp.cfg_frame(a.addr, op, key, tag, a.value)
+    if a.bad_crc:
+        data = data[:3] + bytes([data[3] ^ 0xFF]) + data[4:]
+    tx(s, cid, data)
+    n = 0
+    for t, rid, rdata in rx_until(s, time.monotonic() + a.listen):
+        ftype, node = cp.split_id(rid)
+        if ftype != cp.T_CFG_RESP or len(rdata) < 8:
+            continue
+        r = cp.decode_cfg_resp(rdata)
+        n += 1
+        mark = "" if r["tag"] == tag else "  [tag %d, sent %d]" % (r["tag"], tag)
+        if r["op"] == "info" and r["status"] == "OK":
+            v, keys, used, dirty = r["raw"]
+            val = "config v%d, %d keys, slot %d used%s" % (
+                v, keys, used, ", UNSAVED" if dirty & 1 else "")
+        else:
+            val = "value %d" % r["value"]
+        print("node %d CFG_RESP %-7s %-11s -> %-11s %s%s"
+              % (node, r["op"], r["key"] if cp.CFG_OP_NAMES.index(r["op"])
+                 in (0, 1, 4, 7, 8, 9) else "-", r["status"], val, mark))
+    if n == 0:
+        print("no CFG_RESP within %.1f s" % a.listen)
+
+
 def cmd_watch(s, a):
     lis = Listener(a.node)
     lis.drain(s, time.monotonic() + a.duration)
@@ -296,16 +355,36 @@ def main():
     sp.add_argument("--ctr", type=int, help="first counter value")
     sp.add_argument("--bad-crc", action="store_true")
 
+    for name, f0, f1 in (("limits", "--duty", "--trip"),
+                         ("ramp", "--pmps", "--floor")):
+        lr = sub.add_parser(name)
+        lr.add_argument("addr", type=int)
+        lr.add_argument(f0, type=int)
+        lr.add_argument(f1, type=int)
+        lr.add_argument("--mask", type=int, help="force the mask byte")
+        lr.add_argument("--node", type=int, help="whose replies to show (broadcast: 2)")
+        lr.add_argument("--ctr", type=int, help="force this counter value")
+        lr.add_argument("--bad-crc", action="store_true")
+
+    cf = sub.add_parser("cfg")
+    cf.add_argument("addr", type=int)
+    cf.add_argument("op", choices=cp.CFG_OP_NAMES)
+    cf.add_argument("key", nargs="?", help="name or index")
+    cf.add_argument("value", type=int, nargs="?", default=0)
+    cf.add_argument("--tag", type=int)
+    cf.add_argument("--bad-crc", action="store_true")
+
     w = sub.add_parser("watch")
     w.add_argument("addr", type=int)
     w.add_argument("--duration", type=float, default=3.0)
 
     a = p.parse_args()
-    if not hasattr(a, "node"):
-        a.node = a.addr
+    if getattr(a, "node", None) is None:
+        a.node = a.addr if a.addr else 2
     s = open_bus(a.iface)
     {"estop": cmd_estop, "stop": cmd_stop, "arm": cmd_arm,
-     "speed": cmd_speed, "watch": cmd_watch}[a.cmd](s, a)
+     "speed": cmd_speed, "watch": cmd_watch, "limits": cmd_limits,
+     "ramp": cmd_ramp, "cfg": cmd_cfg}[a.cmd](s, a)
     return 0
 
 

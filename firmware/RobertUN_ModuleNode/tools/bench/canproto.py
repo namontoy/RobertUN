@@ -55,6 +55,18 @@ STOP_MODES = {"ramp": 0, "coast": 1, "brake": 2}
 STOP_MKS = 0x80
 
 
+# CFG_REQ ops (§4.8), CFG_RESP status (§4.9), key indices (§4.8 table).
+CFG_OP_NAMES = ["get", "set", "save", "revert", "default", "default_all",
+                "info", "min", "max", "def"]
+CFG_STATUS = ["OK", "UNKNOWN_KEY", "RANGE", "BUSY", "FLASH_ERROR", "BAD_OP",
+              "CRC"]
+CFG_KEYS = ["vdda_mv", "r_ipropi", "a_ipropi", "trip_ma", "duty_limit",
+            "rail_mv", "isense_avg", "sat_raw", "vref_div", "ramp_pmps",
+            "ramp_floor", "vel_kp", "vel_ki", "vel_kd", "vel_ff_a", "vel_ff_b",
+            "vel_ilim", "vel_max", "vel_slew", "vel_tmo", "isense_dk",
+            "isense_dmin"]
+
+
 def can_id(ftype, addr):
     return (ftype << 4) | (addr & 0x0F)
 
@@ -104,6 +116,35 @@ def stop_frame(addr, ctr, mode):
 
 def estop_frame(addr=0):
     return can_id(T_ESTOP, addr), b""
+
+
+def limits_frame(addr, ctr, mask, duty_limit=0, trip_ma=0):
+    cid = can_id(T_LIMITS, addr)
+    return cid, seal(cid, struct.pack("<BBHHB", ctr & 0xFF, mask, duty_limit,
+                                      trip_ma, 0))
+
+
+def ramp_frame(addr, ctr, mask, ramp_pmps=0, ramp_floor=0):
+    cid = can_id(T_RAMP, addr)
+    return cid, seal(cid, struct.pack("<BBHHB", ctr & 0xFF, mask, ramp_pmps,
+                                      ramp_floor, 0))
+
+
+def cfg_frame(addr, op, key=0, tag=0, value=0):
+    """CFG_REQ: the CRC sits in byte 3 and covers bytes 0-2 and 4-7 (§4.8)."""
+    cid = can_id(T_CFG_REQ, addr)
+    val = struct.pack("<i", value)
+    crc = frame_crc(cid, bytes([op, key, tag]) + val)
+    return cid, bytes([op, key, tag, crc]) + val
+
+
+def decode_cfg_resp(data):
+    op, key, tag, st, value = struct.unpack("<BBBBi", bytes(data[:8]))
+    return {"op": CFG_OP_NAMES[op] if op < len(CFG_OP_NAMES) else str(op),
+            "key": CFG_KEYS[key] if key < len(CFG_KEYS) else str(key),
+            "tag": tag,
+            "status": CFG_STATUS[st] if st < len(CFG_STATUS) else str(st),
+            "value": value, "raw": bytes(data[4:8])}
 
 
 def decode_cmd_result(data):

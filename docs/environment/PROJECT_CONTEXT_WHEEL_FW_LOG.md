@@ -4370,3 +4370,20 @@ revert/default.
 Also noted: a CFG SET of vel_tmo re-arms the setpoint countdown (same as the
 console), so repeated SETs could keep a loop alive without SPEED. Spec note,
 no code change proposed.
+
+### 2026-10-04 — W6 phase 4 follow-up: revert/default re-apply every key; spec notes
+
+Decided (user): revert and default re-apply every key, not just trip +
+duty_limit. `config_apply_limits()` → `config_apply_all()`: config_apply_live()
+over every key in index order (IPROPI scale keys 0–2 before trip_ma 3, so the
+trip ends at its configured value on the new scale; vel_ff_a before vel_ff_b).
+Console text "both re-applied" → "all keys re-applied".
+Bench (node 2, bridge disabled): CAN SET vel_kp 2500 + SET ramp_pmps 100, then
+CAN REVERT → `vel gains` kp 3000, `drv ramp` 50 (before the fix: kp stayed
+2500). Console `cfg default ramp_pmps` → ramp off live; `cfg revert` → 50;
+trip 1579 mA. The 32-command cfg transcript differs from the pre-refactor one
+only in the 5 "all keys re-applied" lines, same numbers.
+Agreed (user), recorded in can_cmds.md §4.8 / §7.1: (a) a CFG SET of vel_tmo,
+and any REVERT/DEFAULT, re-arms the setpoint countdown — orion must not use
+it as a keep-alive; (b) CFG_REQ with DLC < 8 is answered with status CRC, no
+BAD_DLC status. The "Open (user)" item from the phase 4 entry is closed.

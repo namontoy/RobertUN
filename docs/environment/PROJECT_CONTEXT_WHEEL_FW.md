@@ -121,8 +121,6 @@ CANopen) closed 10-04. Renumbered 10-04; the previous number is in brackets.
 1. **Next session.** W6 (was 2): integrate one full corner node on plain CAN per
    `docs/can_cmds.md`. Plan: `docs/plans/w6-can-cmds.md` (7 phases, branch
    `w6-can-cmds`); phases 1–4 done 10-04; next phase 5 (STEER + STATUS_STEER).
-   Open (user): revert/default re-apply only trip+limit — vel_*/ramp keys stay
-   stale in the running modules (pre-existing; LOG 10-04 phase 4).
    Host tool `tools/bench/cancmd.py` (kernel SocketCAN, no python-can).
    Decided 10-04: steer pos = sum of commanded pulses (Q3), §7.3 ownership (Q13),
    console `estop clear` (Q18).
@@ -135,7 +133,7 @@ CANopen) closed 10-04. Renumbered 10-04; the previous number is in brackets.
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 
-- **10-04** — W6 phase 4: CFG GET/SET/INFO match `cfg`, RANGE not clamped; LIMITS/RAMP RANGE/BAD_ACTION/REPEAT/UART_OWNS; SAVE armed → BUSY. 118 056 B. → LOG
+- **10-04** — W6 phase 4: CFG GET/SET/INFO match `cfg`, RANGE not clamped; LIMITS/RAMP RANGE/BAD_ACTION/REPEAT/UART_OWNS; SAVE armed → BUSY. 118 056 B. Revert/default now re-apply every key (was trip+limit only). → LOG
 - **10-04** — W6 phase 3: ownership — CAN-armed node refuses console `drv duty`/`vel target`; `vel off`/`vel stop` release; console-armed node answers SPEED with UART_OWNS. +584 B. → LOG
 - **10-04** — W6 phase 2: SPEED 10 rpm at 50 Hz, STATUS 50.0 Hz, ctr echo lag 0; REPEAT x149 not kicking vel_tmo (FAULT +1002 ms); CRC/STALE/NOT_ARMED pass. +1 944 B. → LOG
 - **10-04** — W6 phase 1: ESTOP (bcast 0x000) coasts a 15%-duty run, latches, CMD_RESULT + FAULT 0.6 ms; STOP modes, addr filter, `estop clear` pass. +3 032 B flash. → LOG

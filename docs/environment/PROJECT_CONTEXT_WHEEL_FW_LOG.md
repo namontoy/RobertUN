@@ -4186,3 +4186,40 @@ STATUS_DRIVE 50 Hz, SPEED ±100 rpm, RESERVED acts like CORNER.
 Survey facts: no CRC-8 helper exists (config uses HW CRC32); ESR is not polled
 periodically; `vel on` / `vel target` guards live only in console.c; build base
 110 568 B flash / 6 256 B RAM, 0 warnings. CRC-8/SAE-J1850 check value 0x4B.
+
+## 2026-10-04 — W6 phase 1: can_cmd + motion skeleton, ESTOP/STOP (branch `w6-can-cmds`)
+
+Code (plan `docs/plans/w6-can-cmds.md` phase 1):
+- New `Core/Src/motion.c`/`Core/Inc/motion.h`: ESTOP latch. `motion_estop()` = `velocity_disable()`
+  → `drive_coast()` → `mks stop` (not on CENTER), then latch. `motion_estop_clear()` refused while
+  the loop is armed. The servo stop is queued and retried from `motion_poll()` (main loop): a move
+  keeps `mks_busy()` true until completion, so the outstanding transaction is aborted first; if the
+  abort lands while the previous request is still in DMA, the F7 transmit is refused that pass and
+  retried. Ownership (§7.3) not yet — phase 3.
+- New `Core/Src/can_cmd.c`/`Core/Inc/can_cmd.h`: type/address filter (O→N types only, own addr or 0;
+  ext/RTR ignored), ESTOP and STOP on the ID alone, CMD_RESULT (0x080+node), FAULT (0x020+node) with a
+  per-code pending slot, sent from `can_cmd_poll()`, ≤ 1 per code per 100 ms. CRC-8/SAE-J1850 bitwise
+  (inputs ≤ 11 B, no table). `can_cmd_flags()` = STATUS_DRIVE flags (bit 7 waits for phase 3).
+  ARM/SPEED/STEER/LIMITS/RAMP/CFG_REQ are counted as ignored until their phases.
+- `main.c` (USER CODE only): includes, `can_cmd_init()` after `can_bus_init`, `motion_poll()` after
+  `mks_poll()`, `can_cmd_handle()` in the drain loop (monitor print kept), `can_cmd_poll()` after it.
+- Console: `estop [clear]`, `can [crc]` (counters / self-test). Gated while latched: `vel on`,
+  `vel target <v>`, `drv enable`, non-zero `drv duty`, `mks move`/`deg`.
+- Choices not in the spec (open to change): `drv duty 0` allowed while latched (a stop always works);
+  STOP mode 0 with the loop off → `drive_set_duty(0)` (ramped), so a console duty run still stops;
+  FAULT flags/duty are snapshotted BEFORE the ESTOP acts (bit 5 not set in the FAULT ESTOP frame).
+  CMD_RESULT for ESTOP carries type 0x00, ctr 0 (spec §4.10 says types 0x01–0x08; needs a fix there).
+- Build Debug: 0 warnings; flash 113 600 B (+3 032 vs 110 568), RAM 6 424 B (+168 vs 6 256).
+
+Bench (node ID 2 CORNER, CANable can0 on daedalus, 250 kbps):
+- `can crc` → 0x4B PASS.
+- Rail off: broadcast `000#` → `082#00000000` 0.6 ms later, then `022#03000000D41A0000`.
+  Latched: `vel on`, `drv enable`, `drv duty 10`, `mks deg 5` refused; `drv duty 0` accepted; flags 0x20.
+  `002#AA` (repeat, own addr) → OK, no second FAULT. `003#`, `013#0701` → ignored, no reply.
+  STOP `012#0501`, `012#`, `010#0982`, `012#0703` → `082#01cc0000` with ctr 5, 0, 9, 7.
+- Rail on (12 V): `drv enable`, `drv duty 15` → +150 o/oo, 5.36 rpm (accelerating). Broadcast `000#` →
+  `082#00000000`, `022#03 02 9600 F58A0100` (flags 0x02 bridge enabled, duty +150, t 101 109 ms);
+  duty 0, 0.00 rpm; latched; `drv duty 15` refused. `estop clear` → `vel on` accepted (setpoint 0),
+  `vel off`, `drv disable`. Counters: 7 handled, 2 ignored, 0 rejected; 9 TX, 0 dropped.
+- Not tested: ESTOP during an in-flight steering move (servo stop retry path) — phase 5 bench.
+Phase 1 PASSES. Next: phase 2 (ARM + SPEED + STATUS_DRIVE + §5.1 counter + §7.1 timeout, `cancmd.py`).

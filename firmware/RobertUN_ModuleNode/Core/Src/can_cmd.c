@@ -162,14 +162,14 @@ uint8_t can_cmd_flags(void)
                  (velocity_enabled() &&
                   (velocity_ramped_setpoint() != velocity_setpoint()));
 
-  /* bit 7 (UART owns motion) arrives with ownership, W6 phase 3. */
   return (uint8_t)((velocity_enabled()         ? 0x01u : 0u) |
                    (drive_is_enabled()         ? 0x02u : 0u) |
                    (drive_fault_latched()      ? 0x04u : 0u) |
                    (velocity_saturated()       ? 0x08u : 0u) |
                    (velocity_timeout_expired() ? 0x10u : 0u) |
                    (motion_estop_latched()     ? 0x20u : 0u) |
-                   (ramping                    ? 0x40u : 0u));
+                   (ramping                    ? 0x40u : 0u) |
+                   ((motion_owner() == MOTION_SRC_UART) ? 0x80u : 0u));
 }
 
 /* --- §5.1 rolling counter ----------------------------------------------- */
@@ -321,6 +321,8 @@ static void handle_stop(const can_frame_t *f)
       break;
   }
 
+  motion_release();   /* §7.3: a stop from either side ends ownership */
+
   if (((mode & CAN_STOP_MKS) != 0u) && (dipsw_role() != DIPSW_ROLE_CENTER))
   {
     motion_request_mks_stop();
@@ -389,6 +391,7 @@ static void handle_arm(const can_frame_t *f, bool bcast)
     case ARM_DISARM:
       velocity_disable();
       drive_disable();
+      motion_release();
       break;
 
     case ARM_ARM:
@@ -400,11 +403,16 @@ static void handle_arm(const can_frame_t *f, bool bcast)
       {
         res = CAN_RES_FAULT_LATCHED;
       }
+      else if (!motion_may(MOTION_SRC_CAN))
+      {
+        res = CAN_RES_UART_OWNS;
+      }
       else
       {
         /* velocity_enable() also clears a latched watchdog (§4.3). */
         drive_enable();
         velocity_enable();
+        motion_claim(MOTION_SRC_CAN);
       }
       break;
 
@@ -468,6 +476,10 @@ static void handle_speed(const can_frame_t *f)
   {
     res = CAN_RES_ESTOP_LATCHED;
   }
+  else if (!motion_may(MOTION_SRC_CAN))
+  {
+    res = CAN_RES_UART_OWNS;   /* checked before NOT_ARMED: say who has it */
+  }
   else if (!velocity_enabled() || velocity_timeout_expired())
   {
     /* An expired watchdog needs ARM 1, not just a fresh setpoint (§7.1). */
@@ -482,6 +494,7 @@ static void handle_speed(const can_frame_t *f)
 
   ctr_commit(win, ctr);
   velocity_set_setpoint(sp);   /* kicks vel_tmo, as `vel target` does */
+  motion_claim(MOTION_SRC_CAN);
   stats.speed_ok++;
   /* No reply on success: ctr comes back in STATUS_DRIVE (§4.4). */
 }

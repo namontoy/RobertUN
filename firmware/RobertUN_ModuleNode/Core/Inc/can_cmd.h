@@ -20,8 +20,9 @@
   * A node without a valid DIP identity transmits nothing and acts only on
   * broadcast ESTOP and STOP.
   *
-  * Implemented so far (W6 phases 1-2): ESTOP, STOP, ARM (actions 0-3), SPEED,
- * CMD_RESULT, STATUS_DRIVE, FAULT ESTOP / VEL_WD_EXPIRED / SKIPPED_CTR.
+  * Implemented so far (W6 phases 1-3): ESTOP, STOP, ARM (actions 0-3), SPEED,
+ * CMD_RESULT, STATUS_DRIVE, FAULT ESTOP / VEL_WD_EXPIRED / SKIPPED_CTR, and
+ * UART/CAN ownership of motion (§7.3, motion.h).
   ******************************************************************************
   */
 

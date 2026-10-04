@@ -259,16 +259,30 @@ static bool parse_on_off(const char *s, bool *out)
   return false;
 }
 
-/** @brief Gate for console motion commands (can_cmds.md §4.1). Prints why. */
-static bool motion_gate(void)
+/** @brief Ownership half of the gate (§7.3): refused while CAN owns motion.
+  *        On its own for the limit commands, which never latch-check. */
+static bool owner_gate(void)
 {
-  if (motion_allowed())
+  if (motion_may(MOTION_SRC_UART))
   {
     return true;
   }
 
-  debug_uart_puts("ESTOP latched - refused. 'estop clear' first\r\n");
+  debug_uart_puts("CAN owns motion - 'vel off' first\r\n");
   return false;
+}
+
+/** @brief Gate for console motion commands (can_cmds.md §4.1, §7.3). Prints
+  *        why. The handler calls motion_claim() once the command has acted. */
+static bool motion_gate(void)
+{
+  if (!motion_allowed())
+  {
+    debug_uart_puts("ESTOP latched - refused. 'estop clear' first\r\n");
+    return false;
+  }
+
+  return owner_gate();
 }
 
 /** @brief CAN fault-confinement state as a word, worst condition first. */
@@ -596,7 +610,7 @@ static void cmd_mks(int argc, char **argv)
   else if (strcmp(argv[1], "angle")   == 0) { started = mks_read_angle_error(); }
   else if (strcmp(argv[1], "en")      == 0) { started = mks_read_en_status(); }
   else if (strcmp(argv[1], "protect") == 0) { started = mks_read_protect_state(); }
-  else if (strcmp(argv[1], "stop")    == 0) { started = mks_stop(); }
+  else if (strcmp(argv[1], "stop")    == 0) { started = mks_stop(); motion_release(); }
   else if (strcmp(argv[1], "enable")  == 0)
   {
     bool on = true;
@@ -695,6 +709,10 @@ static void cmd_mks(int argc, char **argv)
   if (!started)
   {
     debug_uart_puts("could not start transaction\r\n");
+  }
+  else if ((strcmp(argv[1], "move") == 0) || (strcmp(argv[1], "deg") == 0))
+  {
+    motion_claim(MOTION_SRC_UART);
   }
 }
 
@@ -929,11 +947,13 @@ static void cmd_drv(int argc, char **argv)
     }
 
     drive_enable();
+    motion_claim(MOTION_SRC_UART);
     debug_uart_puts("nSLEEP high - driver awake (waited 2 ms)\r\n");
   }
   else if (strcmp(argv[1], "disable") == 0)
   {
     drive_disable();
+    motion_release();
     debug_uart_puts("duty 0, nSLEEP low - driver disabled\r\n");
   }
   else if (strcmp(argv[1], "duty") == 0)
@@ -965,6 +985,11 @@ static void cmd_drv(int argc, char **argv)
 
     drive_set_duty((int16_t)pm);
 
+    if (pm != 0)
+    {
+      motion_claim(MOTION_SRC_UART);
+    }
+
     if (drive_slewing())
     {
       debug_uart_printf("target %+d o/oo, ramping from %+d at %u o/oo/s%s\r\n",
@@ -995,11 +1020,13 @@ static void cmd_drv(int argc, char **argv)
   else if (strcmp(argv[1], "brake") == 0)
   {
     drive_brake();
+    motion_release();
     debug_uart_puts("both inputs high - brake\r\n");
   }
   else if (strcmp(argv[1], "coast") == 0)
   {
     drive_coast();
+    motion_release();
     debug_uart_puts("both inputs low - coast\r\n");
   }
   else if (strcmp(argv[1], "decay") == 0)
@@ -1261,6 +1288,11 @@ static void cmd_drv(int argc, char **argv)
   }
   else if (strcmp(argv[1], "trip") == 0)
   {
+    if ((argc >= 3) && !owner_gate())
+    {
+      return;
+    }
+
     if ((argc >= 4) && (strcmp(argv[2], "buf") == 0))
     {
       bool on;
@@ -1332,6 +1364,11 @@ static void cmd_drv(int argc, char **argv)
   }
   else if (strcmp(argv[1], "limit") == 0)
   {
+    if ((argc >= 3) && !owner_gate())
+    {
+      return;
+    }
+
     if (argc >= 3)
     {
       long pct = strtol(argv[2], NULL, 10);
@@ -1349,6 +1386,11 @@ static void cmd_drv(int argc, char **argv)
   }
   else if (strcmp(argv[1], "ramp") == 0)
   {
+    if ((argc >= 3) && !owner_gate())
+    {
+      return;
+    }
+
     if ((argc >= 4) && (strcmp(argv[2], "floor") == 0))
     {
       long pm = strtol(argv[3], NULL, 10);
@@ -1554,6 +1596,7 @@ static void cmd_vel(int argc, char **argv)
     }
 
     velocity_enable();
+    motion_claim(MOTION_SRC_UART);
     debug_uart_printf("velocity loop ARMED at setpoint 0, watchdog %lu ms\r\n",
                       (unsigned long)velocity_timeout());
     debug_uart_puts("  'drv duty' now fights the loop - use 'vel target'."
@@ -1562,6 +1605,7 @@ static void cmd_vel(int argc, char **argv)
   else if (strcmp(argv[1], "off") == 0)
   {
     velocity_disable();
+    motion_release();
     debug_uart_puts("velocity loop off, bridge coasted - 'drv duty' is yours"
                     " again\r\n");
   }
@@ -1602,6 +1646,7 @@ static void cmd_vel(int argc, char **argv)
       velocity_set_setpoint((int32_t)v * 1000);
     }
 
+    motion_claim(MOTION_SRC_UART);
     print_mrpm("target ", velocity_setpoint(), " rpm");
     debug_uart_printf(", ramping at %ld m rpm/s\r\n", (long)velocity_slew());
   }
@@ -1610,6 +1655,7 @@ static void cmd_vel(int argc, char **argv)
     /* Walks the ramp down and then coasts. This is NOT an emergency stop:
        'drv coast' is, and it stays immediate. */
     velocity_set_setpoint(0);
+    motion_release();
     debug_uart_puts("setpoint 0 - ramping down, then coast."
                     "  'drv coast' if you want it now\r\n");
   }
@@ -2380,9 +2426,12 @@ static void cmd_can(int argc, char **argv)
                     (unsigned long)c->ctr_skipped);
   debug_uart_printf("status : %lu STATUS_DRIVE sent\r\n",
                     (unsigned long)c->status_tx);
-  debug_uart_printf("flags  : 0x%02X, estop %s\r\n",
+  static const char *const owners[] = { "none", "UART", "CAN" };
+
+  debug_uart_printf("flags  : 0x%02X, estop %s, motion owner %s\r\n",
                     (unsigned)can_cmd_flags(),
-                    motion_estop_latched() ? "LATCHED" : "clear");
+                    motion_estop_latched() ? "LATCHED" : "clear",
+                    owners[motion_owner()]);
 }
 
 static const command_t commands[] =

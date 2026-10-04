@@ -12,8 +12,9 @@
 #include "mks_servo.h"
 #include "velocity.h"
 
-static bool estop_latched;
-static bool mks_stop_pending;
+static bool         estop_latched;
+static bool         mks_stop_pending;
+static motion_src_t owner = MOTION_SRC_NONE;
 
 void motion_estop(void)
 {
@@ -29,6 +30,7 @@ void motion_estop(void)
   }
 
   estop_latched = true;
+  owner         = MOTION_SRC_NONE;
 }
 
 bool motion_estop_latched(void) { return estop_latched; }
@@ -45,6 +47,17 @@ bool motion_estop_clear(void)
 }
 
 bool motion_allowed(void) { return !estop_latched; }
+
+motion_src_t motion_owner(void) { return owner; }
+
+bool motion_may(motion_src_t src)
+{
+  return (owner == MOTION_SRC_NONE) || (owner == src);
+}
+
+void motion_claim(motion_src_t src) { owner = src; }
+
+void motion_release(void) { owner = MOTION_SRC_NONE; }
 
 void motion_request_mks_stop(void)
 {

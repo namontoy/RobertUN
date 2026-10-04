@@ -4275,3 +4275,41 @@ Bench (node 2, can0 250 kbps):
   SPEED while the host was still sending -> REPEAT does not kick vel_tmo.
 - Left disarmed (ARM 0 OK).
 Phase 2 bench checks all pass. Next: phase 3, ownership (§7.3).
+
+## 2026-10-04 — W6 phase 3: UART/CAN ownership of motion (§7.3)
+
+Branch `w6-can-cmds`, node 2 on the bench rig.
+
+Firmware:
+- `motion.c/.h`: owner NONE/UART/CAN. `motion_may(src)` is asked before a
+  motion command acts (claims nothing); `motion_claim(src)` is called only
+  after the command succeeded, so a refused or failed command never takes
+  ownership; `motion_release()` on every stop and disarm. `motion_estop()`
+  releases. Boot: none.
+- Claims: CAN ARM 1, accepted SPEED; console `vel on`, `vel target`,
+  `drv enable`, `drv duty` (non-zero), `mks move`/`deg` (when started).
+- Releases: CAN STOP (all modes), ARM 0, ESTOP; console `vel off`, `vel stop`,
+  `drv coast`, `drv brake`, `drv disable`, `mks stop`. `drv duty 0` neither
+  claims nor releases (it passes the gate as a stop, as before).
+- Check-only (no claim): console `drv limit`/`trip`/`ramp` with an argument
+  (`owner_gate()`); CAN LIMITS/RAMP will use motion_may in phase 4.
+- CAN: ARM 1 -> UART_OWNS after ESTOP_LATCHED/FAULT_LATCHED; SPEED checks
+  UART_OWNS before NOT_ARMED, so a console-armed node says who has it.
+- STATUS_DRIVE flags bit 7 = UART owns. Console `can` prints the owner.
+- The vel_tmo expiry does not release ownership: after a CAN host dies the
+  console needs `vel off` first, which its refusal message says.
+- Build: 0 warnings; text+data 116 128 B (+584 B over phase 2).
+
+Bench (node 2):
+- Boot: owner none.
+- CAN ARM 1 -> owner CAN, flags 0x03. Console `drv limit 30` refused
+  ("CAN owns motion - 'vel off' first"); limit was already 30% from cfg, so
+  this shows only the message, not a changed value.
+- CAN owns: console `drv duty 10` and `vel target 5` both refused. `vel off`
+  -> owner none.
+- CAN ARM 1, console `vel stop` -> owner none, loop still armed (0x03).
+- Console `vel on` -> SPEED 10 rpm x5 at 50 Hz: all UART_OWNS, rpm 0.00,
+  STATUS flags armed,bridge,uart. `vel off` -> owner none, flags 0x02.
+- Not tested on the bench: CAN ARM 1 while the UART owns (same check as SPEED).
+Phase 3 bench checks all pass. Next: phase 4 (config_apply_live refactor,
+then LIMITS, RAMP, CFG_REQ/RESP).

@@ -1,6 +1,6 @@
 # RobertUN — Wheel Controller Firmware Context
 
-**Last updated:** 2026-10-04 — W6 phase 2 done: ARM, SPEED, STATUS_DRIVE 50 Hz, §5.1 counter, vel_tmo FAULT; host tool `cancmd.py`; bench pass on node 2.
+**Last updated:** 2026-10-04 — W6 phase 3 done: UART/CAN ownership of motion (§7.3); console refuses while CAN owns, CAN gets UART_OWNS; bench pass on node 2.
 **Budget:** 20 KB. Check with `wc -c` before every commit; trim if over.
 
 > **How to use this file.** This is the hot file for the wheel-firmware track:
@@ -120,7 +120,7 @@ CANopen) closed 10-04. Renumbered 10-04; the previous number is in brackets.
 
 1. **Next session.** W6 (was 2): integrate one full corner node on plain CAN per
    `docs/can_cmds.md`. Plan: `docs/plans/w6-can-cmds.md` (7 phases, branch
-   `w6-can-cmds`); phases 1–2 done 10-04; next phase 3 (ownership §7.3).
+   `w6-can-cmds`); phases 1–3 done 10-04; next phase 4 (`config_apply_live` refactor, then LIMITS, RAMP, CFG_REQ/RESP).
    Host tool `tools/bench/cancmd.py` (kernel SocketCAN, no python-can).
    Decided 10-04: steer pos = sum of commanded pulses (Q3), §7.3 ownership (Q13),
    console `estop clear` (Q18).
@@ -133,6 +133,7 @@ CANopen) closed 10-04. Renumbered 10-04; the previous number is in brackets.
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 
+- **10-04** — W6 phase 3: ownership — CAN-armed node refuses console `drv duty`/`vel target`; `vel off`/`vel stop` release; console-armed node answers SPEED with UART_OWNS. +584 B. → LOG
 - **10-04** — W6 phase 2: SPEED 10 rpm at 50 Hz, STATUS 50.0 Hz, ctr echo lag 0; REPEAT x149 not kicking vel_tmo (FAULT +1002 ms); CRC/STALE/NOT_ARMED pass. +1 944 B. → LOG
 - **10-04** — W6 phase 1: ESTOP (bcast 0x000) coasts a 15%-duty run, latches, CMD_RESULT + FAULT 0.6 ms; STOP modes, addr filter, `estop clear` pass. +3 032 B flash. → LOG
 - **10-04** — W6 protocol = plain CAN (simplicity, time). `can_cmds.md`: `ID = type<<4 | addr`, 0 = broadcast, ESTOP bcast 0x000, CMD_RESULT 0x08x. → LOG
@@ -143,11 +144,6 @@ CANopen) closed 10-04. Renumbered 10-04; the previous number is in brackets.
 - **09-28** — Tasks 6, 17, 18, 20 closed (task 20: PMODE corrected); text moved to the LOG; open list renumbered 1–4.
 - **09-28** — W6 CAN RX (task 6) closed; W6's absolute-positioning decision and one-corner-node integration stay open (user); W5 owes the rover τ session; W7 started.
 - **09-28** — Task 6 closed: ISR-to-ring merged (decision: accept). Bench re-run steps 1–7 via wheel-fw scripts: 20000/20000 at saturation ±motor, overflow 156 dropped, 0 overruns; jitter ≤0.74 ms, no worse than polled (the 09-27 1.28 ms at -g 0.45 did not repeat: 0.72). Delivered-count invariant not verified. ESR snapshot fixed. → LOG.
-- **09-27** — Task 6 ISR-to-ring bench on branch `ISR-to-ring`: steps 1–6 pass (20000/20000, overflow 165 dropped, 0 overruns); -g 0.45 jitter 1.28 vs 0.72 ms polled.
-- **09-27** — Task 17 stiction A/B/A, 0.5% steps, 12.02 V: breakaway CW 12.5–13.0% (repeats), CCW 10.5–11.0%; dropout CW 8.5–9.5%, CCW 8.0–8.5%.
-- **09-27** — 12/rev ripple source identified: the tyre's 12 tread grooves. Resolved, no firmware change.
-- **09-27** — 6–10 rpm A/B/A passes: worst −0.019 rpm, 0% sat, 12.00/rev; ripple crit. amended to sd ≤ 1.5 rpm. W5 met on the rig.
-- **09-26** — W5 tolerance stated: 60 s mean ≤ ±0.05 rpm, 0% sat, ripple 12/rev ≤ ±1.5 rpm, step within ripple; 10–20 rpm passes, 6–10 owed.
 
 ## Key rules (full list with evidence in `_REF_LEARNINGS`)
 

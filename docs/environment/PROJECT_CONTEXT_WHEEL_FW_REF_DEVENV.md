@@ -80,19 +80,31 @@ soft-float library, which surfaces later as inexplicably slow PID math.
   manually. Use a UART for console. For W5 PID telemetry, OpenOCD's RTT support
   is the better option than burning a second UART.
 
-### Module identity: 3-bit DIP switch (decided Aug 9, 2026)
+### Module identity: 4-bit DIP switch (decided Aug 9, 2026; 4 bits from Oct 4, 2026)
 
-**One firmware binary for all six modules.** Module identity is a property of
-the hardware, not of the build: a 3-position DIP switch on each board is read
-once at boot and yields a module ID 0–5, from which the firmware derives both
-the CAN node ID and the module role.
+**One firmware binary for all modules.** Module identity is a property of
+the hardware, not of the build: a 4-position DIP switch on each board is read
+once at boot and yields a module ID, from which the firmware derives both
+the CAN node ID (`0x500 + ID`) and the module role. Plain binary, `ID = code`.
+
+| Pin | PB15 | PB14 | PB13 | PB12 |
+|---|---|---|---|---|
+| Bit | SW3 (MSB) | SW2 | SW1 | SW0 (LSB) |
 
 | ID | Role | Behavior |
 |---|---|---|
-| 0–3 | Corner | Steering (UART → MKS SERVO42C) + drive (encoder PID) |
-| 4–5 | Center | Drive only (encoder PID); steering block inactive |
-| 6 | *reserved* | Future module / bench-test mode |
-| 7 (`0b111`) | **INVALID** | Halt, blink error pattern, **do not join the bus** |
+| 0 (`0b0000`) | **INVALID** | Broadcast address — never a node; **do not join the bus** |
+| 1–4 | Corner | Steering (UART → MKS SERVO42C) + drive (encoder PID) |
+| 5–6 | Center | Drive only (encoder PID); steering block inactive |
+| 7–14 | *reserved* | Future modules / bench-test mode |
+| 15 (`0b1111`) | **INVALID** | Unconfigured; **do not join the bus** |
+
+**Why 4 bits (Oct 4, 2026).** The rover will grow past the original six
+modules. PB12 (was DRV_nFAULT) joined the block so the four bits sit in pin
+order; nFAULT moved to PB0. Old module N is new module N+1 (corners were 0–3,
+now 1–4), because 0 became the broadcast address — which matches CANopen,
+where node-ID 0 is the NMT broadcast. `docs/can_cmds.md` still has a 3-bit
+address with 7 as broadcast; settle that with the CAN vs CANopen decision.
 
 **Why this matters for W7.** The roadmap originally described W7 as "replicate
 firmware to 3 more corners + write a center variant" — six near-identical builds
@@ -104,10 +116,13 @@ which is the most expensive place to meet it.
 **Electrical convention (don't "simplify" these away):**
 - **Internal pull-ups enabled; switches pull to GND.** Closed = 0, open = 1. No
   external resistors needed.
-- **`0b111` is deliberately the invalid code**, because it is *also* what you
+- **`0b1111` is deliberately an invalid code**, because it is *also* what you
   read from a board with no DIP switch fitted, a broken connection, or a
   floating input. An unconfigured board therefore fails loudly instead of
-  silently impersonating module 7.
+  silently impersonating module 15.
+- **0 is refused for a different reason:** a node that owned the broadcast
+  address would answer for every node. All switches closed is deliberate but
+  never valid.
 - **DIP switches, not solder jumpers or hardwired straps.** Reconfigurable on the
   bench when swapping a board to isolate a fault, and readable by eye without a
   meter — at W8 with six nodes live, "which module does this board think it is?"
@@ -121,18 +136,19 @@ which is the most expensive place to meet it.
   address `0xE0` (see MKS SERVO42C section). Module identity lives **only** in
   the CAN ID and this DIP switch.
 
-**Pins: `DIP_SW_0` = PB13, `DIP_SW_1` = PB14, `DIP_SW_2` = PB15. Implemented
-and verified on hardware Sep 14, 2026** (`Core/Src/dipsw.c`). PB13 as the LSB.
-PB3 is now the encoder's TIM2_CH2 and is no longer available, which is why the
-block sits at PB13–PB15.
+**Pins: `DIP_SW_0..3` = PB12..PB15, all four in the `.ioc`** (CubeMX regenerated
+Oct 4, 2026). `dipsw_init()` configures them again anyway — a file we own
+cannot lose its own init to a regeneration — and `dipsw.c` keeps guarded
+fallback macros for PB12..PB15.
 
-**PB13 is in the `.ioc`; PB14/PB15 are configured by `dipsw_init()` instead.**
-Same reasoning as `drive_init()` starting its own PWM: a CubeMX regeneration has
-already silently emptied a USER CODE block on this project once, and the `.ioc`
-is the one file we cannot defend. The pin macros are `#ifndef`-guarded, so
-adding those pins in CubeMX later changes nothing.
+**Verified Oct 4, 2026 on the bench board (4-position block, new firmware):**
+IDs 9, 1 and 2 read with the right role and CAN node (0x509/0x501/0x502); the
+three readings together confirm every bit lands on its pin. 15 → `INVALID -
+identity unconfigured`, 0 → `INVALID - 0 is the broadcast address`, both
+with transmit disabled. nFAULT on PB0: grounding PB0 with the motor supply off
+latched `FAULT SEEN, 1063 ms asserted`; `drv clearfault` cleared it.
 
-**Verified Sep 14 on a board with a real switch block** — all eight codes swept,
+History (old 3-bit wiring, PB13–PB15, invalid = 7): verified Sep 14 on a board with a real switch block — all eight codes swept,
 every bit mapping correctly and every role boundary landing where this table
 says; the latch holding at ID 0 while the pins read 1, with the divergence
 *reported* rather than acted on; and the transmit gate proven in both
@@ -141,13 +157,12 @@ directions (`NO ID` with `lec none` at code 7, `queued` at `0x500` with
 no second node, a frame that had actually been attempted would have come back
 `lec ack`, so the gate held before the frame ever reached a mailbox.
 
-**The invalid code does not halt — deferred, not dropped.** The table above says
-`0b111` halts and blinks. Taken literally that would have bricked every board on
-the bench, since the switch block is an HW1 part and until Sep 14 every board
-read `0b111`; halting removes the console, which is the only way to bring a
-board up. What carries the safety is the transmit gate, and that is implemented:
-`dipsw_valid()` is false, the boot banner says so loudly, and nothing goes on
-the bus. Revisit the halt in W7, when a board with no identity is a real
+**The invalid code does not halt — deferred, not dropped.** An invalid code
+(0 or 15) does not halt. Halting would brick every bench board without a
+switch block, since halting removes the console, which is the only way to
+bring a board up. What carries the safety is the transmit gate: `dipsw_valid()`
+is false, the boot banner says so loudly and why, and the heartbeat is not
+sent. Revisit the halt in W7, when a board with no identity is a real
 assembly error rather than the normal state.
 
 ### Debug probes

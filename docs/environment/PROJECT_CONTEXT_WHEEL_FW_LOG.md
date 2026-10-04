@@ -4078,3 +4078,57 @@ Committed 9e709de, 42 657 bytes, 746 lines.
 - Task 2 (was 4): one full corner node on the chosen protocol, right after task 1.
 - W5 PID (task 21) moves to 3, low-duty ammeter to 4, absolute steering
   positioning to 5 (priority not set; task 2's absolute steer target depends on it).
+
+## 2026-10-04 — Module identity widened to 4 bits; nFAULT moved PB12 → PB0
+
+**Why.** The rover will grow past the six modules the 3-bit switch was sized
+for. Options for the 4th pin were surveyed (PB0/PB1, PC13, PC8–PC12, PA3, PD2,
+PC0–PC5; PA5–7, PB10/11, PC6/7 reserved; PB4/PA11–14 off-limits). The user
+chose to move DRV_nFAULT from PB12 to PB0 and put the four DIP bits in pin order.
+
+**Decisions (user).**
+- Pins: PB12 = DIP_SW_0 (LSB), PB13 = SW1, PB14 = SW2, PB15 = DIP_SW_3 (MSB). nFAULT on PB0.
+- Plain binary, ID = code. 15 (0b1111, all open = unfitted) is invalid. 0 is the
+  broadcast address, and a board set to 0 is refused too. Valid nodes are 1–14.
+  (An inverted-SW3 scheme keeping 7 as invalid was proposed and rejected.)
+- Roles shift by one: 1–4 corner, 5–6 center, 7–14 reserved. Heartbeat CAN IDs 0x501–0x50E.
+- Consequence: old module N is new module N+1. 0 = broadcast matches CANopen (node-ID 0 = NMT).
+
+**CubeMX.** The user relabelled PB12–PB15 as DIP_SW_0..3 and set PB0 = GPIO_Input,
+pull-up, DRV_nFAULT, then regenerated. Only the `.ioc`, `main.h` and `main.c`
+changed, and all USER CODE blocks survived. CubeMX wrote main.c with CRLF (HEAD was
+LF), so it was normalised back to LF; main.h was already CRLF at HEAD and was kept
+CRLF. The generated diff is 12 lines in main.h and 14 in main.c.
+
+**Firmware (branch `dipsw-4bit`).**
+- dipsw.c/.h: the 4th bit; `DIPSW_CODE_INVALID 7` → `DIPSW_CODE_UNFITTED 0x0F`,
+  plus `DIPSW_ADDR_BROADCAST 0x00`. `dipsw_valid()` refuses both codes.
+  `dipsw_role_str()` names the reason. `dipsw_init()` re-configures all four pins.
+  Guarded fallback macros at PB12..PB15.
+- `cmd_id` prints 4 bits; the boot banner text was updated; the `drive.h` pin
+  comment now says PB0.
+- Build OK, 0 warnings, flash 108.0 KB (21%), RAM 6.1 KB (5%).
+
+**Bench verification (motor supply off).** nFAULT has a pull-up to 3.3 V on the driver board.
+- `drv`: nFAULT clear. Grounding PB0 briefly latched `FAULT SEEN: 1063 ms asserted`;
+  `drv clearfault` cleared it.
+- `id` readings:
+  - 9 (0b1001): reserved, 0x509.
+  - 1: corner, 0x501.
+  - 2 (0b0010): corner, 0x502. This confirms PB13 = bit 1, so all four bits are on the right pins.
+  - 15: `INVALID - identity unconfigured`.
+  - 0: `INVALID - 0 is the broadcast address`.
+  - Both invalid codes had transmit disabled.
+
+**Doc text replaced** (REF_DEVENV, old Pins paragraph, kept here verbatim):
+"**Pins: `DIP_SW_0` = PB13, `DIP_SW_1` = PB14, `DIP_SW_2` = PB15. Implemented
+and verified on hardware Sep 14, 2026** (`Core/Src/dipsw.c`). PB13 as the LSB.
+PB3 is now the encoder's TIM2_CH2 and is no longer available, which is why the
+block sits at PB13–PB15."
+The note that "PB13 is in the `.ioc`; PB14/PB15 are configured by `dipsw_init()`
+instead" was already stale before this change: main.h has defined DIP_SW_1/2 since an
+earlier regeneration.
+
+**Open.** `docs/can_cmds.md` still uses a 3-bit address with 7 = broadcast.
+Under the new rule it needs a 4-bit address with 0 = broadcast. Settle it with the CAN
+vs CANopen decision (task 1). The REST track needs to know the module numbers shifted.

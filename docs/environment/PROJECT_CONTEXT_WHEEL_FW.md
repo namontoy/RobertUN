@@ -1,6 +1,6 @@
 # RobertUN — Wheel Controller Firmware Context
 
-**Last updated:** 2026-09-28 — Next tasks reordered: CAN vs CANopen decision is next session (task 1), then one corner node (task 2).
+**Last updated:** 2026-10-04 — Module ID widened to 4 bits on PB12–PB15 (0 = broadcast, 15 = unfitted); nFAULT moved to PB0; bench-verified.
 **Budget:** 20 KB. Check with `wc -c` before every commit; trim if over.
 
 > **How to use this file.** This is the hot file for the wheel-firmware track:
@@ -14,7 +14,7 @@
 ## Purpose & constraints
 
 Firmware for the six RobertUN wheel modules: one STM32F446RE per wheel, a single
-binary for all six (module ID from a 3-bit DIP switch), talking to orion over
+binary for all six (module ID from a 4-bit DIP switch), talking to orion over
 CAN at 250 kbps. Each module drives a steering servo (MKS SERVO42C over UART)
 and a brushed drive motor with encoder (DRV8874). Hard deadline: December 10
 demo. Roadmap: W2 CAN ✅, W3 steering ✅, W4 drive + encoder ✅, W5 velocity
@@ -120,6 +120,7 @@ the previous number is in brackets.
 
 1. **Next session.** W6: decide plain CAN vs CANopen. Compare `docs/can_cmds.md`
    and `docs/canopen_cmds.md` (Q1 in both); REST selected CANopen. Blocks task 2.
+   Since 10-04 the address is 4 bits, with 0 = broadcast; `can_cmds.md` still says 3 bits / 7.
 2. **After task 1.** W6 (was 4): integrate one full corner node — CAN command in,
    steering (UART/MKS) and drive (PID) both respond, on the chosen protocol.
 3. W5 velocity PID (was 1, task 21): the open items above, in the order listed.
@@ -130,6 +131,8 @@ the previous number is in brackets.
    serve as feedback). Task 2's absolute steering target depends on it.
 
 ## Recent progress (last ~10; everything older is only in the LOG)
+
+- **10-04** — 4-bit DIP ID on PB12–PB15 (1–4 corner, 5–6 center, 7–14 reserved; 0/15 refused); nFAULT → PB0. Verified on bench. Branch `dipsw-4bit`. → LOG
 
 - **09-28** — W6 CANopen alternative spec: `docs/canopen_cmds.md` (402 CSV drive + mfr steering, 42.6% load at 50 Hz). Plain CAN vs CANopen undecided.
 - **09-28** — W6 CAN command set spec drafted: `docs/can_cmds.md` (no code). Q1 open: plain CAN vs REST's CANopen decision.
@@ -142,7 +145,6 @@ the previous number is in brackets.
 - **09-27** — 6–10 rpm A/B/A passes: worst −0.019 rpm, 0% sat, 12.00/rev; ripple crit. amended to sd ≤ 1.5 rpm. W5 met on the rig.
 - **09-26** — W5 tolerance stated: 60 s mean ≤ ±0.05 rpm, 0% sat, ripple 12/rev ≤ ±1.5 rpm, step within ripple; 10–20 rpm passes, 6–10 owed.
 - **09-26** — First `cfg save` on the bench board: trip_ma 1580, duty_limit 300, ramp 50/120; survived a reset. Gains stay compiled defaults.
-- **09-26** — DMM supply reference, free shaft: drive-phase sample reads low while turning (0.74 at 20%, 0.83 at 15%, ±20%); no factor change.
 
 ## Key rules (full list with evidence in `_REF_LEARNINGS`)
 

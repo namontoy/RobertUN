@@ -354,7 +354,7 @@ leftover jumper that parallels inputs is now wrong.
 | PB6 | DRV_PWM_A | **1 — EN/IN1** | MCU → driver | TIM4_CH1, 20 kHz |
 | PB7 | DRV_PWM_B | **2 — PH/IN2** | MCU → driver | TIM4_CH2, 20 kHz |
 | PB5 | DRV_nSLEEP | **3 — nSLEEP** | MCU → driver | low = disabled; 100 kΩ internal pulldown |
-| PB12 | DRV_nFAULT | **4 — nFAULT** | driver → MCU | open-drain, active low, **needs a 10 kΩ pull-up to 3V3** |
+| PB0 | DRV_nFAULT | **4 — nFAULT** | driver → MCU | open-drain, active low, **needs a 10 kΩ pull-up to 3V3**. On PB12 until Oct 4, 2026 (PB12 is now DIP_SW_0) |
 | **PA2** | **DRV_IPROPI** | **6 — IPROPI** | driver → MCU | **new.** ADC1_IN2; **R_IPROPI now 1.474 kΩ** (2.0k∥5.6k) → 0.6632 V/A |
 | **PA4** | **DRV_VREF** | **5 — VREF** | MCU → driver | **new.** DAC1_OUT1. Carrier's 10 kΩ to nSLEEP **removed Sep 12** |
 | — | PMODE | 16 — PMODE | strap | **PWM mode = logic HIGH. Fit 10 kΩ to 3V3.** Open = Hi-Z = independent half-bridge, NOT "unset" (Sep 16) |

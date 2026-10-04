@@ -59,7 +59,7 @@ that rules out HSI (+/-1%) — see the W1 debrief in the roadmap.
   everything); narrow it once the CAN ID table is real.
 
 
-## STM32F446RE — PIN ALLOCATION (settled Aug 25, revised Sep 11, 2026)
+## STM32F446RE — PIN ALLOCATION (settled Aug 25, revised Sep 11 and Oct 4, 2026)
 
 Complete map for the module node. Everything below is in the `.ioc`. The
 encoder and the four DRV lines are wired and exercised under power; **PA2
@@ -76,6 +76,7 @@ wired.
 | PA9 | USART1_TX | USART1 @ 115200 | AF7 | `debug_uart` console |
 | PA10 | USART1_RX | USART1 | AF7 | console command interpreter |
 | PA15 | ENC_A | **TIM2_CH1**, encoder | AF1 | drive-motor quadrature A |
+| PB0 | DRV_nFAULT | GPIO in, pull-up | — | DRV8874 nFAULT, open-drain, active low; external pull-up to 3.3 V on the driver board. Moved from PB12 on Oct 4, 2026 |
 | PB2 | LED_BLINKY | GPIO out | — | heartbeat LED (also BOOT1) |
 | PB3 | ENC_B | **TIM2_CH2**, encoder | AF1 | drive-motor quadrature B |
 | PB5 | DRV_nSLEEP | GPIO out | — | DRV8874 nSLEEP; **low = disabled** |
@@ -83,10 +84,10 @@ wired.
 | PB7 | DRV_PWM_B | TIM4_CH2, PWM 20 kHz | AF2 | DRV8874 **PH/IN2** (single bridge) |
 | PB8 | CAN1_RX | bxCAN1 @ 250 kbps | AF9 | rover CAN bus |
 | PB9 | CAN1_TX | bxCAN1 | AF9 | rover CAN bus |
-| PB12 | DRV_nFAULT | GPIO in, pull-up | — | DRV8874 nFAULT, open-drain, active low |
-| PB13 | DIP_SW_0 | GPIO in, pull-up | — | module ID bit 0 (LSB) |
-| PB14 | DIP_SW_1 | GPIO in, pull-up | — | module ID bit 1 — **configured by `dipsw_init()`, not the `.ioc`** |
-| PB15 | DIP_SW_2 | GPIO in, pull-up | — | module ID bit 2 (MSB) — **configured by `dipsw_init()`, not the `.ioc`** |
+| PB12 | DIP_SW_0 | GPIO in, pull-up | — | module ID bit 0 (LSB) |
+| PB13 | DIP_SW_1 | GPIO in, pull-up | — | module ID bit 1 |
+| PB14 | DIP_SW_2 | GPIO in, pull-up | — | module ID bit 2 |
+| PB15 | DIP_SW_3 | GPIO in, pull-up | — | module ID bit 3 (MSB). All four DIP pins are in the `.ioc` and `dipsw_init()` configures them again. ID 0 = broadcast and 15 = unfitted, both refused |
 | PH0/PH1 | HSE | 8 MHz crystal | — | → 180 MHz PLL (M=4, N=180, P=2) |
 | PC14/PC15 | LSE | 32.768 kHz | — | in the `.ioc`, **not enabled** in code |
 

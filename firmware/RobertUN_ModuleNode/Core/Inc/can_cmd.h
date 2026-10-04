@@ -20,7 +20,8 @@
   * A node without a valid DIP identity transmits nothing and acts only on
   * broadcast ESTOP and STOP.
   *
-  * Implemented so far (W6 phase 1): ESTOP, STOP, CMD_RESULT, FAULT ESTOP.
+  * Implemented so far (W6 phases 1-2): ESTOP, STOP, ARM (actions 0-3), SPEED,
+ * CMD_RESULT, STATUS_DRIVE, FAULT ESTOP / VEL_WD_EXPIRED / SKIPPED_CTR.
   ******************************************************************************
   */
 
@@ -99,8 +100,14 @@ typedef struct
   uint32_t handled;     /*!< frames addressed to this node and acted on/answered */
   uint32_t ignored;     /*!< other nodes' addresses, N->O types, ext/RTR       */
   uint32_t rejected;    /*!< answered with a result other than OK              */
-  uint32_t tx_frames;   /*!< CMD_RESULT + FAULT frames queued                  */
+  uint32_t tx_frames;   /*!< every frame queued (CMD_RESULT, FAULT, STATUS)    */
   uint32_t tx_dropped;  /*!< sends refused: no free mailbox                    */
+  uint32_t status_tx;   /*!< STATUS_DRIVE frames queued                        */
+  uint32_t speed_ok;    /*!< SPEED frames accepted                             */
+  uint32_t crc_errors;  /*!< frames rejected with CRC                          */
+  uint32_t ctr_repeat;  /*!< frames rejected with REPEAT                       */
+  uint32_t ctr_stale;   /*!< frames rejected with STALE                        */
+  uint32_t ctr_skipped; /*!< can_ctr_skipped: sum of d - 1 over accepted frames */
 } can_cmd_stats_t;
 
 /** @brief Reset the counters and pending state. Call after can_bus_init(). */
@@ -109,7 +116,7 @@ void can_cmd_init(void);
 /** @brief Decode and act on one received frame. Main-loop context. */
 void can_cmd_handle(const can_frame_t *f);
 
-/** @brief Send pending FAULT frames (rate-limited). Call every main-loop pass. */
+/** @brief STATUS_DRIVE, watchdog edge, pending FAULTs. Call every main-loop pass. */
 void can_cmd_poll(void);
 
 /** @brief STATUS_DRIVE `flags` byte (§4.12), also FAULT byte 1. */

@@ -2373,6 +2373,13 @@ static void cmd_can(int argc, char **argv)
                     (unsigned long)c->rejected);
   debug_uart_printf("can tx : %lu queued, %lu dropped (no mailbox)\r\n",
                     (unsigned long)c->tx_frames, (unsigned long)c->tx_dropped);
+  debug_uart_printf("can rx : %lu speed ok, %lu crc, %lu repeat, %lu stale,"
+                    " %lu skipped\r\n",
+                    (unsigned long)c->speed_ok, (unsigned long)c->crc_errors,
+                    (unsigned long)c->ctr_repeat, (unsigned long)c->ctr_stale,
+                    (unsigned long)c->ctr_skipped);
+  debug_uart_printf("status : %lu STATUS_DRIVE sent\r\n",
+                    (unsigned long)c->status_tx);
   debug_uart_printf("flags  : 0x%02X, estop %s\r\n",
                     (unsigned)can_cmd_flags(),
                     motion_estop_latched() ? "LATCHED" : "clear");

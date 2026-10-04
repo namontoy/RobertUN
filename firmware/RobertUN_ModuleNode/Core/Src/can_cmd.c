@@ -11,11 +11,29 @@
 #include "debug_uart.h"
 #include "dipsw.h"
 #include "drive.h"
+#include "encoder.h"
+#include "isense.h"
 #include "motion.h"
 #include "velocity.h"
 
 #define FAULT_CODE_MAX      8u
 #define FAULT_MIN_GAP_MS    100u   /* §4.11: at most one per code per 100 ms */
+
+#define SPEED_MAX_MRPM      100000L  /* §4.4, Q4: ±100 rpm */
+#define SKIP_FAULT_MIN      5u       /* §5.1: d - 1 >= 5 sends SKIPPED_CTR */
+#define STATUS_ISENSE_AVG   16u      /* same depth as telem's T records */
+
+/* ARM byte 1 (§4.3). */
+#define ARM_DISARM          0u
+#define ARM_ARM             1u
+#define ARM_CLEAR_FAULT     2u
+#define ARM_CLEAR_ESTOP     3u
+#define ARM_STEER_ENABLE    4u
+#define ARM_STEER_DISABLE   5u
+
+/* Counted types ARM..RAMP (0x03-0x07), index = type - CAN_T_ARM. */
+#define CTR_FIRST           CAN_T_ARM
+#define CTR_TYPES           5u
 
 typedef struct
 {
@@ -27,8 +45,25 @@ typedef struct
   uint32_t last_sent_ms;
 } fault_slot_t;
 
+/* One §5.1 window: `synced` false means the next frame is taken with any ctr. */
+typedef struct
+{
+  bool    synced;
+  uint8_t last;
+} ctr_window_t;
+
+typedef enum
+{
+  CTR_ACCEPT,
+  CTR_REPEAT,
+  CTR_STALE
+} ctr_verdict_t;
+
 static can_cmd_stats_t stats;
 static fault_slot_t    faults[FAULT_CODE_MAX + 1u];   /* index = code, 0 unused */
+static ctr_window_t    ctr_win[CTR_TYPES][2];         /* [type][0 own, 1 bcast] */
+static uint32_t        status_seq;                    /* encoder step last sent */
+static bool            wd_was_expired;
 
 /* --- CRC-8/SAE-J1850 ----------------------------------------------------- */
 
@@ -137,6 +172,100 @@ uint8_t can_cmd_flags(void)
                    (ramping                    ? 0x40u : 0u));
 }
 
+/* --- §5.1 rolling counter ----------------------------------------------- */
+
+static ctr_window_t *ctr_window(uint8_t type, bool bcast)
+{
+  return &ctr_win[type - CTR_FIRST][bcast ? 1u : 0u];
+}
+
+/* Classifies only. The window advances in ctr_commit(), after the frame is
+   accepted: a rejected frame never moves the counter (§4). */
+static ctr_verdict_t ctr_check(const ctr_window_t *w, uint8_t ctr)
+{
+  if (!w->synced)
+  {
+    return CTR_ACCEPT;
+  }
+
+  uint8_t d = (uint8_t)(ctr - w->last);
+
+  if (d == 0u)
+  {
+    return CTR_REPEAT;
+  }
+
+  return (d >= 128u) ? CTR_STALE : CTR_ACCEPT;
+}
+
+static void ctr_commit(ctr_window_t *w, uint8_t ctr)
+{
+  if (w->synced)
+  {
+    uint8_t skipped = (uint8_t)(ctr - w->last - 1u);
+
+    stats.ctr_skipped += skipped;
+
+    if (skipped >= SKIP_FAULT_MIN)
+    {
+      fault_raise(CAN_FAULT_SKIPPED_CTR, can_cmd_flags(), drive_duty());
+    }
+  }
+
+  w->synced = true;
+  w->last   = ctr;
+}
+
+static void ctr_resync(uint8_t type)
+{
+  ctr_window(type, false)->synced = false;
+  ctr_window(type, true)->synced  = false;
+}
+
+static void ctr_resync_all(void)
+{
+  for (uint8_t t = 0u; t < CTR_TYPES; t++)
+  {
+    ctr_resync((uint8_t)(CTR_FIRST + t));
+  }
+}
+
+/* --- STATUS_DRIVE -------------------------------------------------------- */
+
+static int16_t clamp_i16(int32_t v)
+{
+  if (v >  32767) { return  32767; }
+  if (v < -32768) { return -32768; }
+  return (int16_t)v;
+}
+
+static void send_status_drive(void)
+{
+  /* Asked before reading, as `drv current` does: a zero from the synchronised
+     path means "could not measure" as well as "no current". */
+  bool     sync = isense_sync_ready();
+  uint16_t raw  = sync ? isense_read_sync_avg(STATUS_ISENSE_AVG)
+                       : isense_read_avg(STATUS_ISENSE_AVG);
+  uint32_t ma   = isense_raw_to_ma(raw);
+  int16_t  rpm  = clamp_i16((int32_t)(encoder_rpm() * 100.0f));
+  int16_t  out  = drive_duty();
+  uint8_t  d[8];
+
+  d[0] = ctr_window(CAN_T_SPEED, false)->last;
+  d[1] = can_cmd_flags();
+  d[2] = (uint8_t)((uint16_t)rpm & 0xFFu);
+  d[3] = (uint8_t)((uint16_t)rpm >> 8);
+  d[4] = (uint8_t)((ma > 0xFFFFu) ? 0xFFu : (ma & 0xFFu));
+  d[5] = (uint8_t)((ma > 0xFFFFu) ? 0xFFu : ((ma >> 8) & 0xFFu));
+  d[6] = (uint8_t)((uint16_t)out & 0xFFu);
+  d[7] = (uint8_t)((uint16_t)out >> 8);
+
+  if (send(CAN_T_STATUS_DRIVE, d, sizeof(d)))
+  {
+    stats.status_tx++;
+  }
+}
+
 /* --- commands ------------------------------------------------------------ */
 
 static void handle_estop(const can_frame_t *f)
@@ -147,6 +276,7 @@ static void handle_estop(const can_frame_t *f)
   bool    was_latched = motion_estop_latched();
 
   motion_estop();
+  ctr_resync_all();
   reply(CAN_T_ESTOP, 0u, CAN_RES_OK, 0u);
 
   if (!was_latched)
@@ -203,6 +333,159 @@ static void handle_stop(const can_frame_t *f)
                     (unsigned)ctr);
 }
 
+/* DLC -> CRC -> counter, shared by every counted frame (§4). On false the
+   frame is already answered and must not be acted on. */
+static bool frame_checks(const can_frame_t *f, uint8_t type, bool bcast,
+                         ctr_window_t **win)
+{
+  uint8_t ctr = (f->dlc >= 1u) ? f->data[0] : 0u;
+
+  if (f->dlc < 8u)
+  {
+    reply(type, ctr, CAN_RES_BAD_DLC, 0u);
+    return false;
+  }
+
+  if (f->data[7] != can_cmd_frame_crc((uint16_t)f->id, f->data, 7u))
+  {
+    stats.crc_errors++;
+    reply(type, ctr, CAN_RES_CRC, 0u);
+    return false;
+  }
+
+  *win = ctr_window(type, bcast);
+
+  switch (ctr_check(*win, ctr))
+  {
+    case CTR_REPEAT:
+      stats.ctr_repeat++;
+      reply(type, ctr, CAN_RES_REPEAT, (*win)->last);
+      return false;
+
+    case CTR_STALE:
+      stats.ctr_stale++;
+      reply(type, ctr, CAN_RES_STALE, (*win)->last);
+      return false;
+
+    default:
+      return true;
+  }
+}
+
+static void handle_arm(const can_frame_t *f, bool bcast)
+{
+  ctr_window_t *win;
+  uint8_t       ctr    = f->data[0];
+  uint8_t       action = f->data[1];
+  can_result_t  res    = CAN_RES_OK;
+
+  if (!frame_checks(f, CAN_T_ARM, bcast, &win))
+  {
+    return;
+  }
+
+  switch (action)
+  {
+    case ARM_DISARM:
+      velocity_disable();
+      drive_disable();
+      break;
+
+    case ARM_ARM:
+      if (!motion_allowed())
+      {
+        res = CAN_RES_ESTOP_LATCHED;
+      }
+      else if (drive_fault_latched())
+      {
+        res = CAN_RES_FAULT_LATCHED;
+      }
+      else
+      {
+        /* velocity_enable() also clears a latched watchdog (§4.3). */
+        drive_enable();
+        velocity_enable();
+      }
+      break;
+
+    case ARM_CLEAR_FAULT:
+      drive_clear_fault();
+      break;
+
+    case ARM_CLEAR_ESTOP:
+      if (!motion_estop_clear())
+      {
+        res = CAN_RES_BUSY;   /* the loop is on */
+      }
+      break;
+
+    case ARM_STEER_ENABLE:
+    case ARM_STEER_DISABLE:
+      /* W6 phase 5 (steering). Refused for now rather than half-done. */
+      res = CAN_RES_NOT_SUPPORTED;
+      break;
+
+    default:
+      res = CAN_RES_BAD_ACTION;
+      break;
+  }
+
+  if (res == CAN_RES_OK)
+  {
+    ctr_commit(win, ctr);
+    ctr_resync(CAN_T_SPEED);   /* §4.3: an accepted ARM restarts SPEED/STEER */
+    ctr_resync(CAN_T_STEER);
+  }
+
+  reply(CAN_T_ARM, ctr, res, 0u);
+
+  debug_uart_printf("can: ARM %u ctr %u -> %u\r\n",
+                    (unsigned)action, (unsigned)ctr, (unsigned)res);
+}
+
+static void handle_speed(const can_frame_t *f)
+{
+  ctr_window_t *win;
+  uint8_t       ctr = f->data[0];
+  int32_t       sp  = (int32_t)((uint32_t)f->data[2]         |
+                                ((uint32_t)f->data[3] << 8)  |
+                                ((uint32_t)f->data[4] << 16) |
+                                ((uint32_t)f->data[5] << 24));
+  can_result_t  res = CAN_RES_OK;
+
+  if (!frame_checks(f, CAN_T_SPEED, false, &win))
+  {
+    return;
+  }
+
+  if ((sp > SPEED_MAX_MRPM) || (sp < -SPEED_MAX_MRPM))
+  {
+    reply(CAN_T_SPEED, ctr, CAN_RES_RANGE, 0x01u);   /* the one field */
+    return;
+  }
+
+  if (!motion_allowed())
+  {
+    res = CAN_RES_ESTOP_LATCHED;
+  }
+  else if (!velocity_enabled() || velocity_timeout_expired())
+  {
+    /* An expired watchdog needs ARM 1, not just a fresh setpoint (§7.1). */
+    res = CAN_RES_NOT_ARMED;
+  }
+
+  if (res != CAN_RES_OK)
+  {
+    reply(CAN_T_SPEED, ctr, res, 0u);
+    return;
+  }
+
+  ctr_commit(win, ctr);
+  velocity_set_setpoint(sp);   /* kicks vel_tmo, as `vel target` does */
+  stats.speed_ok++;
+  /* No reply on success: ctr comes back in STATUS_DRIVE (§4.4). */
+}
+
 /* --- dispatch ------------------------------------------------------------ */
 
 static bool is_o2n(uint8_t type)
@@ -232,6 +515,10 @@ void can_cmd_init(void)
   {
     faults[c] = (fault_slot_t){ 0 };
   }
+
+  ctr_resync_all();
+  status_seq     = encoder_velocity_seq();
+  wd_was_expired = velocity_timeout_expired();
 }
 
 void can_cmd_handle(const can_frame_t *f)
@@ -265,9 +552,30 @@ void can_cmd_handle(const can_frame_t *f)
       handle_stop(f);
       break;
 
+    case CAN_T_ARM:
+      if (!dipsw_valid())
+      {
+        stats.ignored++;   /* no identity: only ESTOP and STOP act */
+        break;
+      }
+      stats.handled++;
+      handle_arm(f, bcast);
+      break;
+
+    case CAN_T_SPEED:
+      /* No broadcast SPEED (§4.4): one setpoint for every wheel is not a
+         command anyone means, and six nodes would all answer it. */
+      if (!own)
+      {
+        stats.ignored++;
+        break;
+      }
+      stats.handled++;
+      handle_speed(f);
+      break;
+
     default:
-      /* ARM, SPEED, STEER, LIMITS, RAMP, CFG_REQ: W6 phases 2-5. A node
-         without identity would only ever act on ESTOP and STOP anyway. */
+      /* STEER, LIMITS, RAMP, CFG_REQ: W6 phases 4-5. */
       stats.ignored++;
       break;
   }
@@ -275,6 +583,26 @@ void can_cmd_handle(const can_frame_t *f)
 
 void can_cmd_poll(void)
 {
+  /* Rising edge of the setpoint watchdog (§7.1). velocity.c has already
+     coasted; this only reports it. */
+  bool wd = velocity_timeout_expired();
+
+  if (wd && !wd_was_expired)
+  {
+    fault_raise(CAN_FAULT_VEL_WD_EXPIRED, can_cmd_flags(), drive_duty());
+    debug_uart_puts("can: vel_tmo expired - coasted, ARM 1 to recover\r\n");
+  }
+  wd_was_expired = wd;
+
+  /* STATUS_DRIVE once per control step, phase-locked to it (§4.12). */
+  uint32_t seq = encoder_velocity_seq();
+
+  if (seq != status_seq)
+  {
+    status_seq = seq;
+    send_status_drive();
+  }
+
   uint32_t now = HAL_GetTick();
 
   for (uint8_t c = 1u; c <= FAULT_CODE_MAX; c++)

@@ -4167,3 +4167,22 @@ revise).
 - Q1 resolved (plain CAN); Q5 role text → RESERVED 7–14 / INVALID 0, 15;
   Q15 CENTER IDs 5–6. §6.3 bus load unchanged (6 nodes, 37.4 %).
 - Docs only, no firmware change. Next: one full corner node on this spec.
+
+## 2026-10-04 — W6 CAN command implementation plan (`docs/plans/w6-can-cmds.md`)
+
+Branch `w6-can-cmds` created from main (51ebf0c). Plan written from `can_cmds.md`
+and a firmware survey: new `can_cmd.c/.h` (decode, addr/DLC/CRC-8/counter,
+CMD_RESULT, status/fault TX) hooked into the existing drain loop (main.c USER
+CODE, ~308-321); new `motion.c/.h` (ESTOP latch + UART/CAN owner); cfg live-apply
+moved from `cmd_cfg` (console.c ~1871-1975) to `config_apply_live()`; MKS
+completions tagged by requester (console_report_mks takes all today); host tool
+`tools/bench/cancmd.py` (python-can) — no host CAN code existed. Seven phases:
+safety (ESTOP/STOP) → ARM/SPEED/STATUS_DRIVE/counter/timeout → ownership →
+LIMITS/RAMP/CFG → STEER → bus errors/FAULTs → corner integration.
+User decisions: Q3 steering position = sum of commanded pulses, zero at boot /
+STEER_ENABLE; Q13 implement §7.3 ownership; Q18 add console `estop clear` (loop
+off only). Kept per spec: coast stops, heartbeat unchanged, auto-retransmit on,
+STATUS_DRIVE 50 Hz, SPEED ±100 rpm, RESERVED acts like CORNER.
+Survey facts: no CRC-8 helper exists (config uses HW CRC32); ESR is not polled
+periodically; `vel on` / `vel target` guards live only in console.c; build base
+110 568 B flash / 6 256 B RAM, 0 warnings. CRC-8/SAE-J1850 check value 0x4B.

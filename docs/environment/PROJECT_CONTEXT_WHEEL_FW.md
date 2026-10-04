@@ -119,8 +119,10 @@ Tasks 6, 17, 18 and 20 were closed 09-28 and are in the LOG. Old task 1 (CAN vs
 CANopen) closed 10-04. Renumbered 10-04; the previous number is in brackets.
 
 1. **Next session.** W6 (was 2): integrate one full corner node on plain CAN per
-   `docs/can_cmds.md` — CAN command in, steering (UART/MKS) and drive (PID) both
-   respond. Spec open questions in its §8 (Q2–Q18) to settle as they block.
+   `docs/can_cmds.md`. Plan: `docs/plans/w6-can-cmds.md` (7 phases, branch
+   `w6-can-cmds`); start at phase 1 (can_cmd + motion modules, ESTOP/STOP).
+   Decided 10-04: steer pos = sum of commanded pulses (Q3), §7.3 ownership (Q13),
+   console `estop clear` (Q18).
 2. W5 velocity PID (was 3, task 21): the open items above, in the order listed.
 3. Independent ammeter on the low-duty end (was 4): reverse draws +8.1% current,
    and the low-end U-shape sits near the 145 o/oo sense floor.

@@ -1,6 +1,6 @@
 # RobertUN — Wheel Controller Firmware Context
 
-**Last updated:** 2026-10-04 — W6 phase 5 done: STEER + STATUS_STEER, pos = sum of commanded pulses, matches 0x33 exactly; servo RX needs a 5.1 kΩ pull-up.
+**Last updated:** 2026-10-04 — W6 phase 6 done: bus-off coasts a CAN loop at once; ERROR_PASSIVE and DRV_FAULT FAULTs verified; held FAULTs no longer inflate tx dropped.
 **Budget:** 20 KB. Check with `wc -c` before every commit; trim if over.
 
 > **How to use this file.** This is the hot file for the wheel-firmware track:
@@ -120,8 +120,9 @@ CANopen) closed 10-04. Renumbered 10-04; the previous number is in brackets.
 
 1. **Next session.** W6 (was 2): integrate one full corner node on plain CAN per
    `docs/can_cmds.md`. Plan: `docs/plans/w6-can-cmds.md` (7 phases, branch
-   `w6-can-cmds`); phases 1–5 done 10-04; next phase 6 (bus errors, remaining
-   FAULTs). Servo link needs the external 5.1 kΩ PA1→3V3 pull-up (fitted, node 2).
+   `w6-can-cmds`); phases 1–6 done 10-04; next phase 7 (SPEED 50 Hz +
+   STEER 10 Hz together, bus load, ring drops). No bus shorts with the only
+   CANable (gs_usb wedges, no restart-ms). Servo link needs the external 5.1 kΩ PA1→3V3 pull-up (fitted, node 2).
    Host tool `tools/bench/cancmd.py` (kernel SocketCAN, no python-can).
    Decided 10-04: steer pos = sum of commanded pulses (Q3), §7.3 ownership (Q13),
    console `estop clear` (Q18).
@@ -131,6 +132,7 @@ CANopen) closed 10-04. Renumbered 10-04; the previous number is in brackets.
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 
+- **10-04** — W6 phase 6: bus-off (H–L short) coasts a CAN-armed loop at once, latch, ARM 1 recovers; FAULT ERROR_PASSIVE, DRV_FAULT received; RX_RING_DROPPED unreachable (hwm 1/32). 122 164 B. → LOG
 - **10-04** — W6 phase 5: STEER +15/−15/0 and deferred +15→−10 match 0x33 exactly (±0 p), 64/64 servo txns clean; RANGE/CRC/STALE/REPEAT and ESTOP mid-move (pos lost) pass. PA1 needed 5.1 kΩ pull-up (was 7/60 lost). 121.5 KB. → LOG
 - **10-04** — W6 phase 4: CFG GET/SET/INFO match `cfg`, RANGE not clamped; LIMITS/RAMP RANGE/BAD_ACTION/REPEAT/UART_OWNS; SAVE armed → BUSY. 118 056 B. Revert/default now re-apply every key (was trip+limit only). → LOG
 - **10-04** — W6 phase 3: ownership — CAN-armed node refuses console `drv duty`/`vel target`; `vel off`/`vel stop` release; console-armed node answers SPEED with UART_OWNS. +584 B. → LOG

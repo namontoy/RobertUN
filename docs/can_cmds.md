@@ -535,11 +535,14 @@ traffic from non-wheel nodes (Q9).
 |---|---|---|
 | Error-warning | ESR, polled every main-loop pass | Flag only (heartbeat byte 7) |
 | Error-passive | ESR, polled | Keep running (RX still works). FAULT `ERROR_PASSIVE` once per entry. Flag in the heartbeat |
-| Bus-off | ESR `BOFF`, polled | **Immediately** act as a `vel_tmo` expiry: setpoint 0, coast, watchdog latch set. Don't wait up to 1 s for `vel_tmo`. `AutoBusOff = ENABLE` rejoins after 128 × 11 recessive bits. After rejoin: FAULT `BUS_OFF_RECOVERED`. Motion resumes only after ARM action 1 |
+| Bus-off | ESR `BOFF`, polled | **Immediately** act as a `vel_tmo` expiry: setpoint 0, coast, watchdog latch set (`velocity_expire_now()`, also with `vel_tmo` 0). Don't wait up to 1 s for `vel_tmo`. Only a loop armed over CAN; a console-owned loop is not driven over this bus and keeps running. `AutoBusOff = ENABLE` rejoins after 128 × 11 recessive bits. After rejoin: FAULT `BUS_OFF_RECOVERED`. Motion resumes only after ARM action 1 |
 | RX ring overflow | `rx_ring_dropped` increments | FAULT `RX_RING_DROPPED` (rate-limited). No motion change; the counter rules handle the lost commands |
 
 An SCE (error) interrupt is out of scope (ISR-to-ring plan), so detection is by
 polling.
+
+A FAULT that cannot be queued (all three mailboxes full, e.g. nobody ACKing)
+is held, not dropped, and goes out when a mailbox frees.
 
 ### 7.3 UART and CAN arbitration
 

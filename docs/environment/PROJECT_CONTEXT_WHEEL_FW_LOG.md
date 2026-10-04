@@ -4478,3 +4478,56 @@ lost position) and Q3 marked resolved.
 - STEER −5.90 → −498 p, settled 0.58 s, 0x33 = 0.
 - steeron again: pos 0 at the hand-set zero.
 - Link: 82 requests, 81 ok (the aborted one), 0 errors.
+
+## 2026-10-04 — W6 phase 6: bus errors and remaining FAULTs (§7.2)
+
+Branch `w6-can-cmds`. Build 0 warnings, flash 122 164 B (phase 4: 118 056 B), RAM 6 536 B.
+
+Code:
+- `velocity_expire_now()` (velocity.c/.h): a volatile `wd_force` flag the next
+  1 kHz tick takes through the exact vel_tmo expiry path (setpoint 0, coast,
+  latch, published sample). Works with `vel_tmo 0`. Cleared by `velocity_enable()`.
+- `can_cmd_poll()`: one ESR read per pass (`can_bus_errors`). Bus-off rising edge
+  → `velocity_expire_now()` only if the loop is armed, owner CAN and not already
+  expired (console-owned loop is not driven over this bus; spec §7.2 row updated);
+  one console line "can: bus-off - CAN loop coasted, ARM 1 after rejoin", no
+  other prints (a shorted bus re-enters bus-off every few ms). Falling edge →
+  FAULT BUS_OFF_RECOVERED. EPVF rising edge → FAULT ERROR_PASSIVE.
+  `rx_ring_dropped` increase → FAULT RX_RING_DROPPED (a `stats clear` only
+  resyncs). `drive_fault_latched()` rising edge → FAULT DRV_FAULT (report only).
+  Edge baselines taken in `can_cmd_init()`. SKIPPED_CTR was already in (phase 2).
+- `can` console: new line `bus : N bus-off, N error-passive entries`
+  (`can_cmd_stats_t.bus_off/passive`).
+- Bug found on the bench and fixed: with nobody ACKing, pending FAULTs were
+  retried into full mailboxes every main-loop pass and each refusal counted in
+  `tx dropped` (36 195 229 after one short). New `can_bus_tx_free()`; the FAULT
+  loop holds while it is 0. After the fix an 11.5 s unplug gave 685 drops ≈ the
+  STATUS_DRIVE+STEER frames due in the gap (11.5 s × 60 Hz ≈ 690).
+- `tools/bench/cancmd.py`: `tx()` returns False on ENOBUFS instead of raising;
+  `speed` counts and prints refused frames.
+
+Bench (node 2, vel_tmo raised to 10 000 ms in RAM so a stop inside a 2 s short
+can only be the bus-off path; restored to 1000 after):
+- Bus-off: ARM 1 + SPEED 10 rpm, CANH–CANL shorted ~2 s, twice. The wheel
+  coasted during the short both times (user observed); loop latched TIMEOUT,
+  flags 0x13; node counted 398 then +248 bus-off entries (646 total) and 1272
+  error-passive entries (the node cycles bus-off ↔ rejoin while shorted). ARM 1
+  recovered after the first. BUS_OFF_RECOVERED FAULT frame NOT captured: the
+  CANable (gs_usb) wedged each time — TX stuck (ENOBUFS), RX dead, needs
+  `ip link set can0 down/up`; gs_usb rejects `restart-ms` ("Device doesn't
+  support restart from Bus Off"). Test stopped by the user: not risking the
+  only CANable. No more bus shorts with it on the bus.
+- ERROR_PASSIVE: node CAN connector unplugged 11.5 s → FAULT ERROR_PASSIVE
+  received after replug (t_ms 231531, duty 0), 1 entry counted. Also seen
+  earlier with can0 down (1 entry).
+- DRV_FAULT: motor off, PB0 (nFAULT) jumpered to GND ~1 s → FAULT DRV_FAULT,
+  flags drvfault, duty 0; `drv` showed 3942 ms asserted; `drv clearfault` cleared.
+- RX_RING_DROPPED: not reachable from outside. `monitor on` + cangen 500 frames
+  at 1 kHz → ring high-water 1/32, 0 dropped; console UART is non-blocking
+  (dropped 16 507 bytes instead of stalling) and nothing in the main loop blocks
+  > 2 ms (only HAL_Delay(2) in drive.c, 1 in dipsw.c); overflow needs a ~16 ms
+  stall. Code reviewed only; no test hook added.
+
+Spec `can_cmds.md` §7.2: bus-off row says CAN-owned loop only and
+`velocity_expire_now()`; note that a FAULT with no free mailbox is held.
+Next: phase 7 (corner-node integration, SPEED 50 Hz + STEER 10 Hz, bus load, ring drops).

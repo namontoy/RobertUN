@@ -4582,3 +4582,11 @@ PR #1 (`w6-can-cmds` → main) opened with gh: https://github.com/namontoy/Rober
 Decided (user): HEARTBEAT stays muted at boot (`heartbeat_on = false`), because
 it is easier for bench testing; `heartbeat on` enables it. Spec §6.3 keeps its
 2 Hz row as the load with it enabled, with a note.
+
+## 2026-10-04 — W6 merged to main
+
+PR #1 merged by the user (merge commit 0fc7021, 21 commits). The heartbeat
+decision commit (229cbd5) was pushed to the branch after the merge, so it was
+cherry-picked onto main as 8927e03 and pushed (user's choice over a second
+PR). Local checkout now on main. `w6-can-cmds` (local and origin) left for the
+user to delete. Next: W7, six nodes, new branch from main.

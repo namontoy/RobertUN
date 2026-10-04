@@ -1,6 +1,6 @@
 # RobertUN — Wheel Controller Firmware Context
 
-**Last updated:** 2026-10-04 — W6 done (phase 7): SPEED 50 Hz + STEER 10 Hz on one corner node, 6.9 % load, zero drops; spec §6.3 corrected to 39.5 % for six nodes.
+**Last updated:** 2026-10-04 — W6 merged to main (PR #1, + 8927e03 heartbeat note); next is W7, six nodes on plain CAN.
 **Budget:** 20 KB. Check with `wc -c` before every commit; trim if over.
 
 > **How to use this file.** This is the hot file for the wheel-firmware track:
@@ -118,8 +118,8 @@ rise ≤ 0.3 s (rig). **Met on the rig, 6–20 rpm.** → `_REF_TASKS` task 21
 Tasks 6, 17, 18 and 20 were closed 09-28 and are in the LOG. Old task 1 (CAN vs
 CANopen) closed 10-04. Renumbered 10-04; the previous number is in brackets.
 
-1. **Next session.** W6 closed 10-04 (plan phases 1–7, branch `w6-can-cmds`,
-   PR #1 open): merge it, then W7 (six nodes). HEARTBEAT stays off at boot
+1. **Next session.** W7: six nodes on one bus, DIP IDs, same binary; start a
+   branch from `main`. W6 closed and merged 10-04 (PR #1). HEARTBEAT stays off at boot
    (decided 10-04, easier testing; `heartbeat on` enables).
    Host tool `tools/bench/cancmd.py` (`corner 2 10 --arm` = integration run;
    ARM in the same run, vel_tmo runs from the ARM). No bus shorts with the only
@@ -130,6 +130,7 @@ CANopen) closed 10-04. Renumbered 10-04; the previous number is in brackets.
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 
+- **10-04** — W6 merged to main: PR #1 (merge 0fc7021) + heartbeat note cherry-picked (8927e03). Branch `w6-can-cmds` can be deleted. → LOG
 - **10-04** — W6 phase 7: SPEED 10 rpm 50 Hz + STEER ±15° triangle 10 Hz, 30 s: 1500/300 accepted, no FAULT, STATUS 50.0/10.0 Hz, 130 f/s = 6.9 % load, ring hwm 2/32, 0 drops. → LOG
 - **10-04** — W6 phase 6: bus-off (H–L short) coasts a CAN-armed loop at once, latch, ARM 1 recovers; FAULT ERROR_PASSIVE, DRV_FAULT received; RX_RING_DROPPED unreachable (hwm 1/32). 122 164 B. → LOG
 - **10-04** — W6 phase 5: STEER +15/−15/0 and deferred +15→−10 match 0x33 exactly (±0 p), 64/64 servo txns clean; RANGE/CRC/STALE/REPEAT and ESTOP mid-move (pos lost) pass. PA1 needed 5.1 kΩ pull-up (was 7/60 lost). 121.5 KB. → LOG

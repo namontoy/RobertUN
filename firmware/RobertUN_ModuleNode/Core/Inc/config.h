@@ -189,6 +189,23 @@ config_save_t config_save(void);
 /** @brief Reload the live values from FLASH, discarding unsaved edits. */
 config_load_t config_revert(void);
 
+/* --- live apply: shared by `cfg` and CAN CFG_REQ ------------------------ */
+
+/**
+  * @brief  Push @p key's RAM value into the module that runs on it, after a
+  *         successful config_set(). Keys read on every use (isense_avg,
+  *         sat_raw, ...) need nothing and are a no-op here.
+  * @note   The three IPROPI scale keys re-apply the trip in force, which was
+  *         computed with the old scale. vel_tmo re-arms the setpoint countdown.
+  */
+void config_apply_live(config_key_t key);
+
+/**
+  * @brief  Re-apply trip_ma and duty_limit, after revert or default replaced
+  *         the values underneath a running board. Only these two: see config.c.
+  */
+void config_apply_limits(void);
+
 /* --- metadata, for the console to print -------------------------------- */
 
 const char *config_name(config_key_t key);

@@ -1777,25 +1777,6 @@ static void cfg_print_key(config_key_t k)
                     (long)config_max(k));
 }
 
-/**
-  * @brief Push the two keys that have live hardware counterparts back into the
-  *        hardware.
-  *
-  * Needed after revert and default, which replace the stored values underneath
-  * a board that is still running on the old ones. Without this, `cfg` can claim
-  * a duty cap of 40% while the bridge is still enforcing 100% — and that is the
-  * dangerous direction of the mismatch, not the harmless one.
-  *
-  * Applied unconditionally rather than only for the two keys: both calls are
-  * idempotent, and a list of "which keys need re-applying" maintained by hand
-  * at each call site is exactly the thing that goes stale when a key is added.
-  */
-static void cfg_apply_live(void)
-{
-  (void)isense_set_trip_ma((uint32_t)config_get(CFG_TRIP_BOOT_MA));
-  drive_set_limit((uint16_t)config_get(CFG_DUTY_LIMIT));
-}
-
 static void cfg_report_save(config_save_t r)
 {
   switch (r)
@@ -1868,7 +1849,7 @@ static void cmd_cfg(int argc, char **argv)
   if (strcmp(argv[1], "revert") == 0)
   {
     config_load_t r = config_revert();
-    cfg_apply_live();
+    config_apply_limits();
 
     debug_uart_printf("reverted to stored values - %s\r\n", config_load_str(r));
     debug_uart_printf("  trip %lu mA, limit %u%% - both re-applied\r\n",
@@ -1889,13 +1870,13 @@ static void cmd_cfg(int argc, char **argv)
       }
 
       config_reset_key(k);
-      cfg_apply_live();
+      config_apply_limits();
       cfg_print_key(k);
     }
     else
     {
       config_reset_all();
-      cfg_apply_live();
+      config_apply_limits();
       debug_uart_puts("all keys back to compiled defaults\r\n");
     }
 
@@ -1952,93 +1933,72 @@ static void cmd_cfg(int argc, char **argv)
 
   cfg_print_key(k);
 
-  /* Four of these keys have a live counterpart under 'drv'. Setting one here
-     and not applying it would leave 'cfg' and 'drv' disagreeing about the same
-     number until the next reset, which is the sort of discrepancy that gets
-     debugged as a hardware fault. So they take effect immediately as well. */
+  /* Same path as CAN CFG_REQ SET. What follows only reports what is now in
+     force, read back from the module rather than echoed from the request. */
+  config_apply_live(k);
+
   if (k == CFG_TRIP_BOOT_MA)
   {
-    (void)isense_set_trip_ma((uint32_t)want);
     debug_uart_printf("  applied now: trip %lu mA\r\n",
                       (unsigned long)isense_trip_ma());
   }
   else if (k == CFG_DUTY_LIMIT)
   {
-    drive_set_limit((uint16_t)want);
     debug_uart_printf("  applied now: limit %u%%\r\n",
                       (unsigned)(drive_limit() / 10u));
   }
   else if (k == CFG_RAMP_PMPS)
   {
-    drive_set_ramp((uint16_t)want);
     debug_uart_printf("  applied now: ramp %u o/oo/s\r\n",
                       (unsigned)drive_ramp());
   }
   else if (k == CFG_RAMP_FLOOR)
   {
-    drive_set_ramp_floor((uint16_t)want);
     debug_uart_printf("  applied now: ramp floor %u o/oo\r\n",
                       (unsigned)drive_ramp_floor());
   }
 
-  /* Every velocity key applies LIVE, including while the loop is running.
-     That is the whole point: tuning a gain by rebooting between trials is not
-     tuning. The integrator is deliberately NOT reset on a gain change - with
-     the clamp in place the bump is bounded, and clearing it would hide exactly
-     the steady-state behaviour a Ki change is being judged on. Use
-     'vel reset' when a clean start is what you want. */
+  /* 'vel reset' when a clean integrator start is what you want. */
   else if (k == CFG_VEL_KP)
   {
-    velocity_set_kp(want);
     debug_uart_printf("  applied now: kp %ld x1000\r\n", (long)velocity_kp());
   }
   else if (k == CFG_VEL_KI)
   {
-    velocity_set_ki(want);
     debug_uart_printf("  applied now: ki %ld x1000\r\n", (long)velocity_ki());
   }
   else if (k == CFG_VEL_KD)
   {
-    velocity_set_kd(want);
     debug_uart_printf("  applied now: kd %ld x1000\r\n", (long)velocity_kd());
   }
   else if (k == CFG_VEL_FF_SLOPE)
   {
-    velocity_set_ff(want, velocity_ff_offset());
     debug_uart_printf("  applied now: ff slope %ld x1000 o/oo per rpm\r\n",
                       (long)velocity_ff_slope());
   }
   else if (k == CFG_VEL_FF_OFFSET)
   {
-    velocity_set_ff(velocity_ff_slope(), want);
     debug_uart_printf("  applied now: ff offset %ld o/oo\r\n",
                       (long)velocity_ff_offset());
   }
   else if (k == CFG_VEL_I_LIMIT)
   {
-    velocity_set_i_limit((uint16_t)want);
     debug_uart_printf("  applied now: integrator clamp %u o/oo\r\n",
                       (unsigned)velocity_i_limit());
   }
   else if (k == CFG_VEL_MAX)
   {
-    velocity_set_max((uint16_t)want);
     debug_uart_printf("  applied now: vel max %u o/oo (drv limit %u -"
                       " the tighter wins)\r\n",
                       (unsigned)velocity_max(), (unsigned)drive_limit());
   }
   else if (k == CFG_VEL_SLEW)
   {
-    velocity_set_slew(want);
     debug_uart_printf("  applied now: setpoint ramp %ld m rpm/s\r\n",
                       (long)velocity_slew());
   }
   else if (k == CFG_VEL_TIMEOUT)
   {
-    /* This re-arms the countdown, and that is correct: a deadline you have
-       just changed has not been missed yet. It does not clear the sticky
-       expired flag - only 'vel on' does. */
-    velocity_set_timeout((uint32_t)want);
     debug_uart_printf("  applied now: setpoint watchdog %lu ms%s\r\n",
                       (unsigned long)velocity_timeout(),
                       (velocity_timeout() == 0u) ? " - DISARMED" : "");
@@ -2046,15 +2006,10 @@ static void cmd_cfg(int argc, char **argv)
 
   /* Three keys change the meaning of every current number the board reports,
      so say so at the point of change rather than leaving it to be rediscovered
-     when a log stops matching a meter. The trip is re-applied because it was
-     computed with the old scale and would otherwise regulate at the wrong
-     current while reporting the right one. */
+     when a log stops matching a meter. */
   if ((k == CFG_R_IPROPI_OHM) || (k == CFG_A_IPROPI_UA_PER_A) ||
       (k == CFG_VDDA_MV))
   {
-    uint32_t trip = isense_trip_ma();
-    (void)isense_set_trip_ma(trip);
-
     debug_uart_printf("  current scale is now %u mA full-scale;"
                       " trip re-applied at %lu mA\r\n",
                       (unsigned)isense_full_scale_ma(),

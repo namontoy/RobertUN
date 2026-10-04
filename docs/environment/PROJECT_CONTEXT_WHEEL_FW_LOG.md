@@ -4575,3 +4575,10 @@ Docs: `can_cmds.md` §5.2 now has the CFG_REQ CRC input order (bytes 0–2 then
 4–7) and check value 0x4B; §6.3 table + measured figure; Q13, Q17, Q18
 marked resolved (Q3 was already). `_REF_MCU` gained a can_cmd/motion/steer
 section. W6 plan phases 1–7 done; next-task 1 closed.
+
+## 2026-10-04 — W6 PR #1 opened; HEARTBEAT default decided
+
+PR #1 (`w6-can-cmds` → main) opened with gh: https://github.com/namontoy/RobertUN/pull/1.
+Decided (user): HEARTBEAT stays muted at boot (`heartbeat_on = false`), because
+it is easier for bench testing; `heartbeat on` enables it. Spec §6.3 keeps its
+2 Hz row as the load with it enabled, with a note.

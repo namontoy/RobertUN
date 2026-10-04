@@ -119,8 +119,8 @@ Tasks 6, 17, 18 and 20 were closed 09-28 and are in the LOG. Old task 1 (CAN vs
 CANopen) closed 10-04. Renumbered 10-04; the previous number is in brackets.
 
 1. **Next session.** W6 closed 10-04 (plan phases 1–7, branch `w6-can-cmds`,
-   not yet merged): merge to main via PR, then W7 (six nodes). Open: HEARTBEAT
-   is muted at boot but §6.3 counts it at 2 Hz — keep or default on?
+   PR #1 open): merge it, then W7 (six nodes). HEARTBEAT stays off at boot
+   (decided 10-04, easier testing; `heartbeat on` enables).
    Host tool `tools/bench/cancmd.py` (`corner 2 10 --arm` = integration run;
    ARM in the same run, vel_tmo runs from the ARM). No bus shorts with the only
    CANable. Servo link needs the external 5.1 kΩ PA1→3V3 pull-up (node 2). → `_REF_MCU` can_cmd

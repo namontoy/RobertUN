@@ -4223,3 +4223,55 @@ Bench (node ID 2 CORNER, CANable can0 on daedalus, 250 kbps):
   `vel off`, `drv disable`. Counters: 7 handled, 2 ignored, 0 rejected; 9 TX, 0 dropped.
 - Not tested: ESTOP during an in-flight steering move (servo stop retry path) — phase 5 bench.
 Phase 1 PASSES. Next: phase 2 (ARM + SPEED + STATUS_DRIVE + §5.1 counter + §7.1 timeout, `cancmd.py`).
+
+## 2026-10-04 — W6 phase 2: ARM, SPEED, STATUS_DRIVE, §5.1 counter, §7.1 timeout
+
+Branch `w6-can-cmds`, node 2 on the bench rig, plan `docs/plans/w6-can-cmds.md`.
+
+Firmware (`can_cmd.c/.h`, `console.c` `can` stats):
+- ARM actions 0 DISARM (vel off + drv disable), 1 ARM (drv enable + vel on;
+  ESTOP_LATCHED / FAULT_LATCHED checks), 2 CLEAR_FAULT, 3 CLEAR_ESTOP (BUSY if
+  the loop is on). Actions 4/5 answer NOT_SUPPORTED until phase 5 (steering).
+  Ownership (UART_OWNS) is phase 3.
+- SPEED: ±100 000 milli-rpm, else RANGE detail 0x01; no reply on success; no
+  broadcast SPEED (ignored silently, six nodes would all answer).
+- Decision (this phase): SPEED is rejected with NOT_ARMED while the vel_tmo
+  latch is set, so a fresh setpoint alone cannot restart the wheel after a
+  timeout; ARM 1 (velocity_enable) clears it. Console `vel target` unchanged.
+- Shared prelude for counted frames: DLC 8 -> CRC-8 over (ID LE, PROTO_VER,
+  bytes 0-6) -> counter. Counter windows per type ARM..RAMP, own and broadcast
+  separately; classify first, commit only after the frame is accepted. Resync
+  at boot, after ESTOP (all windows), after an accepted ARM (SPEED, STEER).
+  d-1 >= 5 skipped raises FAULT SKIPPED_CTR; sum kept in stats.ctr_skipped.
+- STATUS_DRIVE (0x100+node) sent from can_cmd_poll on each
+  encoder_velocity_seq() change; speed = encoder_rpm x100, current = 16-sample
+  sync read (same path as telem T records, free-running avg when not sync),
+  output = drive_duty(). Sent whether or not the loop is armed.
+- FAULT VEL_WD_EXPIRED on the rising edge of velocity_timeout_expired().
+- Build: 0 warnings; text+data 115 544 B (+1 944 B over phase 1), RAM
+  data+bss 6 480 B.
+
+Host tool: `tools/bench/canproto.py` (IDs, CRC, codecs; self-test prints the
+0x4B check value) and `tools/bench/cancmd.py` (estop/stop/arm/speed/watch,
+counters persisted in runs/.cancmd_ctr.json). Uses kernel SocketCAN through
+Python's `socket` module instead of python-can, which is not installed on
+daedalus. Claude Code needs the allow rule `Bash(python3 tools/bench/cancmd.py *)`
+in `firmware/RobertUN_ModuleNode/.claude/settings.local.json` (added 10-04)
+for the auto-mode classifier to let it run motion commands.
+
+Bench (node 2, can0 250 kbps):
+- Loop off: STATUS_DRIVE 50.0 Hz, max gap 20.2 ms.
+- ARM with flipped CRC -> CRC; DISARM -> OK (host and node CRC agree);
+  ARM ctr 0 after 1 -> STALE detail 1; ctr 1 again -> REPEAT detail 1.
+- ARM 1, SPEED 10 rpm at 50 Hz for 5 s: 250 frames sent, STATUS 50.0 Hz, max
+  gap 20.4 ms, ctr echo lag max 0 over 245 frames. Last 2 s: mean 9.25 rpm
+  (5.71-10.71, the 12/rev tread dips over ~4 grooves; not a tracking figure),
+  out 159 o/oo, 359 mA. Host stops -> FAULT VEL_WD_EXPIRED +1001 ms after the
+  last SPEED; coast, out 0; flags armed,bridge,wd.
+- SPEED with the wd latched -> NOT_ARMED; SPEED with bad CRC -> CRC; STATUS
+  ctr stayed 249 (rejections do not advance the counter).
+- ARM 1 (recovers from the latched wd), SPEED with ctr frozen for 3 s: 1
+  accepted, 149 REPEAT; FAULT VEL_WD_EXPIRED +1002 ms after the only accepted
+  SPEED while the host was still sending -> REPEAT does not kick vel_tmo.
+- Left disarmed (ARM 0 OK).
+Phase 2 bench checks all pass. Next: phase 3, ownership (§7.3).

@@ -53,7 +53,7 @@ New module **`Core/Src/can_cmd.c` / `Core/Inc/can_cmd.h`** (not CubeMX-owned). I
   `can_bus_send/errors/stats_snapshot`; `encoder_velocity_seq()` to detect each control step.
 
 ## Host tool
-`tools/bench/cancmd.py` (python-can, socketcan `can0` on daedalus via the CANable) builds each frame
+`tools/bench/cancmd.py` (kernel SocketCAN via Python's `socket` module — python-can is not installed; `can0` on daedalus via the CANable) builds each frame
 type with its counter and CRC, prints the replies decoded, and has a `--watch` mode for STATUS/FAULT.
 It reuses the CRC table from a small `canproto.py` shared with the tests. Only numbers are printed,
 never raw dumps. Bring-up of `can0` follows `_REF_TASK6_CAN_LATENCY`.

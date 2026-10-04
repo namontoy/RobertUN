@@ -31,6 +31,8 @@
 #include "isense.h"
 #include "config.h"
 #include "dipsw.h"
+#include "motion.h"
+#include "can_cmd.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -254,6 +256,18 @@ static bool parse_on_off(const char *s, bool *out)
     return true;
   }
 
+  return false;
+}
+
+/** @brief Gate for console motion commands (can_cmds.md §4.1). Prints why. */
+static bool motion_gate(void)
+{
+  if (motion_allowed())
+  {
+    return true;
+  }
+
+  debug_uart_puts("ESTOP latched - refused. 'estop clear' first\r\n");
   return false;
 }
 
@@ -597,6 +611,11 @@ static void cmd_mks(int argc, char **argv)
   }
   else if ((strcmp(argv[1], "move") == 0) || (strcmp(argv[1], "deg") == 0))
   {
+    if (!motion_gate())
+    {
+      return;
+    }
+
     if (argc < 3)
     {
       debug_uart_printf("usage: mks %s <+/-value> [speed 1-127]\r\n", argv[1]);
@@ -904,6 +923,11 @@ static void cmd_drv(int argc, char **argv)
 
   if (strcmp(argv[1], "enable") == 0)
   {
+    if (!motion_gate())
+    {
+      return;
+    }
+
     drive_enable();
     debug_uart_puts("nSLEEP high - driver awake (waited 2 ms)\r\n");
   }
@@ -932,6 +956,12 @@ static void cmd_drv(int argc, char **argv)
 
     if (pm >  DRIVE_DUTY_MAX) { pm =  DRIVE_DUTY_MAX; }
     if (pm < -DRIVE_DUTY_MAX) { pm = -DRIVE_DUTY_MAX; }
+
+    /* Duty 0 is a stop, and a stop always works. */
+    if ((pm != 0) && !motion_gate())
+    {
+      return;
+    }
 
     drive_set_duty((int16_t)pm);
 
@@ -1511,6 +1541,11 @@ static void cmd_vel(int argc, char **argv)
 
   if (strcmp(argv[1], "on") == 0)
   {
+    if (!motion_gate())
+    {
+      return;
+    }
+
     if (!drive_is_enabled())
     {
       debug_uart_puts("bridge is disabled - 'drv enable' first, or the loop"
@@ -1538,6 +1573,11 @@ static void cmd_vel(int argc, char **argv)
     if (argc < 3)
     {
       print_mrpm("target ", velocity_setpoint(), " rpm\r\n");
+      return;
+    }
+
+    if (!motion_gate())
+    {
       return;
     }
 
@@ -2283,6 +2323,61 @@ static void cmd_telem(int argc, char **argv)
   }
 }
 
+static void cmd_estop(int argc, char **argv)
+{
+  if (argc < 2)
+  {
+    debug_uart_printf("estop %s\r\n",
+                      motion_estop_latched() ? "LATCHED - 'estop clear' to recover"
+                                             : "clear");
+    return;
+  }
+
+  if (strcmp(argv[1], "clear") != 0)
+  {
+    debug_uart_puts("usage: estop [clear]\r\n");
+    return;
+  }
+
+  if (!motion_estop_clear())
+  {
+    debug_uart_puts("loop is armed - 'vel off' first\r\n");
+    return;
+  }
+
+  debug_uart_puts("estop clear - motion commands accepted again\r\n");
+}
+
+static void cmd_can(int argc, char **argv)
+{
+  if ((argc >= 2) && (strcmp(argv[1], "crc") == 0))
+  {
+    static const uint8_t check[] = { '1', '2', '3', '4', '5', '6', '7', '8', '9' };
+    uint8_t crc = can_cmd_crc8(check, sizeof(check));
+
+    debug_uart_printf("crc8 sae-j1850 \"123456789\" = 0x%02X (expect 0x4B) %s\r\n",
+                      (unsigned)crc, (crc == 0x4Bu) ? "PASS" : "FAIL");
+    return;
+  }
+
+  if (argc >= 2)
+  {
+    debug_uart_puts("usage: can [crc]\r\n");
+    return;
+  }
+
+  const can_cmd_stats_t *c = can_cmd_stats();
+
+  debug_uart_printf("can cmd: %lu handled, %lu ignored, %lu rejected\r\n",
+                    (unsigned long)c->handled, (unsigned long)c->ignored,
+                    (unsigned long)c->rejected);
+  debug_uart_printf("can tx : %lu queued, %lu dropped (no mailbox)\r\n",
+                    (unsigned long)c->tx_frames, (unsigned long)c->tx_dropped);
+  debug_uart_printf("flags  : 0x%02X, estop %s\r\n",
+                    (unsigned)can_cmd_flags(),
+                    motion_estop_latched() ? "LATCHED" : "clear");
+}
+
 static const command_t commands[] =
 {
   { "help",      "",             "list these commands",                       cmd_help      },
@@ -2302,6 +2397,8 @@ static const command_t commands[] =
   { "telem",     "[sub]",        "machine-readable stream for the bench host", cmd_telem   },
   { "cfg",       "[key] [val]",  "stored tunables - 'cfg' to list",           cmd_cfg       },
   { "id",        "",             "module identity from the DIP switches",     cmd_id        },
+  { "can",       "[crc]",        "W6 command layer counters - 'can crc' self-test", cmd_can },
+  { "estop",     "[clear]",      "ESTOP latch state - 'estop clear' to recover", cmd_estop  },
   { "reset",     "",             "reboot the MCU",                            cmd_reset     },
 };
 

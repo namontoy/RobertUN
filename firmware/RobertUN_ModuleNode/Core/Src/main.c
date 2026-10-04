@@ -32,6 +32,8 @@
 #include "isense.h"
 #include "config.h"
 #include "dipsw.h"
+#include "motion.h"
+#include "can_cmd.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -168,6 +170,8 @@ int main(void)
     debug_uart_puts("ERROR: CAN1 failed to start\r\n");
   }
 
+  can_cmd_init();
+
   if (!mks_init())
   {
     debug_uart_puts("ERROR: MKS link not running - check UART4_RX DMA is Circular\r\n");
@@ -248,6 +252,7 @@ int main(void)
     console_poll();
 
     mks_poll();            /* advance the SERVO42C transaction state machine */
+    motion_poll();         /* a pending ESTOP/STOP servo stop goes out here */
     console_report_mks();  /* print its outcome once it lands */
     console_report_encoder();  /* live counts while `enc watch on` */
     console_report_telem();    /* machine stream while `telem on`  */
@@ -318,7 +323,11 @@ int main(void)
         debug_uart_write_hex(rx.data, rx.dlc);
         debug_uart_puts("\r\n");
       }
+
+      can_cmd_handle(&rx);   /* W6 command layer: decode, act, answer */
     }
+
+    can_cmd_poll();          /* pending FAULT frames, rate-limited */
   }
   /* USER CODE END 3 */
 }

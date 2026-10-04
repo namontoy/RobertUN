@@ -4387,3 +4387,66 @@ Agreed (user), recorded in can_cmds.md §4.8 / §7.1: (a) a CFG SET of vel_tmo,
 and any REVERT/DEFAULT, re-arms the setpoint countdown — orion must not use
 it as a keep-alive; (b) CFG_REQ with DLC < 8 is answered with status CRC, no
 BAD_DLC status. The "Open (user)" item from the phase 4 entry is closed.
+
+## 2026-10-04 — W6 phase 5: STEER + STATUS_STEER (node 2, CORNER)
+
+**Code (commit f493d3c, branch w6-can-cmds).**
+- New `steer.c`/`.h`. Absolute steering on top of the relative FD move.
+  - Position = sum of commanded pulses of moves that reported "complete",
+    zeroed at STEER_ENABLE (spec Q3). Scale: 30400 p/rev, i.e. 38/45 p per
+    0.01°, rounded half away from zero.
+  - A STEER during a move is deferred (user decision 10-04): only the latest
+    target is kept; when the running FD completes, one FD goes out for the
+    difference. No move is ever cut short.
+  - Any other ending (abort, ESTOP, timeout, link error) clears pos-valid and
+    drops the pending target. Timeout sets the stall flag; link errors set
+    uart_err. Both raise FAULT MKS_ERROR via `steer_take_error()`.
+  - Console `mks move/deg/enable` calls `steer_external()`, which disables CAN
+    steering and invalidates the position.
+- `mks_servo`: `txn_seq`, `mks_txn_seq()`, `mks_completion_pending()`, so steer
+  takes only the completions of transactions it started.
+- `motion_request_mks_stop()` calls `steer_cancel()`, so a queued target
+  can't go out after an ESTOP.
+- `can_cmd`:
+  - STEER handler order: NOT_SUPPORTED (non-steering node) → frame checks →
+    RANGE (speed >127 detail 1, |cdeg| >9000 detail 2) → ESTOP_LATCHED →
+    UART_OWNS → NOT_ARMED (detail 1 = position lost).
+  - ARM 4/5 = steeron/steeroff; BUSY if the link is busy.
+  - STATUS_STEER at 10 Hz; corner/reserved nodes only.
+- Console `steer`; `cancmd.py steer` with `--then`/`--gap`/`--follow`.
+- Size: 121 452 B flash (+3 396 B against phase 4), RAM 6 520 B, 0 warnings.
+- `main.c`: CubeMX regeneration rewrote it with CRLF. Converted back to LF
+  before the commit so the diff is the 2 USER CODE lines.
+
+**Servo UART debugging (before the bench could run).**
+- Symptoms: F3 timeouts and replies failing as bad address/checksum.
+- Idle count: 60.04 framing errors/s with no traffic, i.e. mains hum on PA1.
+  Reseating the leads and a second ground changed nothing (60.00/s).
+- Cause: the SERVO42C TX only pulls low, and PA1 had no pull-up.
+- With the CubeMX internal pull-up (PA1 GPIO_PULLUP, .ioc +2 lines): 0.00/s
+  at idle, but 7/60 paced read-only requests were lost. Each loss had exactly
+  one FE/NE mid-reply. HAL F4 + DMA treats FE/NE as blocking, so the re-arm
+  drops the partial reply and it times out.
+- With an external 5.1 kΩ PA1→3V3 (user, 10-04): 60/60 paced plus 50/50
+  back-to-back, 0 UART errors.
+- Echo: 0 echoes stripped all day (200+ clean replies). The Aug 13 "device
+  echoes" finding is not reproduced and may have been the wiring at that
+  time. `strip_echo()` kept (no-op). Note added to `_REF_SERVO42C`.
+
+**Bench (all node 2, speed code 2).**
+- ARM steeron: OK. 0x33 read 5 before the enable and 0 after (enable resets
+  it?). Baseline 0.
+- First STEER: UART_OWNS. The console still owned motion from the user's
+  manual `mks move 20`; `mks stop` released it, so §7.3 works.
+- +15°: OK, settled 1.39 s, pos +1267 p, 0x33 −1267.
+- −15°: OK, 2.64 s, pos −1267, 0x33 +1267.
+- 0°: OK, 1.41 s, pos 0, 0x33 0.
+- Deferred: +15 then −10 after 0.5 s. Both OK, settled 3.50 s, pos −844 p
+  (−9.99°, one pulse = 0.0118°), 0x33 +844. Requests rose by exactly 3 (two
+  FDs plus one read), so the first move wasn't cut short and no extra move
+  went out.
+- Link over the whole bench: 64/64 transactions, 0 errors.
+- The plan said ±30°; the user chose ±15°.
+
+**Spec:** `can_cmds.md` §4.5 (tracked position, deferral, NOT_ARMED after a
+lost position) and Q3 marked resolved.

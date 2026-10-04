@@ -1,6 +1,6 @@
 # RobertUN — Wheel Controller Firmware Context
 
-**Last updated:** 2026-10-04 — W6 phase 4 done: config_apply_live refactor (cfg byte-identical), LIMITS, RAMP, CFG_REQ/RESP; bench pass on node 2.
+**Last updated:** 2026-10-04 — W6 phase 5 done: STEER + STATUS_STEER, pos = sum of commanded pulses, matches 0x33 exactly; servo RX needs a 5.1 kΩ pull-up.
 **Budget:** 20 KB. Check with `wc -c` before every commit; trim if over.
 
 > **How to use this file.** This is the hot file for the wheel-firmware track:
@@ -120,19 +120,18 @@ CANopen) closed 10-04. Renumbered 10-04; the previous number is in brackets.
 
 1. **Next session.** W6 (was 2): integrate one full corner node on plain CAN per
    `docs/can_cmds.md`. Plan: `docs/plans/w6-can-cmds.md` (7 phases, branch
-   `w6-can-cmds`); phases 1–4 done 10-04; next phase 5 (STEER + STATUS_STEER).
+   `w6-can-cmds`); phases 1–5 done 10-04; next phase 6 (bus errors, remaining
+   FAULTs). Servo link needs the external 5.1 kΩ PA1→3V3 pull-up (fitted, node 2).
    Host tool `tools/bench/cancmd.py` (kernel SocketCAN, no python-can).
    Decided 10-04: steer pos = sum of commanded pulses (Q3), §7.3 ownership (Q13),
    console `estop clear` (Q18).
 2. W5 velocity PID (was 3, task 21): the open items above, in the order listed.
 3. Independent ammeter on the low-duty end (was 4): reverse draws +8.1% current,
    and the low-end U-shape sits near the 145 o/oo sense floor.
-4. W6 open, priority not set (was 5): decide how absolute steering positioning
-   works (`FD` is a relative move; `33` counts UART-commanded pulses and can
-   serve as feedback). Task 1's absolute steering target depends on it.
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 
+- **10-04** — W6 phase 5: STEER +15/−15/0 and deferred +15→−10 match 0x33 exactly (±0 p), 64/64 servo txns clean. PA1 needed 5.1 kΩ pull-up (was 7/60 lost). 121.5 KB. → LOG
 - **10-04** — W6 phase 4: CFG GET/SET/INFO match `cfg`, RANGE not clamped; LIMITS/RAMP RANGE/BAD_ACTION/REPEAT/UART_OWNS; SAVE armed → BUSY. 118 056 B. Revert/default now re-apply every key (was trip+limit only). → LOG
 - **10-04** — W6 phase 3: ownership — CAN-armed node refuses console `drv duty`/`vel target`; `vel off`/`vel stop` release; console-armed node answers SPEED with UART_OWNS. +584 B. → LOG
 - **10-04** — W6 phase 2: SPEED 10 rpm at 50 Hz, STATUS 50.0 Hz, ctr echo lag 0; REPEAT x149 not kicking vel_tmo (FAULT +1002 ms); CRC/STALE/NOT_ARMED pass. +1 944 B. → LOG
@@ -143,8 +142,6 @@ CANopen) closed 10-04. Renumbered 10-04; the previous number is in brackets.
 - **09-28** — W6 CANopen alternative spec: `docs/canopen_cmds.md` (402 CSV drive + mfr steering, 42.6% load at 50 Hz). Plain CAN vs CANopen undecided.
 - **09-28** — W6 CAN command set spec drafted: `docs/can_cmds.md` (no code). Q1 open: plain CAN vs REST's CANopen decision.
 - **09-28** — Tasks 6, 17, 18, 20 closed (task 20: PMODE corrected); text moved to the LOG; open list renumbered 1–4.
-- **09-28** — W6 CAN RX (task 6) closed; W6's absolute-positioning decision and one-corner-node integration stay open (user); W5 owes the rover τ session; W7 started.
-- **09-28** — Task 6 closed: ISR-to-ring merged (decision: accept). Bench re-run steps 1–7 via wheel-fw scripts: 20000/20000 at saturation ±motor, overflow 156 dropped, 0 overruns; jitter ≤0.74 ms, no worse than polled (the 09-27 1.28 ms at -g 0.45 did not repeat: 0.72). Delivered-count invariant not verified. ESR snapshot fixed. → LOG.
 
 ## Key rules (full list with evidence in `_REF_LEARNINGS`)
 

@@ -25,6 +25,7 @@
 #include "debug_uart.h"
 #include "main.h"
 #include "mks_servo.h"
+#include "steer.h"
 #include "encoder.h"
 #include "drive.h"
 #include "velocity.h"
@@ -713,6 +714,11 @@ static void cmd_mks(int argc, char **argv)
   else if ((strcmp(argv[1], "move") == 0) || (strcmp(argv[1], "deg") == 0))
   {
     motion_claim(MOTION_SRC_UART);
+    steer_external();   /* CAN's tracked position no longer holds */
+  }
+  else if (strcmp(argv[1], "enable") == 0)
+  {
+    steer_external();
   }
 }
 
@@ -2324,6 +2330,27 @@ static void cmd_telem(int argc, char **argv)
   }
 }
 
+static void cmd_steer(int argc, char **argv)
+{
+  (void)argc;
+  (void)argv;
+
+  uint8_t f = steer_flags();
+
+  debug_uart_printf("steer %s, position %s | pos %+.2f deg (%+ld p) | target"
+                    " %+.2f deg (%+ld p)%s%s%s\r\n",
+                    (f & STEER_F_ENABLED)   ? "enabled" : "disabled",
+                    (f & STEER_F_POS_VALID) ? "valid"   : "LOST",
+                    (double)steer_position_cdeg() / 100.0,
+                    (long)steer_position_pulses(),
+                    (double)steer_target_cdeg() / 100.0,
+                    (long)steer_target_pulses(),
+                    (f & STEER_F_MOVING)   ? " | moving"     : "",
+                    (f & STEER_F_STALL)    ? " | stall"      : "",
+                    (f & STEER_F_UART_ERR) ? " | uart error" : "");
+  debug_uart_puts("  0x33 check: pos == -(mks pulses now - mks pulses at enable)\r\n");
+}
+
 static void cmd_estop(int argc, char **argv)
 {
   if (argc < 2)
@@ -2409,6 +2436,7 @@ static const command_t commands[] =
   { "cfg",       "[key] [val]",  "stored tunables - 'cfg' to list",           cmd_cfg       },
   { "id",        "",             "module identity from the DIP switches",     cmd_id        },
   { "can",       "[crc]",        "W6 command layer counters - 'can crc' self-test", cmd_can },
+  { "steer",     "",             "CAN steering: tracked position and target",  cmd_steer     },
   { "estop",     "[clear]",      "ESTOP latch state - 'estop clear' to recover", cmd_estop  },
   { "reset",     "",             "reboot the MCU",                            cmd_reset     },
 };

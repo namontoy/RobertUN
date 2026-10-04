@@ -302,6 +302,16 @@ bool mks_move_degrees(float degrees, uint8_t speed);
   * risking either missing a result or reporting the same one twice.
   */
 bool          mks_take_completion(void);
+
+/** @brief True while a completion waits to be taken, without taking it. Lets
+  *        a second user (steer.c) leave a console transaction's outcome alone. */
+bool          mks_completion_pending(void);
+
+/** @brief Number of transactions started since boot. A caller that records it
+  *        after its own request can tell, later, whether the transaction that
+  *        just ended was its own or one started after an abort. */
+uint32_t      mks_txn_seq(void);
+
 mks_result_t  mks_result(void);
 const char   *mks_result_str(mks_result_t result);
 

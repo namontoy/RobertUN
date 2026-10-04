@@ -7,7 +7,10 @@
     cancmd.py arm 2 arm --bad-crc         same frame, CRC byte flipped
     cancmd.py speed 2 10 --duration 5     SPEED 10 rpm at 50 Hz, then listen
     cancmd.py speed 2 10 --repeat         ctr frozen after the first frame
-    cancmd.py watch 2 --duration 3        STATUS_DRIVE / FAULT summary only
+    cancmd.py watch 2 --duration 3        STATUS_DRIVE / STATUS_STEER / FAULT summary
+    cancmd.py arm 2 steeron               STEER_ENABLE: energise, zero the position
+    cancmd.py steer 2 30                  STEER to +30.00 deg, follow until it stops
+    cancmd.py steer 2 -30 --speed 3 --then 0 --gap 1   second target 1 s later
     cancmd.py limits 2 --duty 300 --trip 1580   LIMITS (fields given set the mask)
     cancmd.py ramp 2 --pmps 50 --floor 120      RAMP
     cancmd.py cfg 2 get vel_kp            CFG_REQ get|set|save|revert|default|
@@ -106,6 +109,7 @@ class Listener:
         self.results = collections.Counter()
         self.result_lines = []
         self.faults = []          # (t, decoded)
+        self.steer = []           # (t, decoded)
 
     def feed(self, t, cid, data):
         ftype, addr = cp.split_id(cid)
@@ -118,6 +122,8 @@ class Listener:
             self.results[(r["type"], r["result"])] += 1
             if len(self.result_lines) < 6:
                 self.result_lines.append(r)
+        elif ftype == cp.T_STATUS_STEER and len(data) >= 6:
+            self.steer.append((t, cp.decode_status_steer(data)))
         elif ftype == cp.T_FAULT and len(data) >= 8:
             self.faults.append((t, cp.decode_fault(data)))
 
@@ -141,6 +147,19 @@ class Listener:
             rel = "  (+%.0f ms after %s)" % ((t - t_ref) * 1000, ref_name) if t_ref else ""
             print("FAULT %-17s flags %-24s duty %+5d  t_ms %d%s"
                   % (f["code"], cp.flags_str(f["flags"]), f["duty"], f["t_ms"], rel))
+
+    def print_steer(self):
+        if not self.steer:
+            print("STATUS_STEER: none received")
+            return
+        ts = [t for t, _ in self.steer]
+        span = ts[-1] - ts[0]
+        rate = (len(ts) - 1) / span if span > 0 else 0.0
+        last = self.steer[-1][1]
+        print("STATUS_STEER: %d frames, %.1f Hz | last: ctr %d flags %s target %+.2f"
+              " pos %+.2f deg"
+              % (len(ts), rate, last["ctr"], cp.steer_flags_str(last["flags"]),
+                 last["target"], last["pos"]))
 
     def print_status(self, window=None):
         if not self.status:
@@ -313,10 +332,44 @@ def cmd_cfg(s, a):
         print("no CFG_RESP within %.1f s" % a.listen)
 
 
+def cmd_steer(s, a):
+    """Send one STEER (optionally a second after --gap), then follow
+    STATUS_STEER until the moving flag clears or --follow runs out."""
+    lis = Listener(a.node)
+    targets = [a.deg] + ([a.then] if a.then is not None else [])
+    t0 = time.monotonic()
+    for i, deg in enumerate(targets):
+        ctr = next_ctr(cp.T_STEER, a.addr, a.ctr if i == 0 else None)
+        cid, data = cp.steer_frame(a.addr, ctr, int(round(deg * 100)), a.speed)
+        if a.bad_crc:
+            data = data[:7] + bytes([data[7] ^ 0xFF])
+        tx(s, cid, data)
+        sent = time.monotonic()
+        if i + 1 < len(targets):
+            lis.drain(s, sent + a.gap)
+    # Follow: done when a frame newer than the last send shows not moving.
+    deadline = time.monotonic() + a.follow
+    settled = None
+    while time.monotonic() < deadline and settled is None:
+        lis.drain(s, min(deadline, time.monotonic() + 0.1))
+        for t, d in lis.steer:
+            if t > sent + 0.15 and not d["flags"] & 0x02:
+                settled = t
+                break
+    lis.print_results()
+    lis.print_faults()
+    lis.print_steer()
+    if settled:
+        print("settled %.2f s after the first STEER" % (settled - t0))
+    else:
+        print("still moving (or no status) after --follow %.0f s" % a.follow)
+
+
 def cmd_watch(s, a):
     lis = Listener(a.node)
     lis.drain(s, time.monotonic() + a.duration)
     lis.print_status()
+    lis.print_steer()
     lis.print_results()
     lis.print_faults()
 
@@ -374,6 +427,17 @@ def main():
     cf.add_argument("--tag", type=int)
     cf.add_argument("--bad-crc", action="store_true")
 
+    sr = sub.add_parser("steer")
+    sr.add_argument("addr", type=int)
+    sr.add_argument("deg", type=float, help="absolute target, degrees at the output")
+    sr.add_argument("--speed", type=int, default=0, help="MKS speed code, 0 = node default 2")
+    sr.add_argument("--then", type=float, help="second target, sent --gap s later")
+    sr.add_argument("--gap", type=float, default=1.0)
+    sr.add_argument("--follow", type=float, default=15.0,
+                    help="seconds to follow STATUS_STEER")
+    sr.add_argument("--ctr", type=int, help="force this counter value")
+    sr.add_argument("--bad-crc", action="store_true")
+
     w = sub.add_parser("watch")
     w.add_argument("addr", type=int)
     w.add_argument("--duration", type=float, default=3.0)
@@ -384,7 +448,7 @@ def main():
     s = open_bus(a.iface)
     {"estop": cmd_estop, "stop": cmd_stop, "arm": cmd_arm,
      "speed": cmd_speed, "watch": cmd_watch, "limits": cmd_limits,
-     "ramp": cmd_ramp, "cfg": cmd_cfg}[a.cmd](s, a)
+     "ramp": cmd_ramp, "cfg": cmd_cfg, "steer": cmd_steer}[a.cmd](s, a)
     return 0
 
 

@@ -97,6 +97,7 @@ static volatile state_t state;
 static uint32_t deadline;
 static uint32_t quiet_deadline;
 static uint8_t  last_function;
+static uint32_t txn_seq;               /* +1 per transaction started         */
 static uint8_t  expected_len;          /* 0 = unknown, fall back to quiet    */
 static bool     expecting_motion;
 static bool     completion_pending;
@@ -403,6 +404,7 @@ bool mks_request(const uint8_t *body, uint8_t body_len, bool expect_motion)
   }
 
   stats.requests++;
+  txn_seq++;
   return true;
 }
 
@@ -608,6 +610,10 @@ bool mks_take_completion(void)
   completion_pending = false;
   return had;
 }
+
+bool mks_completion_pending(void) { return completion_pending; }
+
+uint32_t mks_txn_seq(void) { return txn_seq; }
 
 mks_result_t mks_result(void)
 {

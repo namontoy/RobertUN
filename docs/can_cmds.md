@@ -254,9 +254,14 @@ Common fields:
 
 - CENTER, RESERVED and INVALID nodes reply `NOT_SUPPORTED`.
 - The node converts the absolute target into a relative FD move (target minus
-  tracked position). How the tracked position is kept is the open W6 decision
-  (Q3).
-- A STEER that arrives while a move is still running replaces the target.
+  tracked position). The tracked position is the sum of completed moves'
+  commanded pulses, zeroed at STEER_ENABLE (Q3).
+- A STEER that arrives while a move is still running replaces the target. The
+  running move is not cut short: when it completes, one FD goes out for the
+  difference to the latest target.
+- A move that ends any way other than "complete" (stop, ESTOP, timeout, link
+  error) clears `position valid` in STATUS_STEER. STEER then replies
+  `NOT_ARMED` (detail 1) until a new STEER_ENABLE re-zeroes.
 - If steering is not enabled, the frame is rejected with `NOT_ARMED`.
 - Send rate: on change, at most 10 Hz. It is not cyclic.
 - Reply: CMD_RESULT, always.
@@ -557,9 +562,12 @@ polling.
 2. **Heartbeat byte order.** The existing 0x500+ID heartbeat sends its sequence
    big-endian, which conflicts with the little-endian rule. The spec keeps the
    heartbeat unchanged. Should it switch?
-3. **Absolute steering position (open W6 item).** STEER is absolute, but FD is
-   relative. How is the tracked position kept: counting commanded pulses via
-   `33`, or reading the encoder? And where is the steering zero?
+3. **Absolute steering position — resolved 2026-10-04 (W6).** The tracked
+   position is the sum of commanded pulses, advanced only when an FD reports
+   "complete". Zero is the wheel's position at STEER_ENABLE (aligned by hand).
+   A STEER during a move is deferred to the end of that move. `33` is the
+   cross-check: position = −(`33` now − `33` at enable). Bench: +15, −15, 0
+   and a deferred +15 → −10 all matched `33` exactly.
    - Assumed range ±90° at the output; the real mechanical limit is unknown.
    - A limit stored on the node would need a new cfg key, and a new key
      discards the stored config record.

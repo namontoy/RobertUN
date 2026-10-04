@@ -10,6 +10,7 @@
 #include "dipsw.h"
 #include "drive.h"
 #include "mks_servo.h"
+#include "steer.h"
 #include "velocity.h"
 
 static bool         estop_latched;
@@ -62,6 +63,7 @@ void motion_release(void) { owner = MOTION_SRC_NONE; }
 void motion_request_mks_stop(void)
 {
   mks_stop_pending = true;
+  steer_cancel();   /* a STEER waiting for the link must not follow the stop */
   motion_poll();   /* most of the time it goes out right here */
 }
 

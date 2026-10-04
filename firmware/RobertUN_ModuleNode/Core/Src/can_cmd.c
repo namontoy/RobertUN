@@ -15,6 +15,7 @@
 #include "encoder.h"
 #include "isense.h"
 #include "motion.h"
+#include "steer.h"
 #include "velocity.h"
 
 #define FAULT_CODE_MAX      8u
@@ -23,6 +24,7 @@
 #define SPEED_MAX_MRPM      100000L  /* §4.4, Q4: ±100 rpm */
 #define SKIP_FAULT_MIN      5u       /* §5.1: d - 1 >= 5 sends SKIPPED_CTR */
 #define STATUS_ISENSE_AVG   16u      /* same depth as telem's T records */
+#define STATUS_STEER_MS     100u     /* §4.13: 10 Hz                       */
 
 /* ARM byte 1 (§4.3). */
 #define ARM_DISARM          0u
@@ -65,6 +67,7 @@ static fault_slot_t    faults[FAULT_CODE_MAX + 1u];   /* index = code, 0 unused 
 static ctr_window_t    ctr_win[CTR_TYPES][2];         /* [type][0 own, 1 bcast] */
 static uint32_t        status_seq;                    /* encoder step last sent */
 static bool            wd_was_expired;
+static uint32_t        steer_status_ms;               /* last STATUS_STEER  */
 
 /* --- CRC-8/SAE-J1850 ----------------------------------------------------- */
 
@@ -267,6 +270,34 @@ static void send_status_drive(void)
   }
 }
 
+/* Nodes with a steering servo: CORNER, and RESERVED, which acts like one (Q5). */
+static bool has_steering(void)
+{
+  dipsw_role_t r = dipsw_role();
+  return (r == DIPSW_ROLE_CORNER) || (r == DIPSW_ROLE_RESERVED);
+}
+
+static void send_status_steer(void)
+{
+  int16_t tgt = steer_target_cdeg();
+  int16_t pos = steer_position_cdeg();
+  uint8_t d[8];
+
+  d[0] = ctr_window(CAN_T_STEER, false)->last;
+  d[1] = steer_flags();
+  d[2] = (uint8_t)((uint16_t)tgt & 0xFFu);
+  d[3] = (uint8_t)((uint16_t)tgt >> 8);
+  d[4] = (uint8_t)((uint16_t)pos & 0xFFu);
+  d[5] = (uint8_t)((uint16_t)pos >> 8);
+  d[6] = 0u;
+  d[7] = 0u;
+
+  if (send(CAN_T_STATUS_STEER, d, sizeof(d)))
+  {
+    stats.status_tx++;
+  }
+}
+
 /* --- commands ------------------------------------------------------------ */
 
 static void handle_estop(const can_frame_t *f)
@@ -430,8 +461,14 @@ static void handle_arm(const can_frame_t *f, bool bcast)
 
     case ARM_STEER_ENABLE:
     case ARM_STEER_DISABLE:
-      /* W6 phase 5 (steering). Refused for now rather than half-done. */
-      res = CAN_RES_NOT_SUPPORTED;
+      if (!has_steering())
+      {
+        res = CAN_RES_NOT_SUPPORTED;
+      }
+      else if (!steer_enable(action == ARM_STEER_ENABLE))
+      {
+        res = CAN_RES_BUSY;   /* the servo link is taken; send it again */
+      }
       break;
 
     default:
@@ -498,6 +535,66 @@ static void handle_speed(const can_frame_t *f)
   motion_claim(MOTION_SRC_CAN);
   stats.speed_ok++;
   /* No reply on success: ctr comes back in STATUS_DRIVE (§4.4). */
+}
+
+static void handle_steer(const can_frame_t *f)
+{
+  ctr_window_t *win;
+  uint8_t       ctr    = f->data[0];
+  uint8_t       speed  = f->data[1];
+  int16_t       cdeg   = (int16_t)((uint16_t)f->data[2] | ((uint16_t)f->data[3] << 8));
+  can_result_t  res    = CAN_RES_OK;
+  uint8_t       detail = 0u;
+
+  if (!has_steering())
+  {
+    reply(CAN_T_STEER, ctr, CAN_RES_NOT_SUPPORTED, 0u);
+    return;
+  }
+
+  if (!frame_checks(f, CAN_T_STEER, false, &win))
+  {
+    return;
+  }
+
+  /* detail: the field's bit, speed 0x01, angle 0x02. */
+  if (speed > 127u)
+  {
+    res    = CAN_RES_RANGE;
+    detail = 0x01u;
+  }
+  else if ((cdeg > STEER_LIMIT_CDEG) || (cdeg < -STEER_LIMIT_CDEG))
+  {
+    res    = CAN_RES_RANGE;
+    detail = 0x02u;
+  }
+  else if (!motion_allowed())
+  {
+    res = CAN_RES_ESTOP_LATCHED;
+  }
+  else if (!motion_may(MOTION_SRC_CAN))
+  {
+    res = CAN_RES_UART_OWNS;
+  }
+  else if (!steer_enabled() || !steer_position_valid())
+  {
+    /* detail 1: energised, but the position was lost - re-zero with ARM 4. */
+    res    = CAN_RES_NOT_ARMED;
+    detail = steer_enabled() ? 0x01u : 0x00u;
+  }
+
+  if (res == CAN_RES_OK)
+  {
+    ctr_commit(win, ctr);
+    steer_set_target(cdeg, (speed == 0u) ? STEER_SPEED_DEFAULT : speed);
+    motion_claim(MOTION_SRC_CAN);
+  }
+
+  reply(CAN_T_STEER, ctr, res, detail);   /* always (§4.5) */
+
+  debug_uart_printf("can: STEER ctr %u %.2f deg speed %u -> %u\r\n",
+                    (unsigned)ctr, (double)cdeg / 100.0, (unsigned)speed,
+                    (unsigned)res);
 }
 
 static uint16_t le16(const uint8_t *p)
@@ -763,8 +860,9 @@ void can_cmd_init(void)
   }
 
   ctr_resync_all();
-  status_seq     = encoder_velocity_seq();
-  wd_was_expired = velocity_timeout_expired();
+  status_seq      = encoder_velocity_seq();
+  wd_was_expired  = velocity_timeout_expired();
+  steer_status_ms = HAL_GetTick();
 }
 
 void can_cmd_handle(const can_frame_t *f)
@@ -820,6 +918,16 @@ void can_cmd_handle(const can_frame_t *f)
       handle_speed(f);
       break;
 
+    case CAN_T_STEER:
+      if (!own)   /* no broadcast STEER: every wheel has its own angle */
+      {
+        stats.ignored++;
+        break;
+      }
+      stats.handled++;
+      handle_steer(f);
+      break;
+
     case CAN_T_LIMITS:
     case CAN_T_RAMP:
     case CAN_T_CFG_REQ:
@@ -840,7 +948,6 @@ void can_cmd_handle(const can_frame_t *f)
       break;
 
     default:
-      /* STEER: W6 phase 5. */
       stats.ignored++;
       break;
   }
@@ -869,6 +976,20 @@ void can_cmd_poll(void)
   }
 
   uint32_t now = HAL_GetTick();
+
+  if (has_steering())
+  {
+    if (steer_take_error())
+    {
+      fault_raise(CAN_FAULT_MKS_ERROR, can_cmd_flags(), drive_duty());
+    }
+
+    if ((now - steer_status_ms) >= STATUS_STEER_MS)
+    {
+      steer_status_ms = now;
+      send_status_steer();
+    }
+  }
 
   for (uint8_t c = 1u; c <= FAULT_CODE_MAX; c++)
   {

@@ -46,6 +46,9 @@ FAULT_NAMES = {
 # STATUS_DRIVE byte 1 (§4.12), low bit first.
 FLAG_NAMES = ["armed", "bridge", "drvfault", "sat", "wd", "estop", "ramp", "uart"]
 
+# STATUS_STEER byte 1 (§4.13), low bit first.
+STEER_FLAG_NAMES = ["enabled", "moving", "stall", "valid", "uarterr"]
+
 ARM_ACTIONS = {
     "disarm": 0, "arm": 1, "clearfault": 2, "clearestop": 3,
     "steeron": 4, "steeroff": 5,
@@ -110,6 +113,13 @@ def speed_frame(addr, ctr, milli_rpm):
     return cid, seal(cid, struct.pack("<BBiB", ctr & 0xFF, 0, milli_rpm, 0))
 
 
+def steer_frame(addr, ctr, cdeg, speed=0):
+    """STEER: absolute angle in 0.01 deg, MKS speed code (0 = node default)."""
+    cid = can_id(T_STEER, addr)
+    return cid, seal(cid, struct.pack("<BBhBBB", ctr & 0xFF, speed & 0xFF,
+                                      cdeg, 0, 0, 0))
+
+
 def stop_frame(addr, ctr, mode):
     return can_id(T_STOP, addr), bytes([ctr & 0xFF, mode])
 
@@ -166,8 +176,19 @@ def decode_status_drive(data):
             "out": out}
 
 
-def flags_str(flags):
-    return ",".join(n for i, n in enumerate(FLAG_NAMES) if flags & (1 << i)) or "-"
+def decode_status_steer(data):
+    ctr, flags, target, pos = struct.unpack("<BBhh", bytes(data[:6]))
+    return {"ctr": ctr, "flags": flags, "target": target / 100.0,
+            "pos": pos / 100.0}
+
+
+def flags_str(flags, names=None):
+    names = FLAG_NAMES if names is None else names
+    return ",".join(n for i, n in enumerate(names) if flags & (1 << i)) or "-"
+
+
+def steer_flags_str(flags):
+    return flags_str(flags, STEER_FLAG_NAMES)
 
 
 if __name__ == "__main__":

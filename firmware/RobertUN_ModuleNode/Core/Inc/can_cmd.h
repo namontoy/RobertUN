@@ -128,7 +128,7 @@ typedef struct
   uint32_t rejected;    /*!< answered with a result other than OK              */
   uint32_t tx_frames;   /*!< every frame queued (CMD_RESULT, FAULT, STATUS)    */
   uint32_t tx_dropped;  /*!< sends refused: no free mailbox                    */
-  uint32_t status_tx;   /*!< STATUS_DRIVE frames queued                        */
+  uint32_t status_tx;   /*!< STATUS_DRIVE and STATUS_STEER frames queued       */
   uint32_t speed_ok;    /*!< SPEED frames accepted                             */
   uint32_t crc_errors;  /*!< frames rejected with CRC                          */
   uint32_t ctr_repeat;  /*!< frames rejected with REPEAT                       */

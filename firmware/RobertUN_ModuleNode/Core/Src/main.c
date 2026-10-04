@@ -34,6 +34,7 @@
 #include "dipsw.h"
 #include "motion.h"
 #include "can_cmd.h"
+#include "steer.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -253,6 +254,7 @@ int main(void)
 
     mks_poll();            /* advance the SERVO42C transaction state machine */
     motion_poll();         /* a pending ESTOP/STOP servo stop goes out here */
+    steer_poll();          /* CAN steering: its own completions, queued target */
     console_report_mks();  /* print its outcome once it lands */
     console_report_encoder();  /* live counts while `enc watch on` */
     console_report_telem();    /* machine stream while `telem on`  */

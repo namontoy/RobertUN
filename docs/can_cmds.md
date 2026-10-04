@@ -524,6 +524,8 @@ Measured 2026-10-04 (W6 phase 7), one corner node, SPEED 50 Hz + STEER
 10 Hz worst case for 30 s: 130 f/s, 6.9 % (the five per-node rows above:
 50 + 10 + 10 + 50 + 10). RX ring high-water 2 of 32, no drops anywhere.
 HEARTBEAT is muted at boot (`heartbeat on` enables it), so it was absent.
+Decided 2026-10-04: it stays off by default (easier for bench testing); the
+row above is the load with it enabled.
 
 Other CMD_RESULT, FAULT and CFG frames are sporadic and not included, and neither is
 traffic from non-wheel nodes (Q9).

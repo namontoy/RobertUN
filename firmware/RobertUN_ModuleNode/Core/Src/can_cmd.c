@@ -68,6 +68,10 @@ static ctr_window_t    ctr_win[CTR_TYPES][2];         /* [type][0 own, 1 bcast] 
 static uint32_t        status_seq;                    /* encoder step last sent */
 static bool            wd_was_expired;
 static uint32_t        steer_status_ms;               /* last STATUS_STEER  */
+static bool            bus_off_was;                   /* §7.2 edges, ESR    */
+static bool            passive_was;
+static bool            drv_fault_was;
+static uint32_t        ring_dropped_last;
 
 /* --- CRC-8/SAE-J1850 ----------------------------------------------------- */
 
@@ -863,6 +867,16 @@ void can_cmd_init(void)
   status_seq      = encoder_velocity_seq();
   wd_was_expired  = velocity_timeout_expired();
   steer_status_ms = HAL_GetTick();
+
+  can_bus_err_t e;
+  can_bus_stats_t bs;
+
+  can_bus_errors(&e);
+  can_bus_stats_snapshot(&bs);
+  bus_off_was       = e.bus_off;
+  passive_was       = e.passive;
+  drv_fault_was     = drive_fault_latched();
+  ring_dropped_last = bs.rx_ring_dropped;
 }
 
 void can_cmd_handle(const can_frame_t *f)
@@ -966,6 +980,58 @@ void can_cmd_poll(void)
   }
   wd_was_expired = wd;
 
+  /* §7.2 bus errors, from one ESR read per pass (no SCE interrupt). */
+  can_bus_err_t e;
+
+  can_bus_errors(&e);
+
+  if (e.bus_off && !bus_off_was)
+  {
+    /* Act now, not vel_tmo later. Only a loop CAN armed: a console-owned
+       loop is not being driven over this bus. The FAULT goes out on rejoin. */
+    if (velocity_enabled() && (motion_owner() == MOTION_SRC_CAN) &&
+        !velocity_timeout_expired())
+    {
+      velocity_expire_now();
+      debug_uart_puts("can: bus-off - CAN loop coasted, ARM 1 after rejoin\r\n");
+    }
+    /* No other print: a shorted bus re-enters bus-off every few ms. The
+       count is in `can`. */
+    stats.bus_off++;
+  }
+  else if (!e.bus_off && bus_off_was)
+  {
+    fault_raise(CAN_FAULT_BUS_OFF_RECOVERED, can_cmd_flags(), drive_duty());
+  }
+  bus_off_was = e.bus_off;
+
+  if (e.passive && !passive_was)
+  {
+    stats.passive++;
+    fault_raise(CAN_FAULT_ERROR_PASSIVE, can_cmd_flags(), drive_duty());
+  }
+  passive_was = e.passive;
+
+  /* Ring overflow: any increase. A `stats clear` only resyncs. */
+  can_bus_stats_t bs;
+
+  can_bus_stats_snapshot(&bs);
+  if (bs.rx_ring_dropped > ring_dropped_last)
+  {
+    fault_raise(CAN_FAULT_RX_RING_DROPPED, can_cmd_flags(), drive_duty());
+  }
+  ring_dropped_last = bs.rx_ring_dropped;
+
+  /* nFAULT latch (drive.c samples the pin each tick). Report only; what to
+     do about it stays with the caller, as drive.h says. */
+  bool drv_fault = drive_fault_latched();
+
+  if (drv_fault && !drv_fault_was)
+  {
+    fault_raise(CAN_FAULT_DRV_FAULT, can_cmd_flags(), drive_duty());
+  }
+  drv_fault_was = drv_fault;
+
   /* STATUS_DRIVE once per control step, phase-locked to it (§4.12). */
   uint32_t seq = encoder_velocity_seq();
 
@@ -1009,6 +1075,14 @@ void can_cmd_poll(void)
     if (s->ever_sent && ((now - s->last_sent_ms) < FAULT_MIN_GAP_MS))
     {
       continue;
+    }
+
+    /* Held, not dropped: with no ACK on the bus the mailboxes stay full and
+       this would otherwise count a refusal every pass (36 M in one bench
+       short, 10-04). It goes out when a mailbox frees. */
+    if (can_bus_tx_free() == 0u)
+    {
+      break;
     }
 
     uint8_t d[8];

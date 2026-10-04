@@ -2408,6 +2408,8 @@ static void cmd_can(int argc, char **argv)
                     (unsigned long)c->ctr_skipped);
   debug_uart_printf("status : %lu STATUS_DRIVE sent\r\n",
                     (unsigned long)c->status_tx);
+  debug_uart_printf("bus    : %lu bus-off, %lu error-passive entries\r\n",
+                    (unsigned long)c->bus_off, (unsigned long)c->passive);
   static const char *const owners[] = { "none", "UART", "CAN" };
 
   debug_uart_printf("flags  : 0x%02X, estop %s, motion owner %s\r\n",

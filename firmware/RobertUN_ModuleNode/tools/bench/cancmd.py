@@ -25,6 +25,7 @@ _REF_TASK6_CAN_LATENCY. Prints numbers only, never a frame dump.
 
 import argparse
 import collections
+import errno
 import json
 import os
 import select
@@ -76,8 +77,16 @@ def open_bus(iface):
 
 
 def tx(s, cid, data):
+    """Queue one frame. False if the kernel queue is full (ENOBUFS): the bus is
+    down or the adapter is bus-off. A bus-fault test must outlive that."""
     data = bytes(data)
-    s.send(struct.pack(CAN_FMT, cid, len(data), data.ljust(8, b"\0")))
+    try:
+        s.send(struct.pack(CAN_FMT, cid, len(data), data.ljust(8, b"\0")))
+    except OSError as e:
+        if e.errno != errno.ENOBUFS:
+            raise
+        return False
+    return True
 
 
 def rx_until(s, deadline):
@@ -237,15 +246,18 @@ def cmd_speed(s, a):
     t_next = t_start
     t_last = t_start
     sent = 0
+    refused = 0
     for i in range(n):
         if i > 0 and not a.repeat:
             ctr = (ctr + 1) & 0xFF
         cid, data = cp.speed_frame(a.addr, ctr, mrpm)
         if a.bad_crc:
             data = data[:7] + bytes([data[7] ^ 0xFF])
-        tx(s, cid, data)
+        if tx(s, cid, data):
+            sent += 1
+        else:
+            refused += 1
         t_last = time.monotonic()
-        sent += 1
         t_next += period
         lis.drain(s, t_next)
     t_end = time.monotonic()
@@ -257,6 +269,8 @@ def cmd_speed(s, a):
           % (a.rpm, sent, t_last - t_start, (sent - 1) / (t_last - t_start) if sent > 1 else 0,
              first_ctr, ctr, "  [ctr frozen]" if a.repeat else "",
              "  [bad crc]" if a.bad_crc else ""))
+    if refused:
+        print("  tx refused (ENOBUFS): %d frames" % refused)
     # The last ~2 s of sending: the settled part of a run started from rest.
     lis.print_status(window=(max(t_start, t_end - 2.0), t_end))
 

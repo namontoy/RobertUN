@@ -153,6 +153,10 @@ bool can_bus_init(void);
   */
 bool can_bus_send(uint32_t id, const void *data, uint8_t len);
 
+/** @brief Free TX mailboxes, 0..3. A sender that retries a frame later checks
+  *        this first, so a bus with nobody ACKing doesn't count a drop per try. */
+uint32_t can_bus_tx_free(void);
+
 /**
   * @brief  Pop one frame from the software RX ring.
   *

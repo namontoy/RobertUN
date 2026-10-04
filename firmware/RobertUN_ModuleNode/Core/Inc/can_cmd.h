@@ -134,6 +134,8 @@ typedef struct
   uint32_t ctr_repeat;  /*!< frames rejected with REPEAT                       */
   uint32_t ctr_stale;   /*!< frames rejected with STALE                        */
   uint32_t ctr_skipped; /*!< can_ctr_skipped: sum of d - 1 over accepted frames */
+  uint32_t bus_off;     /*!< bus-off entries seen by the ESR poll (§7.2)        */
+  uint32_t passive;     /*!< error-passive entries seen by the ESR poll         */
 } can_cmd_stats_t;
 
 /** @brief Reset the counters and pending state. Call after can_bus_init(). */

@@ -209,6 +209,11 @@ void can_bus_get_timing(uint32_t *bitrate, uint32_t *ntq, uint32_t *brp,
 /* Transmit / receive                                                          */
 /* -------------------------------------------------------------------------- */
 
+uint32_t can_bus_tx_free(void)
+{
+  return HAL_CAN_GetTxMailboxesFreeLevel(&hcan1);
+}
+
 bool can_bus_send(uint32_t id, const void *data, uint8_t len)
 {
   CAN_TxHeaderTypeDef header = {0};

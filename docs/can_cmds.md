@@ -1,8 +1,8 @@
 # Wheel node — W6 CAN command set (specification)
 
-Status: **draft, 2026-09-28.** No code implements this yet. Open questions are
-in section 8. **Q1 must be settled first**: `PROJECT_CONTEXT_REST.md` selects
-CANopen, and this spec is plain CAN.
+Status: **draft, 2026-09-28; plain CAN selected 2026-10-04** (Q1: simpler, and
+time is short before the Dec 10 demo). Addresses moved to the 4-bit DIP ID on
+2026-10-04. No code implements this yet. Open questions are in section 8.
 
 Sources:
 - `PROJECT_CONTEXT_REST.md`: "Message ID design principles", "OSI layer
@@ -21,13 +21,13 @@ Sources:
 | Frame format | Classic CAN 2.0A, 11-bit ID, DLC ≤ 8, 250 kbps. No extended IDs, no RTR |
 | Byte order | Little-endian for every multi-byte field. The existing heartbeat is the one exception (Q2) |
 | Directions | O→N means orion to a node; N→O means a node to orion |
-| Node address | `a` = DIP module ID 0–6 (`dipsw_id()`). **7 = broadcast.** DIP code 7 is `DIPSW_CODE_INVALID`, so no node ever owns address 7 |
-| Roles (`dipsw.h`) | 0–3 CORNER (steering + drive), 4–5 CENTER (drive only), 6 RESERVED (bench), 7 INVALID (transmits nothing) |
+| Node address | `a` = 4-bit DIP module ID 1–14 (`dipsw_id()`). **0 = broadcast** (`DIPSW_ADDR_BROADCAST`). 15 = no switch fitted (`DIPSW_CODE_UNFITTED`). No node ever owns address 0 or 15 |
+| Roles (`dipsw.h`) | 1–4 CORNER (steering + drive), 5–6 CENTER (drive only), 7–14 RESERVED (future / bench), 0 and 15 INVALID (transmits nothing) |
 | Protocol version | `PROTO_VER = 1`. It is not transmitted. It is folded into the CRC (§5.2), so a layout mismatch fails the CRC |
 | Reserved bytes | Senders send 0x00; receivers ignore them |
 | Wrong DLC | A frame shorter than its table's DLC is rejected with `BAD_DLC` and not acted on. Exception: ESTOP and STOP act on the ID alone |
 | RX path | The ISR only captures frames into the 32-frame ring. Parsing and actions run in main-loop dispatch (ISR-to-ring plan) |
-| Acceptance | The accept-all hardware filter stays; narrowing it is out of scope in the plan. The node drops, in software, any O→N frame whose address is neither its own nor 7 |
+| Acceptance | The accept-all hardware filter stays; narrowing it is out of scope in the plan. The node drops, in software, any O→N frame whose address is neither its own nor 0 |
 
 ## 2. Console command classification
 
@@ -96,36 +96,43 @@ get/set by key index). **D** = diagnostics (stays on UART only).
 
 ## 3. ID scheme
 
-`ID = (type << 3) | addr`. `type` is 8 bits (0x00–0xFF) and `addr` is 3 bits
-(0–6 = node, 7 = broadcast). A lower ID wins arbitration.
+`ID = (type << 4) | addr`. `type` is 7 bits (0x00–0x7F) and `addr` is 4 bits
+(1–14 = node, 0 = broadcast, 15 = never owned). A lower ID wins arbitration.
 
 The ID scheme follows REST "Message ID design principles":
 - Priority is set by message type, not by node.
 - The upper bits give the group and the lower bits the address, so a mask
   filter per type is possible.
 - The type values are chosen so that each frame lands in REST's groups:
-  - 0x001–0x00F safety
+  - 0x000–0x00F safety
   - 0x010–0x07F control
+  - 0x080–0x0FF sensor setpoints (REST); here it holds only CMD_RESULT
   - 0x100–0x4FF periodic data
   - 0x500–0x5FF telemetry, diagnostics and heartbeat
-- Type 0x00 is unused, which keeps ID 0x000 (CANopen NMT) free.
+- ESTOP takes type 0x00, so broadcast ESTOP is ID 0x000, the highest priority
+  on the bus. (The 09-28 draft kept 0x000 free for CANopen NMT; plain CAN was
+  selected on 10-04, so that reason is gone.)
+- With 16 IDs per type the control group holds only 7 types (0x01–0x07).
+  CMD_RESULT is the eighth control frame, so it moves to type 0x08, just below
+  them. The priority order of the 09-28 draft is kept.
+- Address 15 is never owned, so IDs ending in 0xF stay unused.
 
 | Type | ID range | Frame | Dir | Broadcast | REST group |
 |---|---|---|---|---|---|
-| 0x01 | 0x008–0x00F | ESTOP | O→N | yes (normally 0x00F) | safety |
-| 0x02 | 0x010–0x017 | STOP | O→N | yes | control |
-| 0x03 | 0x018–0x01E | FAULT | N→O | — | control |
-| 0x04 | 0x020–0x027 | ARM | O→N | yes | control |
-| 0x05 | 0x028–0x02E | SPEED | O→N | no | control |
-| 0x06 | 0x030–0x036 | STEER | O→N | no | control |
-| 0x07 | 0x038–0x03F | LIMITS | O→N | yes | control |
-| 0x08 | 0x040–0x047 | RAMP | O→N | yes | control |
-| 0x0F | 0x078–0x07E | CMD_RESULT | N→O | — | control |
-| 0x20 | 0x100–0x106 | STATUS_DRIVE | N→O | — | periodic |
-| 0x21 | 0x108–0x10B | STATUS_STEER | N→O | — (CORNER only, IDs 0–3) | periodic |
-| 0xA0 | 0x500–0x506 | HEARTBEAT (**existing**, unchanged) | N→O | — | heartbeat |
-| 0xA4 | 0x520–0x527 | CFG_REQ | O→N | yes | diagnostics |
-| 0xA5 | 0x528–0x52E | CFG_RESP | N→O | — | diagnostics |
+| 0x00 | 0x000–0x00E | ESTOP | O→N | yes (normally 0x000) | safety |
+| 0x01 | 0x010–0x01E | STOP | O→N | yes | control |
+| 0x02 | 0x021–0x02E | FAULT | N→O | — | control |
+| 0x03 | 0x030–0x03E | ARM | O→N | yes | control |
+| 0x04 | 0x041–0x04E | SPEED | O→N | no | control |
+| 0x05 | 0x051–0x054 | STEER | O→N | no (CORNER only, IDs 1–4) | control |
+| 0x06 | 0x060–0x06E | LIMITS | O→N | yes | control |
+| 0x07 | 0x070–0x07E | RAMP | O→N | yes | control |
+| 0x08 | 0x081–0x08E | CMD_RESULT | N→O | — | setpoints range (see above) |
+| 0x10 | 0x101–0x10E | STATUS_DRIVE | N→O | — | periodic |
+| 0x11 | 0x111–0x114 | STATUS_STEER | N→O | — (CORNER only, IDs 1–4) | periodic |
+| 0x50 | 0x501–0x50E | HEARTBEAT (**existing** `0x500 + id`, unchanged) | N→O | — | heartbeat |
+| 0x52 | 0x520–0x52E | CFG_REQ | O→N | yes | diagnostics |
+| 0x53 | 0x531–0x53E | CFG_RESP | N→O | — | diagnostics |
 
 Resulting priority, from highest to lowest:
 1. ESTOP
@@ -144,10 +151,10 @@ Rules:
 - Every ID is sent by exactly one transmitter. Orion never uses N→O types, and
   each node sends only its own address, so no two senders collide in
   arbitration.
-- Within one type, broadcast (addr 7) loses arbitration to a single-node frame
-  of the same type. For ESTOP that costs at most one frame time, ≈ 0.54 ms
-  (Q16).
-- A node with role INVALID (DIP 7) transmits nothing, which is existing
+- Within one type, broadcast (addr 0) is the lowest ID, so it wins
+  arbitration against any single-node frame of the same type. Broadcast ESTOP
+  (0x000) beats every frame on the bus (Q16).
+- A node with role INVALID (DIP 0 or 15) transmits nothing, which is existing
   behaviour. It acts only on broadcast ESTOP and STOP.
 
 ## 4. Frames
@@ -161,7 +168,7 @@ Common fields:
   - does not advance the counter;
   - is answered with CMD_RESULT (or CFG_RESP) and a result code (§6.1).
 
-### 4.1 ESTOP — 0x008 + addr, O→N, DLC 0–8
+### 4.1 ESTOP — 0x000 + addr, O→N, DLC 0–8
 
 | Byte | Field | Type | Unit | Range | Out of range |
 |---|---|---|---|---|---|
@@ -192,7 +199,7 @@ Common fields:
 - Modes 1 and 2 also disarm the loop (`vel off`).
 - Reply: CMD_RESULT.
 
-### 4.3 ARM — 0x020 + addr, O→N, DLC 8
+### 4.3 ARM — 0x030 + addr, O→N, DLC 8
 
 | Byte | Field | Type | Unit | Range | Out of range |
 |---|---|---|---|---|---|
@@ -215,7 +222,7 @@ Common fields:
 - An accepted ARM resets the counter window for SPEED and STEER (§5.1).
 - Reply: CMD_RESULT.
 
-### 4.4 SPEED — 0x028 + node, O→N, DLC 8 (no broadcast)
+### 4.4 SPEED — 0x040 + node, O→N, DLC 8 (no broadcast)
 
 | Byte | Field | Type | Unit | Scaling | Range | Out of range |
 |---|---|---|---|---|---|---|
@@ -235,7 +242,7 @@ Common fields:
 - Reply: CMD_RESULT **only on rejection**. Success shows up as `ctr` echoed in
   STATUS_DRIVE.
 
-### 4.5 STEER — 0x030 + node, O→N, DLC 8 (CORNER nodes only)
+### 4.5 STEER — 0x050 + node, O→N, DLC 8 (CORNER nodes only)
 
 | Byte | Field | Type | Unit | Scaling | Range | Out of range |
 |---|---|---|---|---|---|---|
@@ -247,14 +254,19 @@ Common fields:
 
 - CENTER, RESERVED and INVALID nodes reply `NOT_SUPPORTED`.
 - The node converts the absolute target into a relative FD move (target minus
-  tracked position). How the tracked position is kept is the open W6 decision
-  (Q3).
-- A STEER that arrives while a move is still running replaces the target.
+  tracked position). The tracked position is the sum of completed moves'
+  commanded pulses, zeroed at STEER_ENABLE (Q3).
+- A STEER that arrives while a move is still running replaces the target. The
+  running move is not cut short: when it completes, one FD goes out for the
+  difference to the latest target.
+- A move that ends any way other than "complete" (stop, ESTOP, timeout, link
+  error) clears `position valid` in STATUS_STEER. STEER then replies
+  `NOT_ARMED` (detail 1) until a new STEER_ENABLE re-zeroes.
 - If steering is not enabled, the frame is rejected with `NOT_ARMED`.
 - Send rate: on change, at most 10 Hz. It is not cyclic.
 - Reply: CMD_RESULT, always.
 
-### 4.6 LIMITS — 0x038 + addr, O→N, DLC 8
+### 4.6 LIMITS — 0x060 + addr, O→N, DLC 8
 
 Live only; nothing is stored. It behaves like `drv limit` and `drv trip`. To
 store a limit, use CFG SET and SAVE on keys 3–4.
@@ -272,7 +284,7 @@ store a limit, use CFG SET and SAVE on keys 3–4.
   watchdog (`drive_set_limit()` semantics).
 - Reply: CMD_RESULT.
 
-### 4.7 RAMP — 0x040 + addr, O→N, DLC 8
+### 4.7 RAMP — 0x070 + addr, O→N, DLC 8
 
 Live only, like `drv ramp` and `drv ramp floor`. Stored keys: 9 and 10.
 
@@ -303,7 +315,14 @@ Rules:
 - A SET lives in RAM until SAVE.
 - SAVE is refused with `BUSY` while the bridge is enabled or the loop is armed
   (a flash write stalls the core; Q10).
-- REVERT and DEFAULT re-apply the live values, as the console does.
+- REVERT and DEFAULT re-apply every key to the running modules
+  (`config_apply_all()`), as the console does.
+- A SET of `vel_tmo`, and any REVERT or DEFAULT, re-arms the setpoint
+  countdown, as the console does: a deadline just changed has not been missed
+  yet. So a host repeating those keeps an armed loop alive without SPEED. Orion must
+  not use it as a keep-alive; liveness is SPEED (§7.1).
+- A frame with DLC < 8 is answered with status `CRC` (6): a truncated frame
+  cannot carry a checkable CRC. There is no separate BAD_DLC status.
 - There is no rolling counter: config is not motion. `tag` pairs each request
   with its response.
 - Broadcast is allowed. Every node answers with its own CFG_RESP.
@@ -335,7 +354,7 @@ Rules:
 | 20 | `isense_dk` | o/oo | 400 | 1000 |
 | 21 | `isense_dmin` | o/oo | 30 | 145 |
 
-### 4.9 CFG_RESP — 0x528 + node, N→O, DLC 8
+### 4.9 CFG_RESP — 0x530 + node, N→O, DLC 8
 
 | Byte | Field | Type | Meaning |
 |---|---|---|---|
@@ -345,7 +364,7 @@ Rules:
 | 3 | `status` | u8 | 0 OK, 1 UNKNOWN_KEY, 2 RANGE, 3 BUSY, 4 FLASH_ERROR, 5 BAD_OP, 6 CRC |
 | 4–7 | `value` | i32 | GET, SET, DEFAULT_KEY: the key's RAM value after the op. GET_MIN/MAX/DEFAULT: that bound. INFO: byte 4 = `CONFIG_VERSION`, byte 5 = key count, byte 6 = slot used, byte 7 bit 0 = dirty. SAVE/REVERT: the `config_load_t` or save result code |
 
-### 4.10 CMD_RESULT — 0x078 + node, N→O, DLC 4
+### 4.10 CMD_RESULT — 0x080 + node, N→O, DLC 4
 
 | Byte | Field | Type | Meaning |
 |---|---|---|---|
@@ -354,7 +373,7 @@ Rules:
 | 2 | `result` | u8 | Result code (§6.1) |
 | 3 | `detail` | u8 | For `RANGE`: the offending field's mask bit. For `STALE`/`REPEAT`: the node's last accepted counter. Otherwise 0 |
 
-### 4.11 FAULT — 0x018 + node, N→O, DLC 8, event-driven
+### 4.11 FAULT — 0x020 + node, N→O, DLC 8, event-driven
 
 | Byte | Field | Type | Unit | Meaning |
 |---|---|---|---|---|
@@ -381,7 +400,7 @@ Rules:
   the step.
 - Sent whether or not the loop is armed.
 
-### 4.13 STATUS_STEER — 0x108 + node, N→O, DLC 8, periodic, CORNER only
+### 4.13 STATUS_STEER — 0x110 + node, N→O, DLC 8, periodic, CORNER only
 
 | Byte | Field | Type | Unit | Scaling |
 |---|---|---|---|---|
@@ -406,7 +425,7 @@ This frame is unchanged. It runs at TIM7's 2 Hz. Payload:
 
 Counters are kept per (frame type, destination address). Orion increments
 `ctr` by 1 (mod 256) on each send of that type to that address. Broadcast
-(addr 7) has its own sequence. The node keeps `last[type]` for its own address
+(addr 0) has its own sequence. The node keeps `last[type]` for its own address
 and a separate one for broadcast.
 
 | Frames | Counter checked? |
@@ -444,7 +463,12 @@ Definition: CRC-8/SAE-J1850 (poly 0x1D, init 0xFF, xorout 0xFF, no
 reflection). Input, in order:
 1. the 11-bit ID as u16 little-endian (2 bytes);
 2. `PROTO_VER` (1 byte);
-3. the payload bytes, excluding the CRC byte.
+3. the payload bytes, excluding the CRC byte, in payload order. For the
+   frames with the CRC in byte 7 that is bytes 0–6; for CFG_REQ (CRC in
+   byte 3) it is bytes 0–2 then 4–7.
+
+Check value: CRC-8/SAE-J1850 of ASCII `"123456789"` is **0x4B**. The console
+`can crc` prints it; `tools/bench/canproto.py` asserts it.
 
 On mismatch: reject with `CRC`; nothing applied, no watchdog kick, counter not
 advanced.
@@ -489,13 +513,19 @@ figure.
 |---|---|---|---|
 | SPEED (O→N) | 6 | 50 Hz | 300 |
 | STEER (O→N), worst case | 4 | 10 Hz | 40 |
+| CMD_RESULT for STEER (replied always, §4.5) | 4 | 10 Hz | 40 |
 | STATUS_DRIVE | 6 | 50 Hz | 300 |
 | STATUS_STEER | 4 | 10 Hz | 40 |
 | HEARTBEAT | 6 | 2 Hz | 12 |
-| **Total** | | | **692 f/s → 37.4 %** |
-| With STATUS_DRIVE at 25 Hz | | | 542 f/s → 29.3 % |
+| **Total** | | | **732 f/s → 39.5 %** |
+| With STATUS_DRIVE at 25 Hz | | | 582 f/s → 31.4 % |
 
-CMD_RESULT, FAULT and CFG frames are sporadic and not included, and neither is
+Measured 2026-10-04 (W6 phase 7), one corner node, SPEED 50 Hz + STEER
+10 Hz worst case for 30 s: 130 f/s, 6.9 % (the five per-node rows above:
+50 + 10 + 10 + 50 + 10). RX ring high-water 2 of 32, no drops anywhere.
+HEARTBEAT is muted at boot (`heartbeat on` enables it), so it was absent.
+
+Other CMD_RESULT, FAULT and CFG frames are sporadic and not included, and neither is
 traffic from non-wheel nodes (Q9).
 
 ## 7. Safety behaviour
@@ -505,7 +535,7 @@ traffic from non-wheel nodes (Q9).
 | Rule | |
 |---|---|
 | Does `vel_tmo` apply to CAN? | **Yes, unchanged.** Accepted SPEED frames call `velocity_set_setpoint()`, which kicks the same setpoint watchdog as `vel target`. Default 1000 ms = 50 missed frames at 50 Hz (Q11) |
-| What does not kick | Rejected frames (REPEAT, STALE, RANGE, CRC, NOT_ARMED), STATUS traffic, CFG, LIMITS and RAMP |
+| What does not kick | Rejected frames (REPEAT, STALE, RANGE, CRC, NOT_ARMED), STATUS traffic, CFG, LIMITS and RAMP. Exception: CFG SET `vel_tmo`, REVERT and DEFAULT re-arm the countdown (§4.8) |
 | On expiry | The existing behaviour: setpoint 0, coast, flag latched. Also FAULT `VEL_WD_EXPIRED` and STATUS_DRIVE bit 4. The latch clears with ARM action 1 (`velocity_enable()`) |
 | `drv timeout` | Stays UART-only and off by default. While the loop is armed, each loop step's duty command kicks it, so orion's liveness is judged by `vel_tmo` |
 | Steering | A move in progress completes; there is no steering timeout. FD moves are finite |
@@ -516,11 +546,14 @@ traffic from non-wheel nodes (Q9).
 |---|---|---|
 | Error-warning | ESR, polled every main-loop pass | Flag only (heartbeat byte 7) |
 | Error-passive | ESR, polled | Keep running (RX still works). FAULT `ERROR_PASSIVE` once per entry. Flag in the heartbeat |
-| Bus-off | ESR `BOFF`, polled | **Immediately** act as a `vel_tmo` expiry: setpoint 0, coast, watchdog latch set. Don't wait up to 1 s for `vel_tmo`. `AutoBusOff = ENABLE` rejoins after 128 × 11 recessive bits. After rejoin: FAULT `BUS_OFF_RECOVERED`. Motion resumes only after ARM action 1 |
+| Bus-off | ESR `BOFF`, polled | **Immediately** act as a `vel_tmo` expiry: setpoint 0, coast, watchdog latch set (`velocity_expire_now()`, also with `vel_tmo` 0). Don't wait up to 1 s for `vel_tmo`. Only a loop armed over CAN; a console-owned loop is not driven over this bus and keeps running. `AutoBusOff = ENABLE` rejoins after 128 × 11 recessive bits. After rejoin: FAULT `BUS_OFF_RECOVERED`. Motion resumes only after ARM action 1 |
 | RX ring overflow | `rx_ring_dropped` increments | FAULT `RX_RING_DROPPED` (rate-limited). No motion change; the counter rules handle the lost commands |
 
 An SCE (error) interrupt is out of scope (ISR-to-ring plan), so detection is by
 polling.
+
+A FAULT that cannot be queued (all three mailboxes full, e.g. nobody ACKing)
+is held, not dropped, and goes out when a mailbox frees.
 
 ### 7.3 UART and CAN arbitration
 
@@ -536,21 +569,19 @@ polling.
 
 ## 8. Open questions and assumptions
 
-1. **Plain CAN vs CANopen — this conflicts with REST.** `PROJECT_CONTEXT_REST.md`
-   "OSI layer mapping", "KEY DECISIONS" and non-wheel task 7 select CANopen:
-   CANopenNode + CanOpenSTM32, CiA 402 cyclic synchronous velocity, SDO config,
-   EMCY and heartbeat, with ros2_canopen on orion. REST also says the plain ID
-   hierarchy "serves as reference … not used in final rover". This spec is
-   plain CAN, as the W6 request asked. **Undecided:** is this the W6/demo
-   protocol, with CANopen dropped or deferred, or a stopgap until CANopen?
-   If CANopen stays, most of this spec is replaced: SDO replaces CFG, RPDO
-   replaces SPEED, EMCY replaces FAULT, and COB-IDs are node-centric.
+1. **Plain CAN vs CANopen — resolved 2026-10-04: plain CAN.** Reason:
+   simplicity and lack of time before the Dec 10 demo. `docs/canopen_cmds.md`
+   is kept for reference only. This overrides the CANopen selection in
+   `PROJECT_CONTEXT_REST.md` for the wheel nodes.
 2. **Heartbeat byte order.** The existing 0x500+ID heartbeat sends its sequence
    big-endian, which conflicts with the little-endian rule. The spec keeps the
    heartbeat unchanged. Should it switch?
-3. **Absolute steering position (open W6 item).** STEER is absolute, but FD is
-   relative. How is the tracked position kept: counting commanded pulses via
-   `33`, or reading the encoder? And where is the steering zero?
+3. **Absolute steering position — resolved 2026-10-04 (W6).** The tracked
+   position is the sum of commanded pulses, advanced only when an FD reports
+   "complete". Zero is the wheel's position at STEER_ENABLE (aligned by hand).
+   A STEER during a move is deferred to the end of that move. `33` is the
+   cross-check: position = −(`33` now − `33` at enable). Bench: +15, −15, 0
+   and a deferred +15 → −10 all matched `33` exactly.
    - Assumed range ±90° at the output; the real mechanical limit is unknown.
    - A limit stored on the node would need a new cfg key, and a new key
      discards the stored config record.
@@ -558,8 +589,9 @@ polling.
    milli-rpm. The plant reaches ~77 rpm at 100 % duty at 12 V (loaded rig), and
    `vel_max` 300 caps it near 21 rpm. Orion converts m/s to rpm (wheel radius
    is not in this spec). Should the range be tighter?
-5. **Role 6 (RESERVED/bench).** Assumed to accept all frames and steer like a
-   CORNER. Role 7 obeys only broadcast ESTOP and STOP.
+5. **RESERVED role (IDs 7–14, future / bench).** Assumed to accept all frames
+   and steer like a CORNER. INVALID (DIP 0 or 15) obeys only broadcast ESTOP
+   and STOP.
 6. **Open-loop duty over CAN.** `drv duty` is kept UART-only. Is a CAN duty
    frame wanted, for example for rover τ tests driven from orion?
 7. **`reset` over CAN.** Kept UART-only.
@@ -574,16 +606,16 @@ polling.
     may be long for a moving rover at 50 Hz commands.
 12. **`enc window` and status rate.** STATUS_DRIVE is locked to the control
     step. Changing `enc window` over UART changes the CAN rate. 50 Hz or 25 Hz?
-13. **Ownership rule (§7.3).** This is a new behaviour for the console, which
-    today accepts everything. Confirm before implementation.
+13. **Ownership rule (§7.3) — resolved 2026-10-04 (W6).** Adopted as written:
+    a CAN-armed node refuses console motion commands; console stops release
+    ownership; a console-armed node answers SPEED/STEER with `UART_OWNS`.
 14. **Stop policy.** ESTOP and STOP mode 1 coast, following the W4 stop policy.
     Braking may be needed on slopes. Undecided.
-15. **CENTER nodes (IDs 4–5) have no steering**, following `dipsw.h`. Confirm
+15. **CENTER nodes (IDs 5–6) have no steering**, following `dipsw.h`. Confirm
     this against the chassis.
-16. **Broadcast ESTOP arbitration.** Broadcast uses addr 7, the highest ID in
-    its type. The cost is at most one frame time, ≈ 0.54 ms. Accepted.
-17. **CRC polynomial.** SAE-J1850 was chosen. Any 8-bit polynomial with a
-    documented check value would do.
-18. **ESTOP latch and the console.** The console refuses motion while the latch
-    is set, but there is no console command to clear it. Add one, or keep it
-    CAN and reset only?
+16. **Broadcast ESTOP arbitration — resolved 2026-10-04.** Broadcast is
+    addr 0, the lowest ID in its type, so broadcast ESTOP (0x000) wins against
+    every frame on the bus.
+17. **CRC polynomial — resolved.** CRC-8/SAE-J1850, check value 0x4B (§5.2).
+18. **ESTOP latch and the console — resolved 2026-10-04 (W6).** Console
+    `estop clear` clears the latch, as ARM 3 (CLEAR_ESTOP) does over CAN.

@@ -13,6 +13,7 @@
 #include "main.h"
 #include "drive.h"
 #include "isense.h"
+#include "velocity.h"
 
 #include <string.h>
 
@@ -587,6 +588,72 @@ void config_reset_key(config_key_t key)
 void config_reset_all(void)
 {
   load_defaults();
+}
+
+/* Moved from console.c (W6 phase 4) so that `cfg` and CAN CFG_REQ take the
+   same path. Setting a key and not applying it would leave `cfg` and `drv`
+   disagreeing about the same number until the next reset, which gets
+   debugged as a hardware fault. */
+void config_apply_live(config_key_t key)
+{
+  if (key >= CFG_KEY_COUNT)
+  {
+    return;
+  }
+
+  int32_t v = live[key];
+
+  switch (key)
+  {
+    case CFG_TRIP_BOOT_MA:  (void)isense_set_trip_ma((uint32_t)v);  break;
+    case CFG_DUTY_LIMIT:    drive_set_limit((uint16_t)v);            break;
+    case CFG_RAMP_PMPS:     drive_set_ramp((uint16_t)v);             break;
+    case CFG_RAMP_FLOOR:    drive_set_ramp_floor((uint16_t)v);       break;
+
+    /* Every velocity key applies LIVE, including while the loop is running:
+       tuning a gain by rebooting between trials is not tuning. The integrator
+       is deliberately NOT reset - with the clamp the bump is bounded, and
+       clearing it would hide the steady state a Ki change is judged on. */
+    case CFG_VEL_KP:        velocity_set_kp(v);                      break;
+    case CFG_VEL_KI:        velocity_set_ki(v);                      break;
+    case CFG_VEL_KD:        velocity_set_kd(v);                      break;
+    case CFG_VEL_FF_SLOPE:  velocity_set_ff(v, velocity_ff_offset()); break;
+    case CFG_VEL_FF_OFFSET: velocity_set_ff(velocity_ff_slope(), v);  break;
+    case CFG_VEL_I_LIMIT:   velocity_set_i_limit((uint16_t)v);       break;
+    case CFG_VEL_MAX:       velocity_set_max((uint16_t)v);           break;
+    case CFG_VEL_SLEW:      velocity_set_slew(v);                    break;
+
+    /* Re-arms the countdown: a deadline just changed has not been missed
+       yet. It does not clear the sticky expired flag - only `vel on` does. */
+    case CFG_VEL_TIMEOUT:   velocity_set_timeout((uint32_t)v);       break;
+
+    /* These change the meaning of every current number. The trip in force was
+       computed with the old scale and would regulate at the wrong current
+       while reporting the right one. */
+    case CFG_R_IPROPI_OHM:
+    case CFG_A_IPROPI_UA_PER_A:
+    case CFG_VDDA_MV:
+      (void)isense_set_trip_ma(isense_trip_ma());
+      break;
+
+    default:   /* read on every use */
+      break;
+  }
+}
+
+/* Needed after revert and default, which replace the values underneath a
+   board still running on the old ones. Without it, `cfg` can claim a 40% cap
+   while the bridge still enforces 100%, or show one vel_kp while the loop runs
+   another. Every key, in index order: the IPROPI scale keys (0-2) come before
+   trip_ma (3), so the trip ends at its configured value on the new scale, and
+   vel_ff_a before vel_ff_b, so both end at theirs. Re-arms the vel_tmo
+   countdown, as a `cfg vel_tmo` does. */
+void config_apply_all(void)
+{
+  for (uint16_t i = 0u; i < (uint16_t)CFG_KEY_COUNT; i++)
+  {
+    config_apply_live((config_key_t)i);
+  }
 }
 
 bool config_dirty(void)

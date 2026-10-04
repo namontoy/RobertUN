@@ -61,6 +61,9 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/config.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/dipsw.c
     ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/velocity.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/motion.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/can_cmd.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/Core/Src/steer.c
 )
 
 # Add include paths

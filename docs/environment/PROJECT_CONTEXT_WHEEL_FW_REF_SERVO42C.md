@@ -124,6 +124,13 @@ Set Kp to default:   `E0 A1 06 50 D7` → 224+161+6+80 = 471 → 471−256 = 215
 
 ### ⚠️ The driver ECHOES every request before replying
 
+> **Not seen on 2026-10-04 (W6 phase 5, node 2):** 0 echoes in 200+ clean
+> replies. The echo below may have come from the Aug 13 wiring rather than the
+> device. `strip_echo()` stays (a no-op without an echo). Same day: **PA1 needs
+> a pull-up.** The SERVO42C TX only pulls low. With no pull-up, 60 Hz hum gave
+> 60 framing errors/s at idle; the internal ~40 kΩ alone still lost 7/60
+> replies (FE/NE mid-reply). An external 5.1 kΩ to 3V3 gave 110/110.
+
 **Discovered Aug 13, 2026, on the STM32.** The SERVO42C retransmits the bytes it
 just received, then sends its answer. What actually arrives is:
 

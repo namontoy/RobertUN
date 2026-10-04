@@ -25,12 +25,15 @@
 #include "debug_uart.h"
 #include "main.h"
 #include "mks_servo.h"
+#include "steer.h"
 #include "encoder.h"
 #include "drive.h"
 #include "velocity.h"
 #include "isense.h"
 #include "config.h"
 #include "dipsw.h"
+#include "motion.h"
+#include "can_cmd.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -255,6 +258,32 @@ static bool parse_on_off(const char *s, bool *out)
   }
 
   return false;
+}
+
+/** @brief Ownership half of the gate (§7.3): refused while CAN owns motion.
+  *        On its own for the limit commands, which never latch-check. */
+static bool owner_gate(void)
+{
+  if (motion_may(MOTION_SRC_UART))
+  {
+    return true;
+  }
+
+  debug_uart_puts("CAN owns motion - 'vel off' first\r\n");
+  return false;
+}
+
+/** @brief Gate for console motion commands (can_cmds.md §4.1, §7.3). Prints
+  *        why. The handler calls motion_claim() once the command has acted. */
+static bool motion_gate(void)
+{
+  if (!motion_allowed())
+  {
+    debug_uart_puts("ESTOP latched - refused. 'estop clear' first\r\n");
+    return false;
+  }
+
+  return owner_gate();
 }
 
 /** @brief CAN fault-confinement state as a word, worst condition first. */
@@ -582,7 +611,7 @@ static void cmd_mks(int argc, char **argv)
   else if (strcmp(argv[1], "angle")   == 0) { started = mks_read_angle_error(); }
   else if (strcmp(argv[1], "en")      == 0) { started = mks_read_en_status(); }
   else if (strcmp(argv[1], "protect") == 0) { started = mks_read_protect_state(); }
-  else if (strcmp(argv[1], "stop")    == 0) { started = mks_stop(); }
+  else if (strcmp(argv[1], "stop")    == 0) { started = mks_stop(); motion_release(); }
   else if (strcmp(argv[1], "enable")  == 0)
   {
     bool on = true;
@@ -597,6 +626,11 @@ static void cmd_mks(int argc, char **argv)
   }
   else if ((strcmp(argv[1], "move") == 0) || (strcmp(argv[1], "deg") == 0))
   {
+    if (!motion_gate())
+    {
+      return;
+    }
+
     if (argc < 3)
     {
       debug_uart_printf("usage: mks %s <+/-value> [speed 1-127]\r\n", argv[1]);
@@ -676,6 +710,15 @@ static void cmd_mks(int argc, char **argv)
   if (!started)
   {
     debug_uart_puts("could not start transaction\r\n");
+  }
+  else if ((strcmp(argv[1], "move") == 0) || (strcmp(argv[1], "deg") == 0))
+  {
+    motion_claim(MOTION_SRC_UART);
+    steer_external();   /* CAN's tracked position no longer holds */
+  }
+  else if (strcmp(argv[1], "enable") == 0)
+  {
+    steer_external();
   }
 }
 
@@ -904,12 +947,19 @@ static void cmd_drv(int argc, char **argv)
 
   if (strcmp(argv[1], "enable") == 0)
   {
+    if (!motion_gate())
+    {
+      return;
+    }
+
     drive_enable();
+    motion_claim(MOTION_SRC_UART);
     debug_uart_puts("nSLEEP high - driver awake (waited 2 ms)\r\n");
   }
   else if (strcmp(argv[1], "disable") == 0)
   {
     drive_disable();
+    motion_release();
     debug_uart_puts("duty 0, nSLEEP low - driver disabled\r\n");
   }
   else if (strcmp(argv[1], "duty") == 0)
@@ -933,7 +983,18 @@ static void cmd_drv(int argc, char **argv)
     if (pm >  DRIVE_DUTY_MAX) { pm =  DRIVE_DUTY_MAX; }
     if (pm < -DRIVE_DUTY_MAX) { pm = -DRIVE_DUTY_MAX; }
 
+    /* Duty 0 is a stop, and a stop always works. */
+    if ((pm != 0) && !motion_gate())
+    {
+      return;
+    }
+
     drive_set_duty((int16_t)pm);
+
+    if (pm != 0)
+    {
+      motion_claim(MOTION_SRC_UART);
+    }
 
     if (drive_slewing())
     {
@@ -965,11 +1026,13 @@ static void cmd_drv(int argc, char **argv)
   else if (strcmp(argv[1], "brake") == 0)
   {
     drive_brake();
+    motion_release();
     debug_uart_puts("both inputs high - brake\r\n");
   }
   else if (strcmp(argv[1], "coast") == 0)
   {
     drive_coast();
+    motion_release();
     debug_uart_puts("both inputs low - coast\r\n");
   }
   else if (strcmp(argv[1], "decay") == 0)
@@ -1231,6 +1294,11 @@ static void cmd_drv(int argc, char **argv)
   }
   else if (strcmp(argv[1], "trip") == 0)
   {
+    if ((argc >= 3) && !owner_gate())
+    {
+      return;
+    }
+
     if ((argc >= 4) && (strcmp(argv[2], "buf") == 0))
     {
       bool on;
@@ -1302,6 +1370,11 @@ static void cmd_drv(int argc, char **argv)
   }
   else if (strcmp(argv[1], "limit") == 0)
   {
+    if ((argc >= 3) && !owner_gate())
+    {
+      return;
+    }
+
     if (argc >= 3)
     {
       long pct = strtol(argv[2], NULL, 10);
@@ -1319,6 +1392,11 @@ static void cmd_drv(int argc, char **argv)
   }
   else if (strcmp(argv[1], "ramp") == 0)
   {
+    if ((argc >= 3) && !owner_gate())
+    {
+      return;
+    }
+
     if ((argc >= 4) && (strcmp(argv[2], "floor") == 0))
     {
       long pm = strtol(argv[3], NULL, 10);
@@ -1511,6 +1589,11 @@ static void cmd_vel(int argc, char **argv)
 
   if (strcmp(argv[1], "on") == 0)
   {
+    if (!motion_gate())
+    {
+      return;
+    }
+
     if (!drive_is_enabled())
     {
       debug_uart_puts("bridge is disabled - 'drv enable' first, or the loop"
@@ -1519,6 +1602,7 @@ static void cmd_vel(int argc, char **argv)
     }
 
     velocity_enable();
+    motion_claim(MOTION_SRC_UART);
     debug_uart_printf("velocity loop ARMED at setpoint 0, watchdog %lu ms\r\n",
                       (unsigned long)velocity_timeout());
     debug_uart_puts("  'drv duty' now fights the loop - use 'vel target'."
@@ -1527,6 +1611,7 @@ static void cmd_vel(int argc, char **argv)
   else if (strcmp(argv[1], "off") == 0)
   {
     velocity_disable();
+    motion_release();
     debug_uart_puts("velocity loop off, bridge coasted - 'drv duty' is yours"
                     " again\r\n");
   }
@@ -1538,6 +1623,11 @@ static void cmd_vel(int argc, char **argv)
     if (argc < 3)
     {
       print_mrpm("target ", velocity_setpoint(), " rpm\r\n");
+      return;
+    }
+
+    if (!motion_gate())
+    {
       return;
     }
 
@@ -1562,6 +1652,7 @@ static void cmd_vel(int argc, char **argv)
       velocity_set_setpoint((int32_t)v * 1000);
     }
 
+    motion_claim(MOTION_SRC_UART);
     print_mrpm("target ", velocity_setpoint(), " rpm");
     debug_uart_printf(", ramping at %ld m rpm/s\r\n", (long)velocity_slew());
   }
@@ -1570,6 +1661,7 @@ static void cmd_vel(int argc, char **argv)
     /* Walks the ramp down and then coasts. This is NOT an emergency stop:
        'drv coast' is, and it stays immediate. */
     velocity_set_setpoint(0);
+    motion_release();
     debug_uart_puts("setpoint 0 - ramping down, then coast."
                     "  'drv coast' if you want it now\r\n");
   }
@@ -1691,25 +1783,6 @@ static void cfg_print_key(config_key_t k)
                     (long)config_max(k));
 }
 
-/**
-  * @brief Push the two keys that have live hardware counterparts back into the
-  *        hardware.
-  *
-  * Needed after revert and default, which replace the stored values underneath
-  * a board that is still running on the old ones. Without this, `cfg` can claim
-  * a duty cap of 40% while the bridge is still enforcing 100% — and that is the
-  * dangerous direction of the mismatch, not the harmless one.
-  *
-  * Applied unconditionally rather than only for the two keys: both calls are
-  * idempotent, and a list of "which keys need re-applying" maintained by hand
-  * at each call site is exactly the thing that goes stale when a key is added.
-  */
-static void cfg_apply_live(void)
-{
-  (void)isense_set_trip_ma((uint32_t)config_get(CFG_TRIP_BOOT_MA));
-  drive_set_limit((uint16_t)config_get(CFG_DUTY_LIMIT));
-}
-
 static void cfg_report_save(config_save_t r)
 {
   switch (r)
@@ -1782,10 +1855,10 @@ static void cmd_cfg(int argc, char **argv)
   if (strcmp(argv[1], "revert") == 0)
   {
     config_load_t r = config_revert();
-    cfg_apply_live();
+    config_apply_all();
 
     debug_uart_printf("reverted to stored values - %s\r\n", config_load_str(r));
-    debug_uart_printf("  trip %lu mA, limit %u%% - both re-applied\r\n",
+    debug_uart_printf("  trip %lu mA, limit %u%% - all keys re-applied\r\n",
                       (unsigned long)isense_trip_ma(),
                       (unsigned)(drive_limit() / 10u));
     return;
@@ -1803,17 +1876,17 @@ static void cmd_cfg(int argc, char **argv)
       }
 
       config_reset_key(k);
-      cfg_apply_live();
+      config_apply_all();
       cfg_print_key(k);
     }
     else
     {
       config_reset_all();
-      cfg_apply_live();
+      config_apply_all();
       debug_uart_puts("all keys back to compiled defaults\r\n");
     }
 
-    debug_uart_printf("  trip %lu mA, limit %u%% - both re-applied\r\n",
+    debug_uart_printf("  trip %lu mA, limit %u%% - all keys re-applied\r\n",
                       (unsigned long)isense_trip_ma(),
                       (unsigned)(drive_limit() / 10u));
     debug_uart_puts("  (in RAM only - 'cfg save' to make it stick)\r\n");
@@ -1866,93 +1939,72 @@ static void cmd_cfg(int argc, char **argv)
 
   cfg_print_key(k);
 
-  /* Four of these keys have a live counterpart under 'drv'. Setting one here
-     and not applying it would leave 'cfg' and 'drv' disagreeing about the same
-     number until the next reset, which is the sort of discrepancy that gets
-     debugged as a hardware fault. So they take effect immediately as well. */
+  /* Same path as CAN CFG_REQ SET. What follows only reports what is now in
+     force, read back from the module rather than echoed from the request. */
+  config_apply_live(k);
+
   if (k == CFG_TRIP_BOOT_MA)
   {
-    (void)isense_set_trip_ma((uint32_t)want);
     debug_uart_printf("  applied now: trip %lu mA\r\n",
                       (unsigned long)isense_trip_ma());
   }
   else if (k == CFG_DUTY_LIMIT)
   {
-    drive_set_limit((uint16_t)want);
     debug_uart_printf("  applied now: limit %u%%\r\n",
                       (unsigned)(drive_limit() / 10u));
   }
   else if (k == CFG_RAMP_PMPS)
   {
-    drive_set_ramp((uint16_t)want);
     debug_uart_printf("  applied now: ramp %u o/oo/s\r\n",
                       (unsigned)drive_ramp());
   }
   else if (k == CFG_RAMP_FLOOR)
   {
-    drive_set_ramp_floor((uint16_t)want);
     debug_uart_printf("  applied now: ramp floor %u o/oo\r\n",
                       (unsigned)drive_ramp_floor());
   }
 
-  /* Every velocity key applies LIVE, including while the loop is running.
-     That is the whole point: tuning a gain by rebooting between trials is not
-     tuning. The integrator is deliberately NOT reset on a gain change - with
-     the clamp in place the bump is bounded, and clearing it would hide exactly
-     the steady-state behaviour a Ki change is being judged on. Use
-     'vel reset' when a clean start is what you want. */
+  /* 'vel reset' when a clean integrator start is what you want. */
   else if (k == CFG_VEL_KP)
   {
-    velocity_set_kp(want);
     debug_uart_printf("  applied now: kp %ld x1000\r\n", (long)velocity_kp());
   }
   else if (k == CFG_VEL_KI)
   {
-    velocity_set_ki(want);
     debug_uart_printf("  applied now: ki %ld x1000\r\n", (long)velocity_ki());
   }
   else if (k == CFG_VEL_KD)
   {
-    velocity_set_kd(want);
     debug_uart_printf("  applied now: kd %ld x1000\r\n", (long)velocity_kd());
   }
   else if (k == CFG_VEL_FF_SLOPE)
   {
-    velocity_set_ff(want, velocity_ff_offset());
     debug_uart_printf("  applied now: ff slope %ld x1000 o/oo per rpm\r\n",
                       (long)velocity_ff_slope());
   }
   else if (k == CFG_VEL_FF_OFFSET)
   {
-    velocity_set_ff(velocity_ff_slope(), want);
     debug_uart_printf("  applied now: ff offset %ld o/oo\r\n",
                       (long)velocity_ff_offset());
   }
   else if (k == CFG_VEL_I_LIMIT)
   {
-    velocity_set_i_limit((uint16_t)want);
     debug_uart_printf("  applied now: integrator clamp %u o/oo\r\n",
                       (unsigned)velocity_i_limit());
   }
   else if (k == CFG_VEL_MAX)
   {
-    velocity_set_max((uint16_t)want);
     debug_uart_printf("  applied now: vel max %u o/oo (drv limit %u -"
                       " the tighter wins)\r\n",
                       (unsigned)velocity_max(), (unsigned)drive_limit());
   }
   else if (k == CFG_VEL_SLEW)
   {
-    velocity_set_slew(want);
     debug_uart_printf("  applied now: setpoint ramp %ld m rpm/s\r\n",
                       (long)velocity_slew());
   }
   else if (k == CFG_VEL_TIMEOUT)
   {
-    /* This re-arms the countdown, and that is correct: a deadline you have
-       just changed has not been missed yet. It does not clear the sticky
-       expired flag - only 'vel on' does. */
-    velocity_set_timeout((uint32_t)want);
     debug_uart_printf("  applied now: setpoint watchdog %lu ms%s\r\n",
                       (unsigned long)velocity_timeout(),
                       (velocity_timeout() == 0u) ? " - DISARMED" : "");
@@ -1960,15 +2012,10 @@ static void cmd_cfg(int argc, char **argv)
 
   /* Three keys change the meaning of every current number the board reports,
      so say so at the point of change rather than leaving it to be rediscovered
-     when a log stops matching a meter. The trip is re-applied because it was
-     computed with the old scale and would otherwise regulate at the wrong
-     current while reporting the right one. */
+     when a log stops matching a meter. */
   if ((k == CFG_R_IPROPI_OHM) || (k == CFG_A_IPROPI_UA_PER_A) ||
       (k == CFG_VDDA_MV))
   {
-    uint32_t trip = isense_trip_ma();
-    (void)isense_set_trip_ma(trip);
-
     debug_uart_printf("  current scale is now %u mA full-scale;"
                       " trip re-applied at %lu mA\r\n",
                       (unsigned)isense_full_scale_ma(),
@@ -2283,6 +2330,94 @@ static void cmd_telem(int argc, char **argv)
   }
 }
 
+static void cmd_steer(int argc, char **argv)
+{
+  (void)argc;
+  (void)argv;
+
+  uint8_t f = steer_flags();
+
+  debug_uart_printf("steer %s, position %s | pos %+.2f deg (%+ld p) | target"
+                    " %+.2f deg (%+ld p)%s%s%s\r\n",
+                    (f & STEER_F_ENABLED)   ? "enabled" : "disabled",
+                    (f & STEER_F_POS_VALID) ? "valid"   : "LOST",
+                    (double)steer_position_cdeg() / 100.0,
+                    (long)steer_position_pulses(),
+                    (double)steer_target_cdeg() / 100.0,
+                    (long)steer_target_pulses(),
+                    (f & STEER_F_MOVING)   ? " | moving"     : "",
+                    (f & STEER_F_STALL)    ? " | stall"      : "",
+                    (f & STEER_F_UART_ERR) ? " | uart error" : "");
+  debug_uart_puts("  0x33 check: pos == -(mks pulses now - mks pulses at enable)\r\n");
+}
+
+static void cmd_estop(int argc, char **argv)
+{
+  if (argc < 2)
+  {
+    debug_uart_printf("estop %s\r\n",
+                      motion_estop_latched() ? "LATCHED - 'estop clear' to recover"
+                                             : "clear");
+    return;
+  }
+
+  if (strcmp(argv[1], "clear") != 0)
+  {
+    debug_uart_puts("usage: estop [clear]\r\n");
+    return;
+  }
+
+  if (!motion_estop_clear())
+  {
+    debug_uart_puts("loop is armed - 'vel off' first\r\n");
+    return;
+  }
+
+  debug_uart_puts("estop clear - motion commands accepted again\r\n");
+}
+
+static void cmd_can(int argc, char **argv)
+{
+  if ((argc >= 2) && (strcmp(argv[1], "crc") == 0))
+  {
+    static const uint8_t check[] = { '1', '2', '3', '4', '5', '6', '7', '8', '9' };
+    uint8_t crc = can_cmd_crc8(check, sizeof(check));
+
+    debug_uart_printf("crc8 sae-j1850 \"123456789\" = 0x%02X (expect 0x4B) %s\r\n",
+                      (unsigned)crc, (crc == 0x4Bu) ? "PASS" : "FAIL");
+    return;
+  }
+
+  if (argc >= 2)
+  {
+    debug_uart_puts("usage: can [crc]\r\n");
+    return;
+  }
+
+  const can_cmd_stats_t *c = can_cmd_stats();
+
+  debug_uart_printf("can cmd: %lu handled, %lu ignored, %lu rejected\r\n",
+                    (unsigned long)c->handled, (unsigned long)c->ignored,
+                    (unsigned long)c->rejected);
+  debug_uart_printf("can tx : %lu queued, %lu dropped (no mailbox)\r\n",
+                    (unsigned long)c->tx_frames, (unsigned long)c->tx_dropped);
+  debug_uart_printf("can rx : %lu speed ok, %lu crc, %lu repeat, %lu stale,"
+                    " %lu skipped\r\n",
+                    (unsigned long)c->speed_ok, (unsigned long)c->crc_errors,
+                    (unsigned long)c->ctr_repeat, (unsigned long)c->ctr_stale,
+                    (unsigned long)c->ctr_skipped);
+  debug_uart_printf("status : %lu STATUS_DRIVE sent\r\n",
+                    (unsigned long)c->status_tx);
+  debug_uart_printf("bus    : %lu bus-off, %lu error-passive entries\r\n",
+                    (unsigned long)c->bus_off, (unsigned long)c->passive);
+  static const char *const owners[] = { "none", "UART", "CAN" };
+
+  debug_uart_printf("flags  : 0x%02X, estop %s, motion owner %s\r\n",
+                    (unsigned)can_cmd_flags(),
+                    motion_estop_latched() ? "LATCHED" : "clear",
+                    owners[motion_owner()]);
+}
+
 static const command_t commands[] =
 {
   { "help",      "",             "list these commands",                       cmd_help      },
@@ -2302,6 +2437,9 @@ static const command_t commands[] =
   { "telem",     "[sub]",        "machine-readable stream for the bench host", cmd_telem   },
   { "cfg",       "[key] [val]",  "stored tunables - 'cfg' to list",           cmd_cfg       },
   { "id",        "",             "module identity from the DIP switches",     cmd_id        },
+  { "can",       "[crc]",        "W6 command layer counters - 'can crc' self-test", cmd_can },
+  { "steer",     "",             "CAN steering: tracked position and target",  cmd_steer     },
+  { "estop",     "[clear]",      "ESTOP latch state - 'estop clear' to recover", cmd_estop  },
   { "reset",     "",             "reboot the MCU",                            cmd_reset     },
 };
 

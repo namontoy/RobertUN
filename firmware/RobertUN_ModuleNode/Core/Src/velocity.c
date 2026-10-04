@@ -71,6 +71,8 @@ static volatile uint32_t wd_period_ms = 0u;
 static volatile uint32_t wd_remaining = 0u;
 static volatile bool     wd_expired   = false;  /* sticky; only velocity_enable()
                                                    clears it */
+static volatile bool     wd_force     = false;  /* main loop asks the next tick
+                                                   to expire now (bus-off) */
 
 /* --- the published snapshot ----------------------------------------------
    One slot, written at the end of each control step, drained by the main loop
@@ -246,11 +248,17 @@ void velocity_on_tick(void)
      anything else — the same placement drive.c uses for its own. A deadline
      that only advances when the rest of the system is healthy is not a
      deadline. */
-  if (wd_period_ms != 0u && wd_remaining != 0u)
+  if (wd_force || (wd_period_ms != 0u && wd_remaining != 0u))
   {
-    wd_remaining--;
-    if (wd_remaining == 0u)
+    if (!wd_force)
     {
+      wd_remaining--;
+    }
+    if (wd_force || wd_remaining == 0u)
+    {
+      wd_force     = false;
+      wd_remaining = 0u;
+
       /* IMMEDIATE, exactly as drive.c's is, and for the same reason: this
          fires only when whatever was commanding the wheel has already stopped
          talking. Walking the setpoint down over the next second would keep the
@@ -458,6 +466,7 @@ void velocity_enable(void)
      Enabling is the moment drive.c's watchdog stops being able to fire. */
   wd_remaining = wd_period_ms;
   wd_expired   = false;
+  wd_force     = false;
 }
 
 void velocity_disable(void)
@@ -524,6 +533,13 @@ void velocity_set_timeout(uint32_t ms)
   wd_remaining = ms;         /* a deadline just changed has not been missed
                                 yet - but the LATCH stays; only
                                 velocity_enable() clears it */
+}
+
+void velocity_expire_now(void)
+{
+  /* Taken by the next tick, in the tick's own context, so the expiry runs
+     exactly the code a missed deadline runs. Works with vel_tmo 0 too. */
+  wd_force = true;
 }
 
 uint32_t velocity_timeout(void)           { return wd_period_ms; }

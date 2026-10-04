@@ -421,6 +421,12 @@ uint32_t velocity_timeout_remaining(void);
   *        neither clears this. Only velocity_enable() does. */
 bool velocity_timeout_expired(void);
 
+/** @brief Expire the setpoint watchdog on the next tick, as if the deadline
+  *        had just been missed: setpoint 0, coast, latch set. Ignored while the
+  *        loop is off. For bus-off (can_cmds.md §7.2), which must not wait up
+  *        to vel_tmo for the countdown. */
+void velocity_expire_now(void);
+
 /* --- gains and limits, live ---------------------------------------------- */
 /* All in milli-units so they pass through `config` as int32 without losing
    resolution: a Kp of 3.0 o/oo per rpm is stored and set as 3000. */

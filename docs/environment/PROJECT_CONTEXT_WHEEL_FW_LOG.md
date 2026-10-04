@@ -4132,3 +4132,446 @@ earlier regeneration.
 **Open.** `docs/can_cmds.md` still uses a 3-bit address with 7 = broadcast.
 Under the new rule it needs a 4-bit address with 0 = broadcast. Settle it with the CAN
 vs CANopen decision (task 1). The REST track needs to know the module numbers shifted.
+
+## 2026-10-04 — W6 protocol decided: plain CAN; `can_cmds.md` moved to 4-bit addresses
+
+Decision (user): W6 uses **plain CAN**, not CANopen. Reason: simplicity and
+lack of time before the Dec 10 demo. `docs/canopen_cmds.md` is marked "not
+selected, kept for reference"; `PROJECT_CONTEXT_REST.md` KEY DECISIONS gets a
+one-line "superseded for the wheel nodes" note under the CANopen entry (REST
+task 7, the CANopen stack, is now stale for the wheel nodes — REST track to
+revise).
+
+`docs/can_cmds.md` updated to the 4-bit DIP ID (PB12–PB15, `dipsw.h`):
+- Address: 1–14 nodes, **0 = broadcast** (`DIPSW_ADDR_BROADCAST`), 15 never
+  owned (unfitted). Roles: 1–4 CORNER, 5–6 CENTER, 7–14 RESERVED, 0/15 INVALID.
+  Software acceptance: own address or 0.
+- ID formula `ID = (type << 4) | addr` (7-bit type, 4-bit addr); was
+  `(type << 3) | addr` with 7 = broadcast.
+- Layout choices (user, this session):
+  - ESTOP = type 0x00, so broadcast ESTOP is **0x000**, top priority on the
+    bus. The 09-28 draft kept 0x000 free for CANopen NMT; no longer relevant.
+  - With 16 IDs per type the control group (0x010–0x07F) fits only 7 types;
+    CMD_RESULT moved to type 0x08 (0x081–0x08E, REST's "sensor setpoints"
+    range, otherwise unused by wheel frames) so the draft's priority order is
+    kept. Alternatives rejected: CMD_RESULT in diagnostics (drops below
+    STATUS), or SPEED/STEER into 0x080 (LIMITS/RAMP/CMD_RESULT would outrank
+    SPEED).
+- New table: ESTOP 0x000–0x00E, STOP 0x010–0x01E, FAULT 0x021–0x02E, ARM
+  0x030–0x03E, SPEED 0x041–0x04E, STEER 0x051–0x054, LIMITS 0x060–0x06E, RAMP
+  0x070–0x07E, CMD_RESULT 0x081–0x08E, STATUS_DRIVE 0x101–0x10E, STATUS_STEER
+  0x111–0x114, HEARTBEAT 0x501–0x50E (existing `0x500 + id`, unchanged),
+  CFG_REQ 0x520–0x52E, CFG_RESP 0x531–0x53E.
+- Broadcast is now the lowest ID within each type, so it wins arbitration
+  (spec Q16 resolved; the old ≤0.54 ms ESTOP penalty is gone).
+- Q1 resolved (plain CAN); Q5 role text → RESERVED 7–14 / INVALID 0, 15;
+  Q15 CENTER IDs 5–6. §6.3 bus load unchanged (6 nodes, 37.4 %).
+- Docs only, no firmware change. Next: one full corner node on this spec.
+
+## 2026-10-04 — W6 CAN command implementation plan (`docs/plans/w6-can-cmds.md`)
+
+Branch `w6-can-cmds` created from main (51ebf0c). Plan written from `can_cmds.md`
+and a firmware survey: new `can_cmd.c/.h` (decode, addr/DLC/CRC-8/counter,
+CMD_RESULT, status/fault TX) hooked into the existing drain loop (main.c USER
+CODE, ~308-321); new `motion.c/.h` (ESTOP latch + UART/CAN owner); cfg live-apply
+moved from `cmd_cfg` (console.c ~1871-1975) to `config_apply_live()`; MKS
+completions tagged by requester (console_report_mks takes all today); host tool
+`tools/bench/cancmd.py` (python-can) — no host CAN code existed. Seven phases:
+safety (ESTOP/STOP) → ARM/SPEED/STATUS_DRIVE/counter/timeout → ownership →
+LIMITS/RAMP/CFG → STEER → bus errors/FAULTs → corner integration.
+User decisions: Q3 steering position = sum of commanded pulses, zero at boot /
+STEER_ENABLE; Q13 implement §7.3 ownership; Q18 add console `estop clear` (loop
+off only). Kept per spec: coast stops, heartbeat unchanged, auto-retransmit on,
+STATUS_DRIVE 50 Hz, SPEED ±100 rpm, RESERVED acts like CORNER.
+Survey facts: no CRC-8 helper exists (config uses HW CRC32); ESR is not polled
+periodically; `vel on` / `vel target` guards live only in console.c; build base
+110 568 B flash / 6 256 B RAM, 0 warnings. CRC-8/SAE-J1850 check value 0x4B.
+
+## 2026-10-04 — W6 phase 1: can_cmd + motion skeleton, ESTOP/STOP (branch `w6-can-cmds`)
+
+Code (plan `docs/plans/w6-can-cmds.md` phase 1):
+- New `Core/Src/motion.c`/`Core/Inc/motion.h`: ESTOP latch. `motion_estop()` = `velocity_disable()`
+  → `drive_coast()` → `mks stop` (not on CENTER), then latch. `motion_estop_clear()` refused while
+  the loop is armed. The servo stop is queued and retried from `motion_poll()` (main loop): a move
+  keeps `mks_busy()` true until completion, so the outstanding transaction is aborted first; if the
+  abort lands while the previous request is still in DMA, the F7 transmit is refused that pass and
+  retried. Ownership (§7.3) not yet — phase 3.
+- New `Core/Src/can_cmd.c`/`Core/Inc/can_cmd.h`: type/address filter (O→N types only, own addr or 0;
+  ext/RTR ignored), ESTOP and STOP on the ID alone, CMD_RESULT (0x080+node), FAULT (0x020+node) with a
+  per-code pending slot, sent from `can_cmd_poll()`, ≤ 1 per code per 100 ms. CRC-8/SAE-J1850 bitwise
+  (inputs ≤ 11 B, no table). `can_cmd_flags()` = STATUS_DRIVE flags (bit 7 waits for phase 3).
+  ARM/SPEED/STEER/LIMITS/RAMP/CFG_REQ are counted as ignored until their phases.
+- `main.c` (USER CODE only): includes, `can_cmd_init()` after `can_bus_init`, `motion_poll()` after
+  `mks_poll()`, `can_cmd_handle()` in the drain loop (monitor print kept), `can_cmd_poll()` after it.
+- Console: `estop [clear]`, `can [crc]` (counters / self-test). Gated while latched: `vel on`,
+  `vel target <v>`, `drv enable`, non-zero `drv duty`, `mks move`/`deg`.
+- Choices not in the spec (open to change): `drv duty 0` allowed while latched (a stop always works);
+  STOP mode 0 with the loop off → `drive_set_duty(0)` (ramped), so a console duty run still stops;
+  FAULT flags/duty are snapshotted BEFORE the ESTOP acts (bit 5 not set in the FAULT ESTOP frame).
+  CMD_RESULT for ESTOP carries type 0x00, ctr 0 (spec §4.10 says types 0x01–0x08; needs a fix there).
+- Build Debug: 0 warnings; flash 113 600 B (+3 032 vs 110 568), RAM 6 424 B (+168 vs 6 256).
+
+Bench (node ID 2 CORNER, CANable can0 on daedalus, 250 kbps):
+- `can crc` → 0x4B PASS.
+- Rail off: broadcast `000#` → `082#00000000` 0.6 ms later, then `022#03000000D41A0000`.
+  Latched: `vel on`, `drv enable`, `drv duty 10`, `mks deg 5` refused; `drv duty 0` accepted; flags 0x20.
+  `002#AA` (repeat, own addr) → OK, no second FAULT. `003#`, `013#0701` → ignored, no reply.
+  STOP `012#0501`, `012#`, `010#0982`, `012#0703` → `082#01cc0000` with ctr 5, 0, 9, 7.
+- Rail on (12 V): `drv enable`, `drv duty 15` → +150 o/oo, 5.36 rpm (accelerating). Broadcast `000#` →
+  `082#00000000`, `022#03 02 9600 F58A0100` (flags 0x02 bridge enabled, duty +150, t 101 109 ms);
+  duty 0, 0.00 rpm; latched; `drv duty 15` refused. `estop clear` → `vel on` accepted (setpoint 0),
+  `vel off`, `drv disable`. Counters: 7 handled, 2 ignored, 0 rejected; 9 TX, 0 dropped.
+- Not tested: ESTOP during an in-flight steering move (servo stop retry path) — phase 5 bench.
+Phase 1 PASSES. Next: phase 2 (ARM + SPEED + STATUS_DRIVE + §5.1 counter + §7.1 timeout, `cancmd.py`).
+
+## 2026-10-04 — W6 phase 2: ARM, SPEED, STATUS_DRIVE, §5.1 counter, §7.1 timeout
+
+Branch `w6-can-cmds`, node 2 on the bench rig, plan `docs/plans/w6-can-cmds.md`.
+
+Firmware (`can_cmd.c/.h`, `console.c` `can` stats):
+- ARM actions 0 DISARM (vel off + drv disable), 1 ARM (drv enable + vel on;
+  ESTOP_LATCHED / FAULT_LATCHED checks), 2 CLEAR_FAULT, 3 CLEAR_ESTOP (BUSY if
+  the loop is on). Actions 4/5 answer NOT_SUPPORTED until phase 5 (steering).
+  Ownership (UART_OWNS) is phase 3.
+- SPEED: ±100 000 milli-rpm, else RANGE detail 0x01; no reply on success; no
+  broadcast SPEED (ignored silently, six nodes would all answer).
+- Decision (this phase): SPEED is rejected with NOT_ARMED while the vel_tmo
+  latch is set, so a fresh setpoint alone cannot restart the wheel after a
+  timeout; ARM 1 (velocity_enable) clears it. Console `vel target` unchanged.
+- Shared prelude for counted frames: DLC 8 -> CRC-8 over (ID LE, PROTO_VER,
+  bytes 0-6) -> counter. Counter windows per type ARM..RAMP, own and broadcast
+  separately; classify first, commit only after the frame is accepted. Resync
+  at boot, after ESTOP (all windows), after an accepted ARM (SPEED, STEER).
+  d-1 >= 5 skipped raises FAULT SKIPPED_CTR; sum kept in stats.ctr_skipped.
+- STATUS_DRIVE (0x100+node) sent from can_cmd_poll on each
+  encoder_velocity_seq() change; speed = encoder_rpm x100, current = 16-sample
+  sync read (same path as telem T records, free-running avg when not sync),
+  output = drive_duty(). Sent whether or not the loop is armed.
+- FAULT VEL_WD_EXPIRED on the rising edge of velocity_timeout_expired().
+- Build: 0 warnings; text+data 115 544 B (+1 944 B over phase 1), RAM
+  data+bss 6 480 B.
+
+Host tool: `tools/bench/canproto.py` (IDs, CRC, codecs; self-test prints the
+0x4B check value) and `tools/bench/cancmd.py` (estop/stop/arm/speed/watch,
+counters persisted in runs/.cancmd_ctr.json). Uses kernel SocketCAN through
+Python's `socket` module instead of python-can, which is not installed on
+daedalus. Claude Code needs the allow rule `Bash(python3 tools/bench/cancmd.py *)`
+in `firmware/RobertUN_ModuleNode/.claude/settings.local.json` (added 10-04)
+for the auto-mode classifier to let it run motion commands.
+
+Bench (node 2, can0 250 kbps):
+- Loop off: STATUS_DRIVE 50.0 Hz, max gap 20.2 ms.
+- ARM with flipped CRC -> CRC; DISARM -> OK (host and node CRC agree);
+  ARM ctr 0 after 1 -> STALE detail 1; ctr 1 again -> REPEAT detail 1.
+- ARM 1, SPEED 10 rpm at 50 Hz for 5 s: 250 frames sent, STATUS 50.0 Hz, max
+  gap 20.4 ms, ctr echo lag max 0 over 245 frames. Last 2 s: mean 9.25 rpm
+  (5.71-10.71, the 12/rev tread dips over ~4 grooves; not a tracking figure),
+  out 159 o/oo, 359 mA. Host stops -> FAULT VEL_WD_EXPIRED +1001 ms after the
+  last SPEED; coast, out 0; flags armed,bridge,wd.
+- SPEED with the wd latched -> NOT_ARMED; SPEED with bad CRC -> CRC; STATUS
+  ctr stayed 249 (rejections do not advance the counter).
+- ARM 1 (recovers from the latched wd), SPEED with ctr frozen for 3 s: 1
+  accepted, 149 REPEAT; FAULT VEL_WD_EXPIRED +1002 ms after the only accepted
+  SPEED while the host was still sending -> REPEAT does not kick vel_tmo.
+- Left disarmed (ARM 0 OK).
+Phase 2 bench checks all pass. Next: phase 3, ownership (§7.3).
+
+## 2026-10-04 — W6 phase 3: UART/CAN ownership of motion (§7.3)
+
+Branch `w6-can-cmds`, node 2 on the bench rig.
+
+Firmware:
+- `motion.c/.h`: owner NONE/UART/CAN. `motion_may(src)` is asked before a
+  motion command acts (claims nothing); `motion_claim(src)` is called only
+  after the command succeeded, so a refused or failed command never takes
+  ownership; `motion_release()` on every stop and disarm. `motion_estop()`
+  releases. Boot: none.
+- Claims: CAN ARM 1, accepted SPEED; console `vel on`, `vel target`,
+  `drv enable`, `drv duty` (non-zero), `mks move`/`deg` (when started).
+- Releases: CAN STOP (all modes), ARM 0, ESTOP; console `vel off`, `vel stop`,
+  `drv coast`, `drv brake`, `drv disable`, `mks stop`. `drv duty 0` neither
+  claims nor releases (it passes the gate as a stop, as before).
+- Check-only (no claim): console `drv limit`/`trip`/`ramp` with an argument
+  (`owner_gate()`); CAN LIMITS/RAMP will use motion_may in phase 4.
+- CAN: ARM 1 -> UART_OWNS after ESTOP_LATCHED/FAULT_LATCHED; SPEED checks
+  UART_OWNS before NOT_ARMED, so a console-armed node says who has it.
+- STATUS_DRIVE flags bit 7 = UART owns. Console `can` prints the owner.
+- The vel_tmo expiry does not release ownership: after a CAN host dies the
+  console needs `vel off` first, which its refusal message says.
+- Build: 0 warnings; text+data 116 128 B (+584 B over phase 2).
+
+Bench (node 2):
+- Boot: owner none.
+- CAN ARM 1 -> owner CAN, flags 0x03. Console `drv limit 30` refused
+  ("CAN owns motion - 'vel off' first"); limit was already 30% from cfg, so
+  this shows only the message, not a changed value.
+- CAN owns: console `drv duty 10` and `vel target 5` both refused. `vel off`
+  -> owner none.
+- CAN ARM 1, console `vel stop` -> owner none, loop still armed (0x03).
+- Console `vel on` -> SPEED 10 rpm x5 at 50 Hz: all UART_OWNS, rpm 0.00,
+  STATUS flags armed,bridge,uart. `vel off` -> owner none, flags 0x02.
+- Not tested on the bench: CAN ARM 1 while the UART owns (same check as SPEED).
+Phase 3 bench checks all pass. Next: phase 4 (config_apply_live refactor,
+then LIMITS, RAMP, CFG_REQ/RESP).
+
+## 2026-10-04 — W6 phase 4: config_apply_live refactor, LIMITS, RAMP, CFG_REQ/CFG_RESP (branch `w6-can-cmds`)
+
+Commits: `0ade71b` (refactor), `7791a2f` (CAN). Bench on node 2, 12 V rail, bridge disabled except the two armed checks.
+
+**Refactor.** The per-key live apply moved from `cmd_cfg` (console.c) into
+`config_apply_live(key)` in config.c; `cfg_apply_live()` became
+`config_apply_limits()` (trip + duty_limit only). The console keeps only the
+"applied now" prints, read back from the modules. Check: a 32-command `cfg`
+transcript (all 22 keys set to their current values, get, out of range,
+unknown key, `default vel_kd`, `default trip_ma`, revert, `default`, revert,
+`drv disable`, save, `cfg`) taken on the phase-3 image and again on the
+refactor image: `diff` identical (137 lines). The first capture had `cfg save`
+refused because the bridge was enabled — state, not code — so `drv disable`
+was added before save in both.
+
+**CAN.** LIMITS and RAMP share one handler: DLC → CRC → counter, then mask
+(0 or unknown bits → BAD_ACTION), range on every masked field (RANGE, detail =
+mask bit, whole frame rejected, never clamped), ownership (UART_OWNS; no ESTOP
+latch check, same as the console's `owner_gate` for drv limit/trip/ramp), then
+apply; the counter commits only on OK. LIMITS ranges: duty 0..config_max
+(1000), trip isense_trip_min_ma..max_ma (101..1580 here). RAMP: config min/max
+of ramp_pmps / ramp_floor. CFG_REQ: no counter, tag echoed, CRC over bytes 0–2
+and 4–7; DLC < 8 is answered with status CRC (the spec has no BAD_DLC for
+CFG_RESP). SET → config_set + config_apply_live; REVERT/DEFAULT →
+config_apply_limits; SAVE BUSY if velocity_enabled() or (in config_save) the
+bridge is enabled; INFO packs version, key count, slots used (clamped 255),
+dirty. Writes are printed on the console, reads are not. Broadcast allowed;
+needs a valid DIP ID. Image: text 117 544 + data 512 = 118 056 B flash, bss
+5 968 B, 0 warnings.
+
+**Bench results (node 2).**
+- CFG: INFO (own and broadcast) v2, 22 keys, slot 2; GET trip_ma 1580,
+  duty_limit 300, vel_ff_a 12510; MIN trip_ma 0, MAX vel_tmo 60000, DEF
+  duty_limit 1000 — all match `cfg`. Key 22 → UNKNOWN_KEY; flipped CRC → CRC.
+- SET duty_limit 250 → OK, `drv limit` 25%; SET 1001 → RANGE, value 250 (not
+  clamped); SET vel_kp 2500 → `vel gains` kp 2500; REVERT → OK, limit 30%.
+- LIMITS duty 1001 → RANGE d1; trip 50 → RANGE d2; mask 0 → BAD_ACTION;
+  duty 250 + trip 1200 → OK, live limit 25%, trip 1199 mA (DAC step), `cfg
+  duty_limit` still 300; bad CRC → CRC; ctr 3 again → REPEAT detail 3.
+  RAMP pmps 10001 → RANGE d1; floor 301 → RANGE d2; 100/80 → OK, live.
+  Restored to 300 / 1580 (reads 1579) / 50 / 120.
+- SAVE while CAN-armed (ARM 1 at 0 rpm) → BUSY value 1; slot still 2.
+- Console `drv enable` + `vel on` (owner UART): CAN LIMITS and RAMP →
+  UART_OWNS, live values unchanged (30%, 50); SAVE → BUSY; `vel off` → owner
+  none. Note: the first attempt ran `vel on` with the bridge disabled, which
+  refuses, so nobody owned and LIMITS/RAMP were (correctly) OK — redone with
+  `drv enable` first. Bridge disabled at the end.
+
+**Found (pre-existing, not changed).** Revert and default re-apply only trip
+and duty_limit (old `cfg_apply_live` behaviour, kept byte-identical). After
+CFG SET vel_kp 2500 then REVERT, `cfg vel_kp` read 3000 while `vel gains` ran
+2500; ramp keys behave the same. Open for the user: re-apply every key on
+revert/default.
+Also noted: a CFG SET of vel_tmo re-arms the setpoint countdown (same as the
+console), so repeated SETs could keep a loop alive without SPEED. Spec note,
+no code change proposed.
+
+### 2026-10-04 — W6 phase 4 follow-up: revert/default re-apply every key; spec notes
+
+Decided (user): revert and default re-apply every key, not just trip +
+duty_limit. `config_apply_limits()` → `config_apply_all()`: config_apply_live()
+over every key in index order (IPROPI scale keys 0–2 before trip_ma 3, so the
+trip ends at its configured value on the new scale; vel_ff_a before vel_ff_b).
+Console text "both re-applied" → "all keys re-applied".
+Bench (node 2, bridge disabled): CAN SET vel_kp 2500 + SET ramp_pmps 100, then
+CAN REVERT → `vel gains` kp 3000, `drv ramp` 50 (before the fix: kp stayed
+2500). Console `cfg default ramp_pmps` → ramp off live; `cfg revert` → 50;
+trip 1579 mA. The 32-command cfg transcript differs from the pre-refactor one
+only in the 5 "all keys re-applied" lines, same numbers.
+Agreed (user), recorded in can_cmds.md §4.8 / §7.1: (a) a CFG SET of vel_tmo,
+and any REVERT/DEFAULT, re-arms the setpoint countdown — orion must not use
+it as a keep-alive; (b) CFG_REQ with DLC < 8 is answered with status CRC, no
+BAD_DLC status. The "Open (user)" item from the phase 4 entry is closed.
+
+## 2026-10-04 — W6 phase 5: STEER + STATUS_STEER (node 2, CORNER)
+
+**Code (commit f493d3c, branch w6-can-cmds).**
+- New `steer.c`/`.h`. Absolute steering on top of the relative FD move.
+  - Position = sum of commanded pulses of moves that reported "complete",
+    zeroed at STEER_ENABLE (spec Q3). Scale: 30400 p/rev, i.e. 38/45 p per
+    0.01°, rounded half away from zero.
+  - A STEER during a move is deferred (user decision 10-04): only the latest
+    target is kept; when the running FD completes, one FD goes out for the
+    difference. No move is ever cut short.
+  - Any other ending (abort, ESTOP, timeout, link error) clears pos-valid and
+    drops the pending target. Timeout sets the stall flag; link errors set
+    uart_err. Both raise FAULT MKS_ERROR via `steer_take_error()`.
+  - Console `mks move/deg/enable` calls `steer_external()`, which disables CAN
+    steering and invalidates the position.
+- `mks_servo`: `txn_seq`, `mks_txn_seq()`, `mks_completion_pending()`, so steer
+  takes only the completions of transactions it started.
+- `motion_request_mks_stop()` calls `steer_cancel()`, so a queued target
+  can't go out after an ESTOP.
+- `can_cmd`:
+  - STEER handler order: NOT_SUPPORTED (non-steering node) → frame checks →
+    RANGE (speed >127 detail 1, |cdeg| >9000 detail 2) → ESTOP_LATCHED →
+    UART_OWNS → NOT_ARMED (detail 1 = position lost).
+  - ARM 4/5 = steeron/steeroff; BUSY if the link is busy.
+  - STATUS_STEER at 10 Hz; corner/reserved nodes only.
+- Console `steer`; `cancmd.py steer` with `--then`/`--gap`/`--follow`.
+- Size: 121 452 B flash (+3 396 B against phase 4), RAM 6 520 B, 0 warnings.
+- `main.c`: CubeMX regeneration rewrote it with CRLF. Converted back to LF
+  before the commit so the diff is the 2 USER CODE lines.
+
+**Servo UART debugging (before the bench could run).**
+- Symptoms: F3 timeouts and replies failing as bad address/checksum.
+- Idle count: 60.04 framing errors/s with no traffic, i.e. mains hum on PA1.
+  Reseating the leads and a second ground changed nothing (60.00/s).
+- Cause: the SERVO42C TX only pulls low, and PA1 had no pull-up.
+- With the CubeMX internal pull-up (PA1 GPIO_PULLUP, .ioc +2 lines): 0.00/s
+  at idle, but 7/60 paced read-only requests were lost. Each loss had exactly
+  one FE/NE mid-reply. HAL F4 + DMA treats FE/NE as blocking, so the re-arm
+  drops the partial reply and it times out.
+- With an external 5.1 kΩ PA1→3V3 (user, 10-04): 60/60 paced plus 50/50
+  back-to-back, 0 UART errors.
+- Echo: 0 echoes stripped all day (200+ clean replies). The Aug 13 "device
+  echoes" finding is not reproduced and may have been the wiring at that
+  time. `strip_echo()` kept (no-op). Note added to `_REF_SERVO42C`.
+
+**Bench (all node 2, speed code 2).**
+- ARM steeron: OK. 0x33 read 5 before the enable and 0 after (enable resets
+  it?). Baseline 0.
+- First STEER: UART_OWNS. The console still owned motion from the user's
+  manual `mks move 20`; `mks stop` released it, so §7.3 works.
+- +15°: OK, settled 1.39 s, pos +1267 p, 0x33 −1267.
+- −15°: OK, 2.64 s, pos −1267, 0x33 +1267.
+- 0°: OK, 1.41 s, pos 0, 0x33 0.
+- Deferred: +15 then −10 after 0.5 s. Both OK, settled 3.50 s, pos −844 p
+  (−9.99°, one pulse = 0.0118°), 0x33 +844. Requests rose by exactly 3 (two
+  FDs plus one read), so the first move wasn't cut short and no extra move
+  went out.
+- Link over the whole bench: 64/64 transactions, 0 errors.
+- The plan said ±30°; the user chose ±15°.
+
+**Spec:** `can_cmds.md` §4.5 (tracked position, deferral, NOT_ARMED after a
+lost position) and Q3 marked resolved.
+
+## 2026-10-04 — W6 phase 5, extra CAN checks (node 2): rejections, ESTOP mid-move
+
+**Rejections (no motion; STATUS_STEER stayed 0/0, 0x33 stayed 0):**
+- ±95° → RANGE detail 2; speed 200 → RANGE detail 1; bad CRC → CRC.
+- Counters: after ARM steeron, the first valid STEER (ctr 5) was accepted.
+  That is per spec §4.3: an accepted ARM resets the STEER window. Then ctr 4
+  → STALE detail 5, and ctr 5 again → REPEAT detail 5.
+
+**ESTOP mid-move:**
+- STEER +15 (ctr 6), then broadcast ESTOP 0.5 s later. Both replied OK;
+  FAULT ESTOP came +1 ms after the ESTOP. The moving flag cleared 0.52 s
+  after the STEER.
+- Flags became `enabled` only: position lost, nothing queued, target still
+  shows +15. The servo stays energised and holding (F7 stop).
+- 0x33 = −498 p (+5.90°). The aborted FD was not counted as an error (73/74
+  ok, 0 fails) and gave no FAULT MKS_ERROR.
+- STEER while latched → ESTOP_LATCHED, with no motion and the STATUS ctr
+  unchanged.
+
+**Recovery without hand re-alignment** (0x33 knows where the wheel is):
+- `estop clear`, then steeron. This time 0x33 did **not** reset (stayed
+  −498). The first enable reset it 5 → 0, but then the motor had been off
+  before the F3. So F3 01 seems to reset 0x33 only from the disabled state —
+  inferred from two enables, not confirmed.
+- STEER −5.90 → −498 p, settled 0.58 s, 0x33 = 0.
+- steeron again: pos 0 at the hand-set zero.
+- Link: 82 requests, 81 ok (the aborted one), 0 errors.
+
+## 2026-10-04 — W6 phase 6: bus errors and remaining FAULTs (§7.2)
+
+Branch `w6-can-cmds`. Build 0 warnings, flash 122 164 B (phase 4: 118 056 B), RAM 6 536 B.
+
+Code:
+- `velocity_expire_now()` (velocity.c/.h): a volatile `wd_force` flag the next
+  1 kHz tick takes through the exact vel_tmo expiry path (setpoint 0, coast,
+  latch, published sample). Works with `vel_tmo 0`. Cleared by `velocity_enable()`.
+- `can_cmd_poll()`: one ESR read per pass (`can_bus_errors`). Bus-off rising edge
+  → `velocity_expire_now()` only if the loop is armed, owner CAN and not already
+  expired (console-owned loop is not driven over this bus; spec §7.2 row updated);
+  one console line "can: bus-off - CAN loop coasted, ARM 1 after rejoin", no
+  other prints (a shorted bus re-enters bus-off every few ms). Falling edge →
+  FAULT BUS_OFF_RECOVERED. EPVF rising edge → FAULT ERROR_PASSIVE.
+  `rx_ring_dropped` increase → FAULT RX_RING_DROPPED (a `stats clear` only
+  resyncs). `drive_fault_latched()` rising edge → FAULT DRV_FAULT (report only).
+  Edge baselines taken in `can_cmd_init()`. SKIPPED_CTR was already in (phase 2).
+- `can` console: new line `bus : N bus-off, N error-passive entries`
+  (`can_cmd_stats_t.bus_off/passive`).
+- Bug found on the bench and fixed: with nobody ACKing, pending FAULTs were
+  retried into full mailboxes every main-loop pass and each refusal counted in
+  `tx dropped` (36 195 229 after one short). New `can_bus_tx_free()`; the FAULT
+  loop holds while it is 0. After the fix an 11.5 s unplug gave 685 drops ≈ the
+  STATUS_DRIVE+STEER frames due in the gap (11.5 s × 60 Hz ≈ 690).
+- `tools/bench/cancmd.py`: `tx()` returns False on ENOBUFS instead of raising;
+  `speed` counts and prints refused frames.
+
+Bench (node 2, vel_tmo raised to 10 000 ms in RAM so a stop inside a 2 s short
+can only be the bus-off path; restored to 1000 after):
+- Bus-off: ARM 1 + SPEED 10 rpm, CANH–CANL shorted ~2 s, twice. The wheel
+  coasted during the short both times (user observed); loop latched TIMEOUT,
+  flags 0x13; node counted 398 then +248 bus-off entries (646 total) and 1272
+  error-passive entries (the node cycles bus-off ↔ rejoin while shorted). ARM 1
+  recovered after the first. BUS_OFF_RECOVERED FAULT frame NOT captured: the
+  CANable (gs_usb) wedged each time — TX stuck (ENOBUFS), RX dead, needs
+  `ip link set can0 down/up`; gs_usb rejects `restart-ms` ("Device doesn't
+  support restart from Bus Off"). Test stopped by the user: not risking the
+  only CANable. No more bus shorts with it on the bus.
+- ERROR_PASSIVE: node CAN connector unplugged 11.5 s → FAULT ERROR_PASSIVE
+  received after replug (t_ms 231531, duty 0), 1 entry counted. Also seen
+  earlier with can0 down (1 entry).
+- DRV_FAULT: motor off, PB0 (nFAULT) jumpered to GND ~1 s → FAULT DRV_FAULT,
+  flags drvfault, duty 0; `drv` showed 3942 ms asserted; `drv clearfault` cleared.
+- RX_RING_DROPPED: not reachable from outside. `monitor on` + cangen 500 frames
+  at 1 kHz → ring high-water 1/32, 0 dropped; console UART is non-blocking
+  (dropped 16 507 bytes instead of stalling) and nothing in the main loop blocks
+  > 2 ms (only HAL_Delay(2) in drive.c, 1 in dipsw.c); overflow needs a ~16 ms
+  stall. Code reviewed only; no test hook added.
+
+Spec `can_cmds.md` §7.2: bus-off row says CAN-owned loop only and
+`velocity_expire_now()`; note that a FAULT with no free mailbox is held.
+Next: phase 7 (corner-node integration, SPEED 50 Hz + STEER 10 Hz, bus load, ring drops).
+
+## 2026-10-04 — W6 phase 7: corner-node integration (SPEED 50 Hz + STEER 10 Hz)
+
+No firmware change; build at phase 6 (122 164 B). Node 2 (corner), bench
+board, 12 V, loaded rig. Node rebooted first for clean counters (stats: 0
+dropped everywhere, ring hwm 0/32).
+
+Host: new `cancmd.py corner` mode — SPEED at `--rate` (50 Hz) and STEER at
+`--steer-rate` (10 Hz) in one loop. STEER follows a ±15° triangle, 8 s period,
+sent only on change (§4.5: on change, ≤10 Hz) — every 100 ms tick changes
+target, so this is the spec's worst case. Counts every frame on the bus (sent +
+received) with worst-case stuffed bits (47 + 8n + (34+8n−1)/4; 135 at DLC 8)
+for the load. Ends with STOP coast so vel_tmo does not trip. `--arm` sends
+ARM 1 immediately before the stream.
+
+Run 1 (separate `arm` + `steeron` invocations, then `corner`): every SPEED
+→ NOT_ARMED, flags `wd`. Cause: vel_tmo (1000 ms) runs from the ARM, and the
+`corner` call started seconds later — expired watchdog needs ARM 1 (§7.1,
+can_cmd.c SPEED check). Test fault, not firmware. STEER in the same run:
+300/300 OK, |target−pos| max 2.25 mean 1.19°, final −14.25 = −14.25.
+
+Run 2 (`corner 2 10 --arm --duration 30`):
+- SPEED 10 rpm x1500 at 50.0 Hz, all accepted (no CMD_RESULT on success);
+  STEER x300 at 10.0 Hz, 300 OK; STOP OK; no FAULT frames.
+- STATUS_DRIVE 1755 frames, 50.0 Hz, max gap 23.7 ms; last-2 s rpm mean 9.61
+  (min 7.14 = the 12/rev tread dip), out 146 o/oo, 470 mA.
+- STATUS_STEER 351 frames, 10.0 Hz; final target −14.25 pos −14.25; moving
+  294/301 frames; |target−pos| max 22.50 (the opening jump from −14.25 while
+  the triangle rose), mean 2.65°.
+- Bus: 3908 frames, 130 f/s, 6.9 % load. Per node = SPEED 50 + STEER 10 +
+  CMD_RESULT(STEER) 10 + STATUS_DRIVE 50 + STATUS_STEER 10.
+- Node `stats`: uart tx 0 dropped; can tx 0 dropped (no free mailbox); can rx
+  0 FIFO-full, 0 overruns; ring 0 dropped, high-water 2 of 32.
+
+Findings against spec §6.3 (spec updated):
+- STEER's CMD_RESULT (replied always) was missing from the load table: +40 f/s
+  for 4 corner nodes → 732 f/s, 39.5 % (was 692, 37.4 %); 25 Hz STATUS 31.4 %.
+- HEARTBEAT is muted at boot (`console.c` heartbeat_on = false), so 0 frames
+  seen; §6.3 counts it at 2 Hz. Default left as is — open for the user.
+
+Docs: `can_cmds.md` §5.2 now has the CFG_REQ CRC input order (bytes 0–2 then
+4–7) and check value 0x4B; §6.3 table + measured figure; Q13, Q17, Q18
+marked resolved (Q3 was already). `_REF_MCU` gained a can_cmd/motion/steer
+section. W6 plan phases 1–7 done; next-task 1 closed.

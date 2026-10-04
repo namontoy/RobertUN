@@ -690,18 +690,18 @@ static void handle_cfg(const can_frame_t *f)
 
     case CFG_OP_REVERT:
       out = (uint32_t)config_revert();
-      config_apply_limits();
+      config_apply_all();
       break;
 
     case CFG_OP_DEFAULT_KEY:
       config_reset_key(k);
-      config_apply_limits();
+      config_apply_all();
       out = (uint32_t)config_get(k);
       break;
 
     case CFG_OP_DEFAULT_ALL:
       config_reset_all();
-      config_apply_limits();
+      config_apply_all();
       break;
 
     case CFG_OP_INFO:

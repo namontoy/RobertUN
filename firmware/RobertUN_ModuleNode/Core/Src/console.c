@@ -1849,10 +1849,10 @@ static void cmd_cfg(int argc, char **argv)
   if (strcmp(argv[1], "revert") == 0)
   {
     config_load_t r = config_revert();
-    config_apply_limits();
+    config_apply_all();
 
     debug_uart_printf("reverted to stored values - %s\r\n", config_load_str(r));
-    debug_uart_printf("  trip %lu mA, limit %u%% - both re-applied\r\n",
+    debug_uart_printf("  trip %lu mA, limit %u%% - all keys re-applied\r\n",
                       (unsigned long)isense_trip_ma(),
                       (unsigned)(drive_limit() / 10u));
     return;
@@ -1870,17 +1870,17 @@ static void cmd_cfg(int argc, char **argv)
       }
 
       config_reset_key(k);
-      config_apply_limits();
+      config_apply_all();
       cfg_print_key(k);
     }
     else
     {
       config_reset_all();
-      config_apply_limits();
+      config_apply_all();
       debug_uart_puts("all keys back to compiled defaults\r\n");
     }
 
-    debug_uart_printf("  trip %lu mA, limit %u%% - both re-applied\r\n",
+    debug_uart_printf("  trip %lu mA, limit %u%% - all keys re-applied\r\n",
                       (unsigned long)isense_trip_ma(),
                       (unsigned)(drive_limit() / 10u));
     debug_uart_puts("  (in RAM only - 'cfg save' to make it stick)\r\n");

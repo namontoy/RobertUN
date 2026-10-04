@@ -201,10 +201,10 @@ config_load_t config_revert(void);
 void config_apply_live(config_key_t key);
 
 /**
-  * @brief  Re-apply trip_ma and duty_limit, after revert or default replaced
-  *         the values underneath a running board. Only these two: see config.c.
+  * @brief  Re-apply every key, after revert or default replaced the values
+  *         underneath a running board.
   */
-void config_apply_limits(void);
+void config_apply_all(void);
 
 /* --- metadata, for the console to print -------------------------------- */
 

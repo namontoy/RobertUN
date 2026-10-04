@@ -641,14 +641,19 @@ void config_apply_live(config_key_t key)
   }
 }
 
-/* Needed after revert and default, which replace the stored values underneath
-   a board still running on the old ones. Without it, `cfg` can claim a 40% cap
-   while the bridge still enforces 100% - the dangerous direction. Applied
-   unconditionally: both calls are idempotent. */
-void config_apply_limits(void)
+/* Needed after revert and default, which replace the values underneath a
+   board still running on the old ones. Without it, `cfg` can claim a 40% cap
+   while the bridge still enforces 100%, or show one vel_kp while the loop runs
+   another. Every key, in index order: the IPROPI scale keys (0-2) come before
+   trip_ma (3), so the trip ends at its configured value on the new scale, and
+   vel_ff_a before vel_ff_b, so both end at theirs. Re-arms the vel_tmo
+   countdown, as a `cfg vel_tmo` does. */
+void config_apply_all(void)
 {
-  (void)isense_set_trip_ma((uint32_t)live[CFG_TRIP_BOOT_MA]);
-  drive_set_limit((uint16_t)live[CFG_DUTY_LIMIT]);
+  for (uint16_t i = 0u; i < (uint16_t)CFG_KEY_COUNT; i++)
+  {
+    config_apply_live((config_key_t)i);
+  }
 }
 
 bool config_dirty(void)

@@ -310,7 +310,14 @@ Rules:
 - A SET lives in RAM until SAVE.
 - SAVE is refused with `BUSY` while the bridge is enabled or the loop is armed
   (a flash write stalls the core; Q10).
-- REVERT and DEFAULT re-apply the live values, as the console does.
+- REVERT and DEFAULT re-apply every key to the running modules
+  (`config_apply_all()`), as the console does.
+- A SET of `vel_tmo`, and any REVERT or DEFAULT, re-arms the setpoint
+  countdown, as the console does: a deadline just changed has not been missed
+  yet. So a host repeating those keeps an armed loop alive without SPEED. Orion must
+  not use it as a keep-alive; liveness is SPEED (§7.1).
+- A frame with DLC < 8 is answered with status `CRC` (6): a truncated frame
+  cannot carry a checkable CRC. There is no separate BAD_DLC status.
 - There is no rolling counter: config is not motion. `tag` pairs each request
   with its response.
 - Broadcast is allowed. Every node answers with its own CFG_RESP.
@@ -512,7 +519,7 @@ traffic from non-wheel nodes (Q9).
 | Rule | |
 |---|---|
 | Does `vel_tmo` apply to CAN? | **Yes, unchanged.** Accepted SPEED frames call `velocity_set_setpoint()`, which kicks the same setpoint watchdog as `vel target`. Default 1000 ms = 50 missed frames at 50 Hz (Q11) |
-| What does not kick | Rejected frames (REPEAT, STALE, RANGE, CRC, NOT_ARMED), STATUS traffic, CFG, LIMITS and RAMP |
+| What does not kick | Rejected frames (REPEAT, STALE, RANGE, CRC, NOT_ARMED), STATUS traffic, CFG, LIMITS and RAMP. Exception: CFG SET `vel_tmo`, REVERT and DEFAULT re-arm the countdown (§4.8) |
 | On expiry | The existing behaviour: setpoint 0, coast, flag latched. Also FAULT `VEL_WD_EXPIRED` and STATUS_DRIVE bit 4. The latch clears with ARM action 1 (`velocity_enable()`) |
 | `drv timeout` | Stays UART-only and off by default. While the loop is armed, each loop step's duty command kicks it, so orion's liveness is judged by `vel_tmo` |
 | Steering | A move in progress completes; there is no steering timeout. FD moves are finite |

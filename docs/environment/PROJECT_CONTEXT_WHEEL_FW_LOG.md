@@ -4617,3 +4617,4 @@ user to delete. Next: W7, six nodes, new branch from main.
 - Stale text noticed in `_REF_MCU` (not edited): it still says PA2 IPROPI is "configured but not yet wired" and "PA4 is still free … not fitted", but both are in use (IPROPI calibrated 09-26; PA4 = DAC VREF in the table and on the breakout).
 
 - 2026-10-08 follow-up: box 5 servo tag `RX→PA0` → `RX→PA0 (10k PU)` — PA0 (UART4_TX, servo RX) has a 10 k pull-up on the board (user). Top photo regenerated; `docs/pin_connections.html` updated to match.
+- 2026-10-08 correction (user): the pull-up is on the other servo line. Box 5 now `TX→PA1 (5.1k PU)` (servo TX → PA1/UART4_RX, the 5.1 kΩ pull-up from W6 phase 5) and plain `RX→PA0`; the "10k on PA0" note above was wrong. Photo regenerated; HTML connector row updated, PA0 note reverted.

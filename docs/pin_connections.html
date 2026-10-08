@@ -102,7 +102,7 @@
       <tr><td class="pin">PB3</td><td class="sig">ENC_B</td><td>TIM2_CH2, encoder mode</td><td>AF1</td><td>Encoder B</td></tr>
 
       <tr class="grp" style="--c:#00FFD0"><td colspan="6"><span class="badge" style="--c:#00FFD0">5</span> Steering servo: MKS SERVO42C</td></tr>
-      <tr><td class="pin">PA0</td><td class="sig">UART4_TX</td><td>UART4, 38400 8N1</td><td>AF8</td><td>Servo RX</td><td class="note">Commands to the servo; 10 k pull-up on the board</td></tr>
+      <tr><td class="pin">PA0</td><td class="sig">UART4_TX</td><td>UART4, 38400 8N1</td><td>AF8</td><td>Servo RX</td><td class="note">Commands to the servo</td></tr>
       <tr><td class="pin">PA1</td><td class="sig">UART4_RX</td><td>UART4</td><td>AF8</td><td>Servo TX</td><td class="note"><span class="warn">Needs an external 5.1 kΩ pull-up PA1 → 3V3</span> (fitted on node 2)</td></tr>
 
       <tr class="grp" style="--c:#7CFF00"><td colspan="6"><span class="badge" style="--c:#7CFF00">8</span> CAN bus: transceiver module</td></tr>
@@ -142,7 +142,7 @@
       <tr><td><span class="badge" style="--c:#00B4FF">1</span></td><td>DIP switch, module ID</td><td class="note">top → bottom</td><td><code>PB15 (MSB) · PB14 · PB13 · PB12 (LSB)</code></td></tr>
       <tr><td><span class="badge dark" style="--c:#FF2D2D">3</span></td><td>Battery input, V_bat ~15 V</td><td class="note">left → right</td><td><code>GND · V_bat</code></td></tr>
       <tr><td><span class="badge" style="--c:#FFA8A8">4</span></td><td>Rocker switch</td><td class="note">—</td><td class="note">Power switch; pins not annotated</td></tr>
-      <tr><td><span class="badge" style="--c:#00FFD0">5</span></td><td>Steering servo (UART4)</td><td class="note">bottom → top</td><td><code>V_bat · GND · TX→PA1 · RX→PA0 (10k PU) · GND · NC</code></td></tr>
+      <tr><td><span class="badge" style="--c:#00FFD0">5</span></td><td>Steering servo (UART4)</td><td class="note">bottom → top</td><td><code>V_bat · GND · TX→PA1 (5.1k PU) · RX→PA0 · GND · NC</code></td></tr>
       <tr><td><span class="badge" style="--c:#FF69B4">6</span></td><td>CAN in, JST-XH 3-pin</td><td class="note">top → bottom</td><td><code>CANL · CANH · GND</code></td></tr>
       <tr><td><span class="badge" style="--c:#B388FF">7</span></td><td>CAN out, JST-XH 3-pin</td><td class="note">top → bottom</td><td><code>CANL · CANH · GND</code></td></tr>
       <tr><td><span class="badge" style="--c:#7CFF00">8</span></td><td>CAN transceiver module</td><td class="note">top → bottom</td><td><code>CANL · CANH · CRX→PB8 · CTX→PB9 · GND · 3V3</code></td></tr>

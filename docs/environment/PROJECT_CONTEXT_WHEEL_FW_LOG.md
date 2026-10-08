@@ -4590,3 +4590,12 @@ decision commit (229cbd5) was pushed to the branch after the merge, so it was
 cherry-picked onto main as 8927e03 and pushed (user's choice over a second
 PR). Local checkout now on main. `w6-can-cmds` (local and origin) left for the
 user to delete. Next: W7, six nodes, new branch from main.
+
+## 2026-10-07 — Annotated photo of the first wheel-driver prototype
+
+- Source `docs/Prototype_DriverWheels.jpg` (1512×2688, never modified). Output `docs/Prototype_DriverWheels_boxes.jpg` (1772×2688: canvas widened 170 px left / 90 px right for the CAN tags).
+- Scripts in `docs/figures/`: `driverwheels_mask.py` (OpenCV GrabCut cutout → `driverwheels_mask.png`; board + red battery terminal are foreground), `driverwheels_boxes.py` (PIL drawing; background → grey 128). Paths are relative to the script folder. Run the mask script first only if the mask is missing.
+- Boxes: 1 DIP switch (module ID, MSB top), 2 WeAct STM32F446RE core board, 3 battery input V_bat ~15 V (left GND, right V_bat), 4 rocker switch, 5 steering servo (UART4; from bottom V_bat, GND_1, TX→PA1, RX→PA0, GND_2, NC; servo-side names), 6/7 CAN in/out JST-XH 3-pin (from top CANL, CANH, GND), 8 CAN transceiver (from top CANL, CANH, CRX→PB8, CTX→PB9, GND, 3V3), 9 encoder power (left GND, right 3V3), 10 encoder lines (left A→PA15, right B→PB3), 11 DRV8874 breakout, 12 motor output (left OUT2, right OUT1).
+- DRV8874 breakout pins: bottom row L→R IPROPI→PA2, nFAULT→PB0, IOE (10k pull-up only, no MCU pin), OUT1, OUT2, GND, VM; top row VREF→PA4, SLP→PB5, PMODE (10k pull-up), PH/IN2→PB7, EN/IN1→PB6, GND, VM.
+- 3V3 rail: the orange wire left of the MCU comes from the core board's 3V3 pin column (top right) and feeds terminal 9 and the transceiver's 3V3. V_bat → 12 V and 3V3 regulators are on the back of the board (not annotated).
+- MCU header dots, in the color of the connector each pin serves: DIP PB12–PB15, encoder PA15/PB3, DRV PB5/PB6/PB7/PA2/PA4/PB0, CAN PB8/PB9, servo PA0/PA1. Header pin order checked by the user: left header pairs have the first label on the inner pin (e.g. B12 inner, B13 outer); right header has e.g. C5 inner, B0 outer.

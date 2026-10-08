@@ -1,6 +1,6 @@
 # RobertUN — Wheel Controller Firmware Context
 
-**Last updated:** 2026-10-04 — W6 merged to main (PR #1, + 8927e03 heartbeat note); next is W7, six nodes on plain CAN.
+**Last updated:** 2026-10-07 — annotated prototype photo (connectors ↔ MCU pins) in `docs/`, script in `docs/figures/`; next is still W7.
 **Budget:** 20 KB. Check with `wc -c` before every commit; trim if over.
 
 > **How to use this file.** This is the hot file for the wheel-firmware track:
@@ -130,6 +130,7 @@ CANopen) closed 10-04. Renumbered 10-04; the previous number is in brackets.
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 
+- **10-07** — Prototype photo annotated: `docs/Prototype_DriverWheels_boxes.jpg` — 12 numbered boxes, pin tags, 3V3 rail, MCU header dots. Script `docs/figures/driverwheels_boxes.py`. → LOG
 - **10-04** — W6 merged to main: PR #1 (merge 0fc7021) + heartbeat note cherry-picked (8927e03). Branch `w6-can-cmds` can be deleted. → LOG
 - **10-04** — W6 phase 7: SPEED 10 rpm 50 Hz + STEER ±15° triangle 10 Hz, 30 s: 1500/300 accepted, no FAULT, STATUS 50.0/10.0 Hz, 130 f/s = 6.9 % load, ring hwm 2/32, 0 drops. → LOG
 - **10-04** — W6 phase 6: bus-off (H–L short) coasts a CAN-armed loop at once, latch, ARM 1 recovers; FAULT ERROR_PASSIVE, DRV_FAULT received; RX_RING_DROPPED unreachable (hwm 1/32). 122 164 B. → LOG
@@ -139,7 +140,6 @@ CANopen) closed 10-04. Renumbered 10-04; the previous number is in brackets.
 - **10-04** — W6 phase 2: SPEED 10 rpm at 50 Hz, STATUS 50.0 Hz, ctr echo lag 0; REPEAT x149 not kicking vel_tmo (FAULT +1002 ms); CRC/STALE/NOT_ARMED pass. +1 944 B. → LOG
 - **10-04** — W6 phase 1: ESTOP (bcast 0x000) coasts a 15%-duty run, latches, CMD_RESULT + FAULT 0.6 ms; STOP modes, addr filter, `estop clear` pass. +3 032 B flash. → LOG
 - **10-04** — W6 protocol = plain CAN (simplicity, time). `can_cmds.md`: `ID = type<<4 | addr`, 0 = broadcast, ESTOP bcast 0x000, CMD_RESULT 0x08x. → LOG
-- **10-04** — 4-bit DIP ID on PB12–PB15 (1–4 corner, 5–6 center, 7–14 reserved; 0/15 refused); nFAULT → PB0. Verified on bench. Branch `dipsw-4bit`. → LOG
 
 - **09-28** — Tasks 6, 17, 18, 20 closed (task 20: PMODE corrected); text moved to the LOG; open list renumbered 1–4.
 

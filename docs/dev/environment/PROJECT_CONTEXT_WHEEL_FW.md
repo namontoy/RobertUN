@@ -130,6 +130,7 @@ CANopen) closed 10-04. Renumbered 10-04; the previous number is in brackets.
 
 ## Recent progress (last ~10; everything older is only in the LOG)
 
+- **10-08** — Repo moved to `~/rover_UN` (new layout: `firmware/projects/`, `hardware/`, `docs/dev/`, `docs/images/`; `local/` git-ignored). Branch `restructure-rover-un`; build verified from new path. Old clone `~/github/RobertUN` kept as backup. → LOG
 - **10-07** — Pin table as HTML: `docs/pin_connections.html` (MCU pins, connectors, power rails, reserved pins); `.ioc` matches `_REF_MCU`. → LOG
 - **10-07** — Prototype photos annotated: top `Prototype_DriverWheels_boxes.jpg` (connectors ↔ MCU pins), bottom `..._Bottom_boxes.jpg` (bucks 12 V / 3V3, GND). Scripts in `docs/figures/`. → LOG
 - **10-04** — W6 merged to main: PR #1 (merge 0fc7021) + heartbeat note cherry-picked (8927e03). Branch `w6-can-cmds` can be deleted. → LOG

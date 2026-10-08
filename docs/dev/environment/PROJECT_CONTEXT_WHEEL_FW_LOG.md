@@ -4618,3 +4618,17 @@ user to delete. Next: W7, six nodes, new branch from main.
 
 - 2026-10-08 follow-up: box 5 servo tag `RX→PA0` → `RX→PA0 (10k PU)` — PA0 (UART4_TX, servo RX) has a 10 k pull-up on the board (user). Top photo regenerated; `docs/pin_connections.html` updated to match.
 - 2026-10-08 correction (user): the pull-up is on the other servo line. Box 5 now `TX→PA1 (5.1k PU)` (servo TX → PA1/UART4_RX, the 5.1 kΩ pull-up from W6 phase 5) and plain `RX→PA0`; the "10k on PA0" note above was wrong. Photo regenerated; HTML connector row updated, PA0 note reverted.
+
+## 2026-10-08 — Repo moved to ~/rover_UN and reorganised
+
+- Before the move, pushed every local branch: main (19aa1d2..c9abcb9), ISR-to-ring (f22758f..ab76f6b), bench-tooling-and-12v-plant-retake (new on GitHub, now tracking).
+- The user had already set up ~/rover_UN (docs/{dev,reference,images}, external, firmware/{components,projects}, hardware, local, logs, scripts, simulation, software, tests). It was not a git repo. The RobertUN `.git` was copied in (`cp -a`), the tracked files were checked out over it, and the git-ignored local files were copied with `cp -an` (bench runs, docs/git_ignored, project-context.zip, top-level tools/, .claude/settings.local.json, KiCad .kicad_prl). build/ was not copied; it is rebuilt.
+- GitHub repo `namontoy/RobertUN` is public; name and remote unchanged.
+- Branch `restructure-rover-un`, pushed:
+  - 26eee28: renames only. BoardRover2 → hardware/BoardRover2; firmware/RobertUN_ModuleNode → firmware/projects/RobertUN_ModuleNode; docs/{environment,plans,linux} → docs/dev/; docs/other_rovers_images → docs/images/other_rovers; docs/Prototype_*.jpg → docs/images/prototype/. Path fixes in the wheel-fw skill (build.sh, flash.sh, console.py, SKILL.md), CLAUDE.md, the context files, figure scripts (rigdata/stairdata/stepdata now go up 4 levels to firmware/projects/…), docs/figures/driverwheels_*.py, pin_connections.html, the bench README/.gitignore/requirements, can_bus.h comment. The docs/dev/linux session transcripts are left as recorded. Verified: build.sh from the new path gave BUILD OK, 0 warnings, flash 119.3 KB, RAM 6.4 KB; `bench.py status` resolves runs/ at the new path.
+  - .gitignore: local/, logs/, docs/reference/, docs/*.pdf, docs/images/**/*.pdf. These are third-party PDFs and raw test output, kept local because the repo is public. Also ignored: the scratch fw projects firmware/projects/{blink,Testing_F446RE_VScode}.
+  - dfa244d: untracked the KiCad backups (19 zips, 3.5 MB), ~*.lck, #auto_saved_files# and fp-info-cache; they are ignored now and still on disk.
+  - 8c8d18a: software/Taller5-Terminal added as a submodule (HTTPS URL, pinned at a028524 Release 1.0.1).
+- The user's new images in docs/images/ (37DMotor-*.jpg, ExxoMars_ESA/) and the empty LICENSE are left untracked for the user to decide.
+- Claude memory copied to ~/.claude/projects/-home-talos-rover-UN/memory (8 files).
+- Old clone ~/github/RobertUN kept untouched as a backup until the new one is confirmed.

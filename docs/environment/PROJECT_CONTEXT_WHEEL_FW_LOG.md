@@ -4615,3 +4615,5 @@ user to delete. Next: W7, six nodes, new branch from main.
 - Sources: `.ioc` (every pin signal/label matches the `_REF_MCU` pin-allocation table), `_REF_MCU` timers section, and the 10-07 photo annotations (`docs/figures/driverwheels_boxes.py`, `driverwheels_bottom_boxes.py`).
 - Not documented anywhere, so marked as such in the page: where the 3V3 buck output goes, and the rocker switch wiring. The 12 V buck → DRV8874 VM link is taken from "rail 12.0 V at VM".
 - Stale text noticed in `_REF_MCU` (not edited): it still says PA2 IPROPI is "configured but not yet wired" and "PA4 is still free … not fitted", but both are in use (IPROPI calibrated 09-26; PA4 = DAC VREF in the table and on the breakout).
+
+- 2026-10-08 follow-up: box 5 servo tag `RX→PA0` → `RX→PA0 (10k PU)` — PA0 (UART4_TX, servo RX) has a 10 k pull-up on the board (user). Top photo regenerated; `docs/pin_connections.html` updated to match.

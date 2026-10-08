@@ -1,10 +1,10 @@
-# Annotated prototype photo: docs/Prototype_DriverWheels.jpg -> docs/Prototype_DriverWheels_boxes.jpg
+# Annotated prototype photo: docs/images/prototype/Prototype_DriverWheels.jpg -> docs/images/prototype/Prototype_DriverWheels_boxes.jpg
 # Run driverwheels_mask.py first if the mask is missing.
 import os
 from PIL import Image, ImageDraw, ImageFont
 HERE=os.path.dirname(os.path.abspath(__file__))
-SRC=HERE+'/../Prototype_DriverWheels.jpg'
-DST=HERE+'/../Prototype_DriverWheels_boxes.jpg'
+SRC=HERE+'/../images/prototype/Prototype_DriverWheels.jpg'
+DST=HERE+'/../images/prototype/Prototype_DriverWheels_boxes.jpg'
 im=Image.open(SRC).convert('RGB')
 # background -> neutral mid grey, using the GrabCut mask from mask.py
 mask=Image.open(HERE+'/driverwheels_mask.png').convert('L')

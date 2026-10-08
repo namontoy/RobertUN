@@ -67,7 +67,7 @@ survive regeneration.
 
 ## Gotchas worth knowing before you touch this
 
-Fully written up in `docs/environment/PROJECT_CONTEXT_WHEEL_FW.md` — that is the
+Fully written up in `docs/dev/environment/PROJECT_CONTEXT_WHEEL_FW.md` — that is the
 context file to read for anything in this firmware. The three that cost real
 bench time:
 

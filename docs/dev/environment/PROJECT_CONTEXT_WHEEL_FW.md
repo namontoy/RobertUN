@@ -162,7 +162,7 @@ CANopen) closed 10-04. Renumbered 10-04; the previous number is in brackets.
 
 ## Where the details live
 
-All in `docs/environment/`, prefixed `PROJECT_CONTEXT_WHEEL_FW`:
+All in `docs/dev/environment/`, prefixed `PROJECT_CONTEXT_WHEEL_FW`:
 
 | Topic | File suffix |
 |---|---|

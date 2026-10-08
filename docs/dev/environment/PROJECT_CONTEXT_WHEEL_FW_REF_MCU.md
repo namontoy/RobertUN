@@ -317,7 +317,7 @@ anyway rather than depending on the fallback.
 
 ### `can_cmd`, `motion`, `steer` — W6 plain-CAN command set (Oct 4, 2026)
 
-Implements `docs/can_cmds.md` (plan `docs/plans/w6-can-cmds.md`, branch
+Implements `docs/can_cmds.md` (plan `docs/dev/plans/w6-can-cmds.md`, branch
 `w6-can-cmds`, phases 1–7). Everything runs in main-loop context; no new
 interrupt (bus errors come from one ESR read per pass, no SCE IRQ).
 
@@ -454,7 +454,7 @@ Method and the full step table are in `PROJECT_CONTEXT_WHEEL_FW_LOG.md`.
 **Decision: the hybrid, merged from branch `ISR-to-ring`.** `CAN1_RX0_IRQn` at
 preemption 1 (every other application IRQ stays at 0, so TIM6's 1 kHz control
 tick preempts it and is unaffected by bus load) drains FIFO0 into a 32-frame
-ring; the main loop pops it. Plan: `docs/plans/ISR-to-ring.md`. Bench
+ring; the main loop pops it. Plan: `docs/dev/plans/ISR-to-ring.md`. Bench
 (Sep 27-28): 20000/20000 frames at saturation (~1860 f/s), with and without the
 motor at 18% duty; 0 overruns, 0 FIFO-full, ring hwm 1, TEC/REC 0; forced
 overflow (`canhold 100`) gave hwm 32 and ~150 dropped, 0 overruns, console and

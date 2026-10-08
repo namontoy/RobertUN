@@ -2,8 +2,8 @@
 
 ## Session start
 - Use the `project-context` skill. Read only the hot file for the track:
-  wheel firmware → `docs/environment/PROJECT_CONTEXT_WHEEL_FW.md`;
-  machines, ROS 2, power → `docs/environment/PROJECT_CONTEXT_REST.md`.
+  wheel firmware → `docs/dev/environment/PROJECT_CONTEXT_WHEEL_FW.md`;
+  machines, ROS 2, power → `docs/dev/environment/PROJECT_CONTEXT_REST.md`.
   If the track is unclear, ask. Never read `_REF_*` or `_LOG` files whole.
 
 ## Replies

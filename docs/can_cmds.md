@@ -10,7 +10,7 @@ Sources:
 - `_REF_MCU`: `can_bus`, "CAN error counters", "Bus-load headroom" and
   "DECIDED — interrupt-driven CAN RX".
 - Task 6, now in the LOG.
-- `docs/plans/ISR-to-ring.md`.
+- `docs/dev/plans/ISR-to-ring.md`.
 - In the firmware: `console.c` (command table at line 2286 and its handlers),
   `config.h`/`config.c` (keys), `velocity.c`, `drive.c` and `dipsw.h`.
 

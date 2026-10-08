@@ -1,6 +1,6 @@
 # Wheel Firmware — Data Flow
 
-Survey of `firmware/RobertUN_ModuleNode/Core/{Inc,Src}` (all application `.c`/`.h`
+Survey of `firmware/projects/RobertUN_ModuleNode/Core/{Inc,Src}` (all application `.c`/`.h`
 files plus `main.c`, `stm32f4xx_it.c`). Split into two diagrams because the
 combined graph was too crowded: **control path** (encoder → velocity → drive →
 PWM → current sense, plus the safety loops) and **command/telemetry path**

@@ -74,7 +74,7 @@
   * and counts it in rx_ring_dropped — the ISR never blocks. Only the ISR
   * touches the hardware FIFO and its overrun flags.
   *
-  * The background and the decision record are in docs/environment
+  * The background and the decision record are in docs/dev/environment
   * PROJECT_CONTEXT_WHEEL_FW_REF_MCU.md ("polled vs interrupt-driven CAN RX")
   * and the floating-CAN_RX lesson in the same file ("CAN error counters").
   *

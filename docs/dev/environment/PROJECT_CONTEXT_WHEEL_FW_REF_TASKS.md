@@ -391,7 +391,7 @@ References to them in the other files point there.
       the forward run**. **63,203 `V` rows, 0 gaps, 0 unpublished steps,
       0 tx_dropped**; `outcome=ok`, not SUSPECT. Reverse is not a symmetry
       check you can skip — the rover reverses, and the feedforward's sign
-      handling ([`velocity.c:346`](../../firmware/RobertUN_ModuleNode/Core/Src/velocity.c#L346))
+      handling ([`velocity.c:346`](../../../firmware/projects/RobertUN_ModuleNode/Core/Src/velocity.c#L346))
       takes the sign of the *setpoint*, so it is symmetric **by construction**
       and cannot absorb a plant that is not.
       - **Tracking is as good or better: worst settled error 0.006 rpm**

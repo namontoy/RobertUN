@@ -1,7 +1,7 @@
 # Bench runs are never committed - none of it, not even with `add -f`.
 # A run directory is raw instrument output: the .csv rows (tens of thousands
 # per long hold), console.log byte-for-byte, meta.json and status.json. It is
-# INPUT to the figure scripts in docs/environment/figures/, not a record
+# INPUT to the figure scripts in docs/dev/environment/figures/, not a record
 # anyone reads. A result that matters goes into a figure and into
 # PROJECT_CONTEXT_WHEEL_FW.md; the data behind it stays on the bench machine.
 # Regenerating a figure therefore needs the run directory locally, which is

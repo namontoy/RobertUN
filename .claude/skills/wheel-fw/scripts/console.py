@@ -18,7 +18,7 @@ from pathlib import Path
 
 root = Path(subprocess.check_output(["git", "rev-parse", "--show-toplevel"],
                                     text=True).strip())
-sys.path.insert(0, str(root / "firmware/RobertUN_ModuleNode/tools/bench"))
+sys.path.insert(0, str(root / "firmware/projects/RobertUN_ModuleNode/tools/bench"))
 from node import Node, NodeError  # noqa: E402
 
 

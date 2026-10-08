@@ -1,11 +1,11 @@
-# Annotated bottom photo: docs/Prototype_DriverWheels_Bottom.jpg -> docs/Prototype_DriverWheels_Bottom_boxes.jpg
+# Annotated bottom photo: docs/images/prototype/Prototype_DriverWheels_Bottom.jpg -> docs/images/prototype/Prototype_DriverWheels_Bottom_boxes.jpg
 # Run driverwheels_bottom_mask.py first if the mask is missing.
 # The bottom view is mirrored left-right with respect to the top photo.
 import os
 from PIL import Image, ImageDraw, ImageFont
 HERE=os.path.dirname(os.path.abspath(__file__))
-SRC=HERE+'/../Prototype_DriverWheels_Bottom.jpg'
-DST=HERE+'/../Prototype_DriverWheels_Bottom_boxes.jpg'
+SRC=HERE+'/../images/prototype/Prototype_DriverWheels_Bottom.jpg'
+DST=HERE+'/../images/prototype/Prototype_DriverWheels_Bottom_boxes.jpg'
 im=Image.open(SRC).convert('RGB')
 mask=Image.open(HERE+'/driverwheels_bottom_mask.png').convert('L')
 im=Image.composite(im,Image.new('RGB',im.size,(128,128,128)),mask)

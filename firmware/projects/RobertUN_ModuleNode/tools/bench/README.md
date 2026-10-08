@@ -300,10 +300,10 @@ time is the expensive thing here.
 console transcript, `meta.json` and `status.json` alike. It is raw instrument
 output, megabytes per run, and input to the figure scripts rather than a record
 anyone reads. **Two consequences to know about:** regenerating a figure in
-`docs/environment/figures/` needs its run directory present on this machine,
+`docs/dev/environment/figures/` needs its run directory present on this machine,
 and a run's provenance — gains, profile arguments, integrity counters — is
 preserved by being *quoted* in the figure and in
-`docs/environment/PROJECT_CONTEXT_WHEEL_FW.md`, not by the JSON surviving
+`docs/dev/environment/PROJECT_CONTEXT_WHEEL_FW.md`, not by the JSON surviving
 anywhere a clone can see. If a number matters, write it down there. A figure
 in the repo is the published result; the rows behind it are not.
 

@@ -75,6 +75,20 @@ __pycache__/
 # `git add -f` one: if a result matters, it belongs in a figure and in
 # PROJECT_CONTEXT, not as a blob. (No blanket *.json here - CMakePresets.json
 # and .vscode/ are real repo files; the run .json is covered by runs/ in
-# firmware/RobertUN_ModuleNode/tools/bench/.gitignore.)
+# firmware/projects/RobertUN_ModuleNode/tools/bench/.gitignore.)
 *.csv
 *.log
+
+# rover_UN layout: machine-local material that never goes to GitHub (the repo
+# is public). local/ holds bench leftovers and private notes; logs/ holds test
+# output; docs/reference/ and loose PDFs are third-party copyrighted documents
+# kept for reading only - link to the vendor page from the docs instead.
+local/
+logs/
+docs/reference/
+docs/*.pdf
+docs/images/**/*.pdf
+
+# Other firmware projects on this machine, not part of the rover yet
+firmware/projects/blink/
+firmware/projects/Testing_F446RE_VScode/

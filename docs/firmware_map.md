@@ -1,6 +1,6 @@
 # Wheel Firmware — Module Map
 
-Survey of the application modules in `firmware/RobertUN_ModuleNode/Core/Inc`
+Survey of the application modules in `firmware/projects/RobertUN_ModuleNode/Core/Inc`
 (HAL vendor headers excluded), cross-checked against the firmware-modules
 section of `PROJECT_CONTEXT_WHEEL_FW_REF_MCU.md`.
 

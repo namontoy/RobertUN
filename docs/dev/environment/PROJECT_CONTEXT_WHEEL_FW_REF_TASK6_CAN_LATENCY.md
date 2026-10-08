@@ -75,7 +75,7 @@ tested. The deviations are small enough that host/USB timestamp noise in
 `candump` itself may be comparable to the effect being measured — this method
 has not yet shown it can separate MCU-side latency from capture-side jitter.
 
-Raw captures: `firmware/RobertUN_ModuleNode/tools/bench/runs/can_latency/*.log`
+Raw captures: `firmware/projects/RobertUN_ModuleNode/tools/bench/runs/can_latency/*.log`
 (local-only, git-ignored, per repo `.gitignore`).
 
 ## Results — interrupt-driven RX (ISR-to-ring), same method

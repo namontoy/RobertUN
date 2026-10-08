@@ -9,7 +9,7 @@ Sources:
   decision.
 - `_REF_MCU`: `can_bus`, "CAN error counters", "DECIDED — interrupt-driven CAN
   RX, ISR-to-ring".
-- Task 6 (now in the LOG) and `docs/plans/ISR-to-ring.md`.
+- Task 6 (now in the LOG) and `docs/dev/plans/ISR-to-ring.md`.
 - Firmware: the `console.c` command table and handlers (the survey done for
   `docs/can_cmds.md` §2), `config.h`/`config.c` (keys, ranges, defaults),
   `velocity.c`, `drive.c`, `dipsw.h`.

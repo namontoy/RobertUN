@@ -41,7 +41,7 @@ QUANT_RPM      = 60_000.0 / (COUNTS_PER_REV * WINDOW_TICKS)
 SYNC_GATE_PM   = 145       # below this duty the current column is Isup, not Imot
 
 RUNS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                    "..", "..", "..", "firmware", "RobertUN_ModuleNode",
+                    "..", "..", "..", "..", "firmware", "projects", "RobertUN_ModuleNode",
                     "tools", "bench", "runs")
 
 # The long run the velocity-loop model rests on, and the warm re-test that

@@ -29,7 +29,7 @@ import numpy as np
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _BENCH = os.path.normpath(os.path.join(
-    _HERE, "..", "..", "..", "firmware", "RobertUN_ModuleNode", "tools", "bench"))
+    _HERE, "..", "..", "..", "..", "firmware", "projects", "RobertUN_ModuleNode", "tools", "bench"))
 if _BENCH not in sys.path:
     sys.path.insert(0, _BENCH)
 

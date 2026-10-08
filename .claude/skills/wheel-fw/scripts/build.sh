@@ -5,7 +5,7 @@ set -uo pipefail
 
 preset="${1:-Debug}"
 root="$(git rev-parse --show-toplevel)"
-proj="$root/firmware/RobertUN_ModuleNode"
+proj="$root/firmware/projects/RobertUN_ModuleNode"
 clt=/opt/st/stm32cubeclt_1.22.0
 
 cmake_bin=cmake
@@ -35,7 +35,7 @@ errpat='error:|undefined reference|ld returned|FAILED:'
 if [ $rc -ne 0 ]; then
   echo "BUILD FAILED ($preset): $(grep -cE "$errpat" "$log") error line(s), $warnings warning(s)"
   grep -E "$errpat" "$log" | sort -u | head -20
-  echo "full log: firmware/RobertUN_ModuleNode/$log"
+  echo "full log: firmware/projects/RobertUN_ModuleNode/$log"
   exit 1
 fi
 
@@ -45,4 +45,4 @@ arm-none-eabi-size "build/$preset/RobertUN_ModuleNode.elf" | LC_ALL=C awk 'NR==2
   fl = $1 + $2; ram = $2 + $3
   printf "flash %.1f KB (%.0f%% of 512 KB), RAM %.1f KB (%.0f%% of 128 KB)\n",
          fl/1024, 100*fl/524288, ram/1024, 100*ram/131072 }'
-echo "full log: firmware/RobertUN_ModuleNode/$log"
+echo "full log: firmware/projects/RobertUN_ModuleNode/$log"

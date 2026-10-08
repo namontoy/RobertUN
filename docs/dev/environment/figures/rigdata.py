@@ -23,7 +23,7 @@ COUNTS_PER_REV = 8403.2
 SYNC_GATE = 14.5          # below this duty the current column is Isup, not Imot
 
 RUNS = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                    "..", "..", "..", "firmware", "RobertUN_ModuleNode",
+                    "..", "..", "..", "..", "firmware", "projects", "RobertUN_ModuleNode",
                     "tools", "bench", "runs")
 
 # The four runs the 12 V plant model rests on.

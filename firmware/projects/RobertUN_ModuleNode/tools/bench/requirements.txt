@@ -23,7 +23,7 @@ pyserial>=3.5                # verified 3.5
 # --- analysis and figures only -----------------------------------------------
 
 # Array maths and least-squares fits in the plotting/analysis scripts
-# (docs/environment/figures/plot_plant_12v.py, and analyze.py when it exists).
+# (docs/dev/environment/figures/plot_plant_12v.py, and analyze.py when it exists).
 numpy>=1.21                  # verified 2.2.6
 
 # Figures.

@@ -5,7 +5,7 @@ set -uo pipefail
 
 preset="${1:-Debug}"
 root="$(git rev-parse --show-toplevel)"
-proj="$root/firmware/RobertUN_ModuleNode"
+proj="$root/firmware/projects/RobertUN_ModuleNode"
 elf="$proj/build/$preset/RobertUN_ModuleNode.elf"
 cli=/opt/st/stm32cubeclt_1.22.0/STM32CubeProgrammer/bin/STM32_Programmer_CLI
 log="$proj/build/flash.log"
@@ -28,6 +28,6 @@ if [ $rc -eq 0 ] && grep -qi 'verified successfully' "$log"; then
 else
   echo "FLASH FAILED (exit $rc):"
   grep -iE 'error|fail|not found|no st-link|unable' "$log" | head -8
-  echo "full log: firmware/RobertUN_ModuleNode/build/flash.log"
+  echo "full log: firmware/projects/RobertUN_ModuleNode/build/flash.log"
   exit 1
 fi

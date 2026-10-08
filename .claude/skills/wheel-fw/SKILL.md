@@ -1,13 +1,13 @@
 ---
 name: wheel-fw
-description: Build, flash and talk to the RobertUN wheel-node firmware (STM32F446RE, CubeMX CMake project in firmware/RobertUN_ModuleNode) with scripts that print a short verdict instead of the full tool output. Use whenever the firmware needs to be compiled, checked for errors or warnings, measured for flash/RAM use, written to the board over the ST-Link, or sent console commands over the serial port — instead of running cmake, ninja, STM32_Programmer_CLI or ad-hoc pyserial code directly.
+description: Build, flash and talk to the RobertUN wheel-node firmware (STM32F446RE, CubeMX CMake project in firmware/projects/RobertUN_ModuleNode) with scripts that print a short verdict instead of the full tool output. Use whenever the firmware needs to be compiled, checked for errors or warnings, measured for flash/RAM use, written to the board over the ST-Link, or sent console commands over the serial port — instead of running cmake, ninja, STM32_Programmer_CLI or ad-hoc pyserial code directly.
 ---
 
 # Wheel firmware: build, flash, console
 
 Both scripts live in this skill's `scripts/` folder and are run from anywhere
 inside the repo. They print a few lines; the full tool output goes to a log
-file under `firmware/RobertUN_ModuleNode/build/`, which is git-ignored.
+file under `firmware/projects/RobertUN_ModuleNode/build/`, which is git-ignored.
 
 ## Build
 

@@ -227,7 +227,7 @@
   - GitHub SSH key: ED25519 (reused from Jetson connection, labeled
     "Deadelus to Orion")
   - Repository: git@github.com:namontoy/RobertUN.git
-  - Local clone: ~/github/RobertUN/
+  - Local clone: ~/rover_UN/
 
 ## ISAACUN — Ubuntu 24.04.3 LTS x86_64
 - **Display server:** X11 (Wayland disabled by session type)
@@ -1397,13 +1397,13 @@ transmitter is the proof the ACK arrived.
 
 ## GITHUB REPOSITORY
 - **Repository:** git@github.com:namontoy/RobertUN.git
-- **Local clone (Dell):** ~/github/RobertUN/
+- **Local clone (Dell):** ~/rover_UN/
 - **Structure:**
-  - BoardRover2/ (hardware design files)
-  - docs/environment/PROJECT_CONTEXT.md (router — points at the three below)
-  - docs/environment/PROJECT_CONTEXT_REST.md (this file)
-  - docs/environment/PROJECT_CONTEXT_WHEEL_FW.md
-  - docs/environment/PROJECT_CONTEXT_WHEEL_FW_LOG.md
+  - hardware/BoardRover2/ (hardware design files)
+  - docs/dev/environment/PROJECT_CONTEXT.md (router — points at the three below)
+  - docs/dev/environment/PROJECT_CONTEXT_REST.md (this file)
+  - docs/dev/environment/PROJECT_CONTEXT_WHEEL_FW.md
+  - docs/dev/environment/PROJECT_CONTEXT_WHEEL_FW_LOG.md
   - docs/research/can-bus/CAN-Bus-JetsonOrinNano.md
 - **Git configured on:** Dell laptop ✅ and Jetson ✅ (IsaacUN pending)
 - **SSH keys added to GitHub:** Dell ED25519 ✅ and Jetson ED25519 ✅
@@ -1745,7 +1745,7 @@ transmitter is the proof the ACK arrived.
 - `jsync` → sync ~/ros2_ws/ to Jetson
 - `jscp <file> talos@192.168.1.211:<path>` → copy file to Jetson
 - `docker buildx build --platform linux/arm64 --tag <n> --load .`
-- `cd ~/github/RobertUN && git pull origin main` → sync repository
+- `cd ~/rover_UN && git pull origin main` → sync repository
 
 ### IsaacUN
 - `conda activate ros2` → enter ROS 2 development environment

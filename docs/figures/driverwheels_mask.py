@@ -1,8 +1,8 @@
 import cv2, numpy as np
-# Background cutout (GrabCut) for docs/Prototype_DriverWheels.jpg -> driverwheels_mask.png
+# Background cutout (GrabCut) for docs/images/prototype/Prototype_DriverWheels.jpg -> driverwheels_mask.png
 import os
 S=os.path.dirname(os.path.abspath(__file__))
-im=cv2.imread(S+'/../Prototype_DriverWheels.jpg')
+im=cv2.imread(S+'/../images/prototype/Prototype_DriverWheels.jpg')
 H,W=im.shape[:2]; f=0.5
 sm=cv2.resize(im,None,fx=f,fy=f)
 k=1512/1125*f

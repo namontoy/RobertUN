@@ -1,0 +1,3 @@
+[submodule "software/Taller5-Terminal"]
+	path = software/Taller5-Terminal
+	url = https://github.com/namontoy/Taller5-Terminal.git

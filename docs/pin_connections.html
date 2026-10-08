@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wheel Node Pinout</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --card: #ffffff; --ink: #1b1f24; --muted: #5d6673;
+    --line: #dde1e6; --head: #eef1f4; --group: #f3f5f7; --code: #0b5cad;
+    --warn-bg: #fff6e0; --warn-ink: #7a5200;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #14171b; --card: #1c2026; --ink: #e6e9ed; --muted: #9aa3ae;
+      --line: #2e343c; --head: #232830; --group: #20252c; --code: #7ab8ff;
+      --warn-bg: #3a2f14; --warn-ink: #f2cf7a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #14171b; --card: #1c2026; --ink: #e6e9ed; --muted: #9aa3ae;
+    --line: #2e343c; --head: #232830; --group: #20252c; --code: #7ab8ff;
+    --warn-bg: #3a2f14; --warn-ink: #f2cf7a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 1100px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  h2 { font-size: 1.15rem; margin: 40px 0 10px; }
+  .sub { color: var(--muted); margin: 0 0 20px; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+  .pill {
+    background: var(--card); border: 1px solid var(--line); border-radius: 999px;
+    padding: 3px 12px; font-size: 0.85rem; color: var(--muted);
+  }
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    overflow-x: auto;
+  }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { padding: 7px 12px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+  th { background: var(--head); font-size: 0.8rem; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); white-space: nowrap; }
+  tr:last-child td { border-bottom: 0; }
+  tr.grp td {
+    background: var(--group); font-weight: 600; font-size: 0.9rem;
+    border-left: 5px solid var(--c, var(--muted));
+  }
+  code, .pin { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: 0.88rem; }
+  .pin { font-weight: 700; white-space: nowrap; }
+  .sig { color: var(--code); white-space: nowrap; }
+  .note { color: var(--muted); font-size: 0.88rem; }
+  .badge {
+    display: inline-block; min-width: 1.6em; padding: 0 6px; border-radius: 999px;
+    background: var(--c); color: #111; font-weight: 700; font-size: 0.8rem; text-align: center;
+    border: 1px solid rgba(0,0,0,.35);
+  }
+  .badge.dark { color: #fff; }
+  .warn { background: var(--warn-bg); color: var(--warn-ink); border-radius: 6px; padding: 1px 6px; font-size: 0.85rem; }
+  ul { margin: 6px 0 0; padding-left: 20px; }
+  li { margin: 3px 0; }
+  a { color: var(--code); }
+  footer { margin-top: 40px; color: var(--muted); font-size: 0.85rem; }
+  @media print {
+    body { background: #fff; }
+    .card { border-color: #bbb; }
+    h2 { break-after: avoid; }
+    tr { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>RobertUN wheel module node: pin connections</h1>
+  <p class="sub">STM32F446RE on a WeAct STM32F446 Core Board V1.1. The same pinout is used on all six wheel nodes.</p>
+  <div class="meta">
+    <span class="pill">Firmware: <code>firmware/RobertUN_ModuleNode</code></span>
+    <span class="pill">Checked against the <code>.ioc</code>, 2026-10-07</span>
+    <span class="pill">Box numbers ⇒ <a href="Prototype_DriverWheels_boxes.jpg">top photo</a> / <a href="Prototype_DriverWheels_Bottom_boxes.jpg">bottom photo</a></span>
+  </div>
+
+  <!-- ===================================================== MCU pins -->
+  <h2>1. MCU pins in use</h2>
+  <div class="card">
+  <table>
+    <thead>
+      <tr><th>Pin</th><th>Signal</th><th>Peripheral / mode</th><th>AF</th><th>Connects to</th><th>Notes</th></tr>
+    </thead>
+    <tbody>
+      <tr class="grp" style="--c:#FF00FF"><td colspan="6"><span class="badge dark" style="--c:#FF00FF">11</span> Drive motor driver: DRV8874 breakout</td></tr>
+      <tr><td class="pin">PB6</td><td class="sig">DRV_PWM_A</td><td>TIM4_CH1, PWM 20 kHz</td><td>AF2</td><td>DRV8874 EN/IN1</td><td class="note">PSC 0 / ARR 4499; starts at 0 %</td></tr>
+      <tr><td class="pin">PB7</td><td class="sig">DRV_PWM_B</td><td>TIM4_CH2, PWM 20 kHz</td><td>AF2</td><td>DRV8874 PH/IN2</td><td class="note">Fallback if this pad ever fails: TIM3 on PC6/PC7</td></tr>
+      <tr><td class="pin">PB5</td><td class="sig">DRV_nSLEEP</td><td>GPIO out</td><td>—</td><td>DRV8874 SLP</td><td class="note">Low = disabled</td></tr>
+      <tr><td class="pin">PB0</td><td class="sig">DRV_nFAULT</td><td>GPIO in, pull-up</td><td>—</td><td>DRV8874 nFAULT</td><td class="note">Open-drain, active low; 10 k pull-up to 3.3 V on the breakout. Moved from PB12 on 2026-10-04</td></tr>
+      <tr><td class="pin">PA2</td><td class="sig">DRV_IPROPI</td><td>ADC1_IN2, 12-bit</td><td>—</td><td>DRV8874 IPROPI</td><td class="note">Current feedback, 28-cycle sample, R_IPROPI 1465 Ω; triggered by TIM4_CH4 (internal, no pin)</td></tr>
+      <tr><td class="pin">PA4</td><td class="sig">DRV_VREF</td><td>DAC1_OUT1, 12-bit</td><td>—</td><td>DRV8874 VREF</td><td class="note">Current limit; must be set before nSLEEP rises</td></tr>
+
+      <tr class="grp" style="--c:#FFF59D"><td colspan="6"><span class="badge" style="--c:#FFF59D">10</span> Drive motor encoder</td></tr>
+      <tr><td class="pin">PA15</td><td class="sig">ENC_A</td><td>TIM2_CH1, encoder mode</td><td>AF1</td><td>Encoder A</td><td class="note" rowspan="2">32-bit counter, x4 decoding, 8403.2 counts/rev; input filter 15. Encoder power from terminal 9</td></tr>
+      <tr><td class="pin">PB3</td><td class="sig">ENC_B</td><td>TIM2_CH2, encoder mode</td><td>AF1</td><td>Encoder B</td></tr>
+
+      <tr class="grp" style="--c:#00FFD0"><td colspan="6"><span class="badge" style="--c:#00FFD0">5</span> Steering servo: MKS SERVO42C</td></tr>
+      <tr><td class="pin">PA0</td><td class="sig">UART4_TX</td><td>UART4, 38400 8N1</td><td>AF8</td><td>Servo RX</td><td class="note">Commands to the servo</td></tr>
+      <tr><td class="pin">PA1</td><td class="sig">UART4_RX</td><td>UART4</td><td>AF8</td><td>Servo TX</td><td class="note"><span class="warn">Needs an external 5.1 kΩ pull-up PA1 → 3V3</span> (fitted on node 2)</td></tr>
+
+      <tr class="grp" style="--c:#7CFF00"><td colspan="6"><span class="badge" style="--c:#7CFF00">8</span> CAN bus: transceiver module</td></tr>
+      <tr><td class="pin">PB8</td><td class="sig">CAN1_RX</td><td>bxCAN1, 250 kbps</td><td>AF9</td><td>Transceiver CRX</td><td class="note" rowspan="2">CAN1 is on PB8/PB9 because PA11/PA12 are the USB-C port</td></tr>
+      <tr><td class="pin">PB9</td><td class="sig">CAN1_TX</td><td>bxCAN1</td><td>AF9</td><td>Transceiver CTX</td></tr>
+
+      <tr class="grp" style="--c:#00B4FF"><td colspan="6"><span class="badge" style="--c:#00B4FF">1</span> Module ID: 4-bit DIP switch</td></tr>
+      <tr><td class="pin">PB12</td><td class="sig">DIP_SW_0</td><td>GPIO in, pull-up</td><td>—</td><td>DIP bit 0 (LSB)</td><td class="note" rowspan="4">Read by <code>dipsw_init()</code>. ID 0 (broadcast) and 15 (unfitted) are refused</td></tr>
+      <tr><td class="pin">PB13</td><td class="sig">DIP_SW_1</td><td>GPIO in, pull-up</td><td>—</td><td>DIP bit 1</td></tr>
+      <tr><td class="pin">PB14</td><td class="sig">DIP_SW_2</td><td>GPIO in, pull-up</td><td>—</td><td>DIP bit 2</td></tr>
+      <tr><td class="pin">PB15</td><td class="sig">DIP_SW_3</td><td>GPIO in, pull-up</td><td>—</td><td>DIP bit 3 (MSB, top position)</td></tr>
+
+      <tr class="grp" style="--c:#9aa3ae"><td colspan="6">Debug console and programming</td></tr>
+      <tr><td class="pin">PA9</td><td class="sig">USART1_TX</td><td>USART1, 115200, DMA</td><td>AF7</td><td>Host serial RX</td><td class="note" rowspan="2"><code>debug_uart</code> console and command interpreter</td></tr>
+      <tr><td class="pin">PA10</td><td class="sig">USART1_RX</td><td>USART1</td><td>AF7</td><td>Host serial TX</td></tr>
+      <tr><td class="pin">PA13</td><td class="sig">SWDIO</td><td>SWD</td><td>—</td><td>ST-Link/V2</td><td class="note" rowspan="2">The only debug access; never reassign</td></tr>
+      <tr><td class="pin">PA14</td><td class="sig">SWCLK</td><td>SWD</td><td>—</td><td>ST-Link/V2</td></tr>
+
+      <tr class="grp" style="--c:#9aa3ae"><td colspan="6">Clocks and on-board</td></tr>
+      <tr><td class="pin">PH0 / PH1</td><td class="sig">HSE</td><td>8 MHz crystal</td><td>—</td><td>On the core board</td><td class="note">PLL M=4, N=180, P=2 ⇒ 180 MHz</td></tr>
+      <tr><td class="pin">PC14 / PC15</td><td class="sig">LSE</td><td>32.768 kHz crystal</td><td>—</td><td>On the core board</td><td class="note">In the <code>.ioc</code>, not enabled in code</td></tr>
+      <tr><td class="pin">PA8</td><td class="sig">MCO1</td><td>RCC, HSE ÷1</td><td>AF0</td><td>Test point</td><td class="note">8 MHz clock out, for scope checks</td></tr>
+      <tr><td class="pin">PB2</td><td class="sig">LED_BLINKY</td><td>GPIO out</td><td>—</td><td>On-board LED</td><td class="note">Heartbeat LED (also BOOT1)</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <!-- ===================================================== Connectors -->
+  <h2>2. Prototype board connectors</h2>
+  <p class="sub">Pins listed in physical order, as annotated on the photos. The servo pins use the servo's own names (servo TX goes to MCU RX).</p>
+  <div class="card">
+  <table>
+    <thead>
+      <tr><th>Box</th><th>Connector</th><th>Pin order</th><th>Pins</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><span class="badge" style="--c:#00B4FF">1</span></td><td>DIP switch, module ID</td><td class="note">top → bottom</td><td><code>PB15 (MSB) · PB14 · PB13 · PB12 (LSB)</code></td></tr>
+      <tr><td><span class="badge dark" style="--c:#FF2D2D">3</span></td><td>Battery input, V_bat ~15 V</td><td class="note">left → right</td><td><code>GND · V_bat</code></td></tr>
+      <tr><td><span class="badge" style="--c:#FFA8A8">4</span></td><td>Rocker switch</td><td class="note">—</td><td class="note">Power switch; pins not annotated</td></tr>
+      <tr><td><span class="badge" style="--c:#00FFD0">5</span></td><td>Steering servo (UART4)</td><td class="note">bottom → top</td><td><code>V_bat · GND · TX→PA1 · RX→PA0 · GND · NC</code></td></tr>
+      <tr><td><span class="badge" style="--c:#FF69B4">6</span></td><td>CAN in, JST-XH 3-pin</td><td class="note">top → bottom</td><td><code>CANL · CANH · GND</code></td></tr>
+      <tr><td><span class="badge" style="--c:#B388FF">7</span></td><td>CAN out, JST-XH 3-pin</td><td class="note">top → bottom</td><td><code>CANL · CANH · GND</code></td></tr>
+      <tr><td><span class="badge" style="--c:#7CFF00">8</span></td><td>CAN transceiver module</td><td class="note">top → bottom</td><td><code>CANL · CANH · CRX→PB8 · CTX→PB9 · GND · 3V3</code></td></tr>
+      <tr><td><span class="badge dark" style="--c:#4D7CFF">9</span></td><td>Encoder power</td><td class="note">left → right</td><td><code>GND · 3V3</code></td></tr>
+      <tr><td><span class="badge" style="--c:#FFF59D">10</span></td><td>Encoder lines A/B</td><td class="note">left → right</td><td><code>A→PA15 · B→PB3</code></td></tr>
+      <tr><td rowspan="2"><span class="badge dark" style="--c:#FF00FF">11</span></td><td rowspan="2">DRV8874 breakout</td><td class="note">top row, L → R</td><td><code>VREF→PA4 · SLP→PB5 · PMODE (10k PU) · PH/IN2→PB7 · EN/IN1→PB6 · GND · VM</code></td></tr>
+      <tr><td class="note">bottom row, L → R</td><td><code>IPROPI→PA2 · nFAULT→PB0 · IOE (10k PU, no MCU pin) · OUT1 · OUT2 · GND · VM</code></td></tr>
+      <tr><td><span class="badge" style="--c:#FFB300">12</span></td><td>Motor output</td><td class="note">left → right</td><td><code>OUT2 · OUT1</code></td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <!-- ===================================================== Power -->
+  <h2>3. Power rails</h2>
+  <div class="card">
+  <table>
+    <thead>
+      <tr><th>Rail</th><th>Source</th><th>Feeds</th></tr>
+    </thead>
+    <tbody>
+      <tr><td class="pin">V_bat (~15 V)</td><td>Battery input terminal (top box 3 / bottom box 1)</td><td>Both buck inputs (IN+), servo connector V_bat</td></tr>
+      <tr><td class="pin">12 V</td><td>Buck converter, LM2596-type (bottom box 2)</td><td>DRV8874 VM (12.0 V measured at VM)</td></tr>
+      <tr><td class="pin">3V3 (buck)</td><td>Buck converter, LM2596-type (bottom box 3)</td><td class="note">Destination not annotated on the photos</td></tr>
+      <tr><td class="pin">3V3 (MCU)</td><td>Core board 3V3 pin column, orange wire</td><td>Encoder power (9), CAN transceiver 3V3 (8); reference for the nFAULT and PA1 pull-ups</td></tr>
+      <tr><td class="pin">GND</td><td>Common</td><td>Every black wire and bottom-side trace; bucks share IN− = OUT− = GND</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <!-- ===================================================== Free / reserved -->
+  <h2>4. Free, reserved and off-limits pins</h2>
+  <div class="card">
+  <table>
+    <thead>
+      <tr><th>Pins</th><th>Status</th><th>Why</th></tr>
+    </thead>
+    <tbody>
+      <tr><td class="pin">PA5 / PA6 / PA7</td><td>Reserved</td><td>SPI1 (software NSS) for a possible per-module IMU</td></tr>
+      <tr><td class="pin">PB10 / PB11</td><td>Reserved</td><td>I2C2 for a possible per-module IMU</td></tr>
+      <tr><td class="pin">PC6 / PC7</td><td>Free, fallback</td><td>TIM3 PWM (AF2) if TIM4 on PB6/PB7 ever has to be abandoned; the tick constants carry over</td></tr>
+      <tr><td class="pin">PA11 / PA12</td><td>Off-limits</td><td>USB-C connector on the core board</td></tr>
+      <tr><td class="pin">PA13 / PA14</td><td>Off-limits</td><td>SWD, the only debug access</td></tr>
+      <tr><td class="pin">PB4</td><td>Avoided</td><td>NJTRST. PA15/PB3 (the other JTAG pins) are used, so full JTAG is no longer available; 2-wire SWD is unaffected</td></tr>
+      <tr><td class="pin">Rest of PORTC</td><td>Free</td><td>Unused</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <footer>
+    Sources: <code>RobertUN_ModuleNode.ioc</code>,
+    <code>docs/environment/PROJECT_CONTEXT_WHEEL_FW_REF_MCU.md</code> (pin allocation, timers),
+    and the prototype photo annotations of 2026-10-07. Box colours match the annotated photos.
+  </footer>
+</main>
+</body>
+</html>

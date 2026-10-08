@@ -4608,3 +4608,10 @@ user to delete. Next: W7, six nodes, new branch from main.
 - Bottom view is mirrored left-right from the top. Boxes: 1 battery input terminal (left V_bat, right GND), 2 buck converter 12 V out, 3 buck converter 3V3 out (both LM2596-type modules: 100 µF/50 V in, 47 µH, 220 µF/35 V out).
 - Both bucks: IN+ = V_bat, IN− = OUT− = GND. Pads tagged in the buck colour, and marked with dots coloured by net (GND black, V_bat red, 12 V blue, 3V3 orange).
 - Every black wire / solder trace on the bottom is GND (user). Left-edge red/green/purple wiring, yellow/purple pair, blue wire and red jumpers not annotated (boxes dropped at user request).
+
+## 2026-10-07 — Pin-connection table as HTML (`docs/pin_connections.html`)
+
+- Self-contained HTML (no external resources, light/dark, print-friendly). Four tables: (1) MCU pins in use, grouped by function with the photo box number and colour; (2) prototype board connectors in physical pin order (boxes 1, 3–12); (3) power rails; (4) free / reserved / off-limits pins.
+- Sources: `.ioc` (every pin signal/label matches the `_REF_MCU` pin-allocation table), `_REF_MCU` timers section, and the 10-07 photo annotations (`docs/figures/driverwheels_boxes.py`, `driverwheels_bottom_boxes.py`).
+- Not documented anywhere, so marked as such in the page: where the 3V3 buck output goes, and the rocker switch wiring. The 12 V buck → DRV8874 VM link is taken from "rail 12.0 V at VM".
+- Stale text noticed in `_REF_MCU` (not edited): it still says PA2 IPROPI is "configured but not yet wired" and "PA4 is still free … not fitted", but both are in use (IPROPI calibrated 09-26; PA4 = DAC VREF in the table and on the breakout).

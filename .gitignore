@@ -92,3 +92,9 @@ docs/images/**/*.pdf
 # Other firmware projects on this machine, not part of the rover yet
 firmware/projects/blink/
 firmware/projects/Testing_F446RE_VScode/
+
+# KiCad machine-local files: lock files, autosave pointer, timestamped backups
+*.lck
+\#auto_saved_files\#
+*-backups/
+fp-info-cache

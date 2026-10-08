@@ -4601,3 +4601,10 @@ user to delete. Next: W7, six nodes, new branch from main.
 - MCU header dots, in the color of the connector each pin serves: DIP PB12–PB15, encoder PA15/PB3, DRV PB5/PB6/PB7/PA2/PA4/PB0, CAN PB8/PB9, servo PA0/PA1. Header pin order checked by the user: left header pairs have the first label on the inner pin (e.g. B12 inner, B13 outer); right header has e.g. C5 inner, B0 outer.
 
 - 2026-10-07 follow-up: box 5 servo tags GND_1/GND_2 renamed to plain GND (user request).
+
+## 2026-10-07 — Annotated bottom photo of the wheel-driver prototype
+
+- Source `docs/Prototype_DriverWheels_Bottom.jpg` (1512×2688, unchanged). Output `docs/Prototype_DriverWheels_Bottom_boxes.jpg`. Scripts `docs/figures/driverwheels_bottom_mask.py` (GrabCut → `driverwheels_bottom_mask.png`) and `driverwheels_bottom_boxes.py`. Background grey 128 as on the top photo.
+- Bottom view is mirrored left-right from the top. Boxes: 1 battery input terminal (left V_bat, right GND), 2 buck converter 12 V out, 3 buck converter 3V3 out (both LM2596-type modules: 100 µF/50 V in, 47 µH, 220 µF/35 V out).
+- Both bucks: IN+ = V_bat, IN− = OUT− = GND. Pads tagged in the buck colour, and marked with dots coloured by net (GND black, V_bat red, 12 V blue, 3V3 orange).
+- Every black wire / solder trace on the bottom is GND (user). Left-edge red/green/purple wiring, yellow/purple pair, blue wire and red jumpers not annotated (boxes dropped at user request).

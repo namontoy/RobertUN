@@ -4599,3 +4599,5 @@ user to delete. Next: W7, six nodes, new branch from main.
 - DRV8874 breakout pins: bottom row L→R IPROPI→PA2, nFAULT→PB0, IOE (10k pull-up only, no MCU pin), OUT1, OUT2, GND, VM; top row VREF→PA4, SLP→PB5, PMODE (10k pull-up), PH/IN2→PB7, EN/IN1→PB6, GND, VM.
 - 3V3 rail: the orange wire left of the MCU comes from the core board's 3V3 pin column (top right) and feeds terminal 9 and the transceiver's 3V3. V_bat → 12 V and 3V3 regulators are on the back of the board (not annotated).
 - MCU header dots, in the color of the connector each pin serves: DIP PB12–PB15, encoder PA15/PB3, DRV PB5/PB6/PB7/PA2/PA4/PB0, CAN PB8/PB9, servo PA0/PA1. Header pin order checked by the user: left header pairs have the first label on the inner pin (e.g. B12 inner, B13 outer); right header has e.g. C5 inner, B0 outer.
+
+- 2026-10-07 follow-up: box 5 servo tags GND_1/GND_2 renamed to plain GND (user request).

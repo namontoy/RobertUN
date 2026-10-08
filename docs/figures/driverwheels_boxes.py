@@ -45,7 +45,7 @@ for n,lab,b,c,corner in E:
 # pin tags, original-image coords: (pin x, pin y, label, tag x, colour)
 ft=ImageFont.truetype(F,24)
 TAGS=[(1252,y,l,1352,'#00FFD0') for y,l in
-      [(1352,'V_bat'),(1302,'GND_1'),(1252,'TX→PA1'),(1209,'RX→PA0'),(1155,'GND_2'),(1110,'NC')]]
+      [(1352,'V_bat'),(1302,'GND'),(1252,'TX→PA1'),(1209,'RX→PA0'),(1155,'GND'),(1110,'NC')]]
 for px,py,l,tx,c in TAGS:
     px+=OX; tx+=OX
     d.line((px,py,tx,py),fill='black',width=5); d.line((px,py,tx,py),fill=c,width=2)
